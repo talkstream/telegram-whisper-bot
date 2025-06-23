@@ -1,6 +1,12 @@
 cron:
 - description: "Keep bot warm"
   url: /_ah/warmup
-  schedule: every 5 minutes
+  schedule: every 3 minutes
+  retry_parameters:
+    job_retry_limit: 1
+    
+- description: "Health check ping"
+  url: /health
+  schedule: every 2 minutes
   retry_parameters:
     job_retry_limit: 1

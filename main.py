@@ -1226,8 +1226,32 @@ def handle_telegram_webhook(request):
 # Warmup handler for App Engine
 def handle_warmup(request):
     """Handle warmup requests from App Engine"""
-    initialize()  # Initialize services if needed
+    start_time = datetime.now()
+    
+    # Initialize all services
+    if not initialize():
+        logging.error("Failed to initialize during warmup")
+        return "Failed to initialize", 500
+    
+    # Perform a test query to warm up Firestore connection
+    try:
+        if firestore_service:
+            # Simple read to warm up the connection
+            firestore_service.db.collection('users').limit(1).get()
+            logging.info("Firestore connection warmed up")
+    except Exception as e:
+        logging.warning(f"Failed to warm up Firestore: {e}")
+    
+    # Log warmup completion time
+    duration = (datetime.now() - start_time).total_seconds()
+    logging.info(f"Warmup completed in {duration:.2f} seconds")
+    
     return "OK", 200
+
+# Health check handler
+def handle_health(request):
+    """Handle health check requests"""
+    return "healthy", 200
 
 # Main webhook handler wrapper
 def app(request):
@@ -1235,5 +1259,8 @@ def app(request):
     # Handle warmup requests
     if request.path == "/_ah/warmup":
         return handle_warmup(request)
+    # Handle health checks
+    if request.path == "/_ah/health" or request.path == "/health":
+        return handle_health(request)
     # Handle regular webhook
     return handle_telegram_webhook(request)

@@ -3,9 +3,35 @@ runtime: python311
 # Automatic scaling to keep at least one instance warm
 automatic_scaling:
   min_instances: 1
-  max_instances: 5
+  max_instances: 10
   min_idle_instances: 1
   max_idle_instances: 2
+  target_cpu_utilization: 0.7
+  target_throughput_utilization: 0.7
+  max_concurrent_requests: 20
+
+# Instance class for better performance
+instance_class: F2
+
+# Warmup requests
+inbound_services:
+- warmup
+
+# Health checks
+readiness_check:
+  path: "/health"
+  check_interval_sec: 5
+  timeout_sec: 4
+  failure_threshold: 2
+  success_threshold: 2
+  app_start_timeout_sec: 300
+
+liveness_check:
+  path: "/health"
+  check_interval_sec: 30
+  timeout_sec: 4
+  failure_threshold: 2
+  success_threshold: 2
 
 # Environment variables
 env_variables:
@@ -15,9 +41,12 @@ env_variables:
 
 # Request handling
 handlers:
+- url: /_ah/warmup
+  script: auto
+  login: admin
 - url: /.*
   script: auto
   secure: always
 
 # Entry point
-entrypoint: gunicorn -b :$PORT main:app
+entrypoint: gunicorn -b :$PORT main:app --workers 2 --threads 4 --worker-class sync --timeout 120
