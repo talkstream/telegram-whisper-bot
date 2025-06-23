@@ -882,13 +882,13 @@ def handle_telegram_webhook(request):
                 settings_text = "⚙️ Настройки\n\n"
                 settings_text += "Форматирование вывода:\n"
                 if use_code_tags:
-                    settings_text += "✅ Вывод с тегами <code> (моноширинный шрифт)\n\n"
+                    settings_text += "✅ Вывод с тегами &lt;code&gt; (моноширинный шрифт)\n\n"
                 else:
                     settings_text += "✅ Простой текст (обычный шрифт)\n\n"
                     
                 settings_text += "Команды:\n"
-                settings_text += "/code_on - включить теги <code>\n"
-                settings_text += "/code_off - выключить теги <code>\n"
+                settings_text += "/code_on - включить теги &lt;code&gt;\n"
+                settings_text += "/code_off - выключить теги &lt;code&gt;\n"
                 
                 send_message(chat_id, settings_text, parse_mode="HTML")
                 return "OK", 200
@@ -900,7 +900,7 @@ def handle_telegram_webhook(request):
                     
                 if firestore_service:
                     firestore_service.update_user_setting(user_id, 'use_code_tags', True)
-                send_message(chat_id, "✅ Вывод с тегами <code> включен", parse_mode="HTML")
+                send_message(chat_id, "✅ Вывод с тегами &lt;code&gt; включен", parse_mode="HTML")
                 return "OK", 200
                 
             if text == "/code_off": # Выключить теги code
