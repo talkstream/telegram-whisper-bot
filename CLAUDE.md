@@ -68,17 +68,17 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.0.3
-- Fixed critical deployment issues
-- Added Flask for WSGI compatibility
-- Fixed missing services folder in root
-- All endpoints working correctly
+### Current Version: v1.0.4
+- Fixed /settings command HTML parsing error
+- All commands now working correctly
+- Bot responds in <1 second with proper warmup
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
 - **v1.0.1** - Codebase cleanup and organization
 - **v1.0.2** - Performance improvements and warmup optimization
 - **v1.0.3** - Critical fixes: Flask integration and services folder
+- **v1.0.4** - Fixed /settings command HTML parsing error
 
 ## Development
 
@@ -216,10 +216,14 @@ gcloud functions deploy audio-processor \
   - Updated Telegram webhook URL to App Engine endpoint
   - Deleted old Cloud Function (was causing 16-second delays)
   - Bot now responds in <1 second with proper warmup
+- ✅ Fixed /settings command (June 24, 2025):
+  - Escaped HTML special characters (&lt; and &gt;)
+  - Fixed "can't parse entities" error that persisted for months
+  - All bot commands now working correctly
 
 ## Known Issues to Address Next Time
-1. **Inline keyboards not working** - Currently using text commands for settings
-2. **Average audio duration** - May show incorrect values for some users (needs investigation)
+1. **Average audio duration** - Shows 11.2 minutes for many entries (needs investigation)
+2. **Inline keyboards investigation** - Could try implementing them again now that HTML parsing is fixed
 3. **Progress bar timing** - Formatting stage may appear stuck longer than actual processing time
 
 ## Next Development Priorities
