@@ -48,6 +48,32 @@ Users can customize their experience through the following commands:
 
 Note: Inline keyboard buttons were removed due to compatibility issues.
 
+## Version Control
+
+### Git Commands
+```bash
+# Check current status
+git status
+
+# View commit history
+git log --oneline
+
+# Create a new version tag
+git tag -a v1.0.1 -m "Description of changes"
+
+# Revert to previous version
+git checkout v1.0.0
+
+# View all tags
+git tag -l
+```
+
+### Current Version: v1.0.0
+- Stable release with all core features
+- Simplified settings without inline keyboards
+- Keep-alive functionality
+- All features tested and working
+
 ## Development
 
 ### Local Testing
@@ -63,7 +89,15 @@ export USE_ASYNC_PROCESSING=false  # For sync testing
 python main.py
 ```
 
-### Deployment
+### Key Points to Save in Git
+
+Save a new version when:
+- Major feature is added and tested
+- Critical bug is fixed
+- Before any risky changes
+- After successful deployment
+
+## Deployment
 
 #### Main Bot (App Engine)
 ```bash
