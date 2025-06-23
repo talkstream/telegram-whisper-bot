@@ -1254,7 +1254,7 @@ def handle_health(request):
     return "healthy", 200
 
 # Import Flask for WSGI compatibility
-from flask import Flask, request as flask_request
+from flask import Flask, request
 
 # Create Flask application
 app = Flask(__name__)
@@ -1262,18 +1262,18 @@ app = Flask(__name__)
 @app.route('/_ah/warmup')
 def warmup():
     """Handle warmup requests"""
-    return handle_warmup(flask_request)
+    return handle_warmup(request)
 
 @app.route('/health')
 @app.route('/_ah/health')
 def health():
     """Handle health check requests"""
-    return handle_health(flask_request)
+    return handle_health(request)
 
 @app.route('/', methods=['POST'])
 def webhook():
     """Handle Telegram webhook"""
-    return handle_telegram_webhook(flask_request)
+    return handle_telegram_webhook(request)
 
 # For local testing
 if __name__ == '__main__':
