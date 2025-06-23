@@ -1253,14 +1253,28 @@ def handle_health(request):
     """Handle health check requests"""
     return "healthy", 200
 
-# Main webhook handler wrapper
-def app(request):
-    """Main entry point for App Engine"""
-    # Handle warmup requests
-    if request.path == "/_ah/warmup":
-        return handle_warmup(request)
-    # Handle health checks
-    if request.path == "/_ah/health" or request.path == "/health":
-        return handle_health(request)
-    # Handle regular webhook
-    return handle_telegram_webhook(request)
+# Import Flask for WSGI compatibility
+from flask import Flask, request as flask_request
+
+# Create Flask application
+app = Flask(__name__)
+
+@app.route('/_ah/warmup')
+def warmup():
+    """Handle warmup requests"""
+    return handle_warmup(flask_request)
+
+@app.route('/health')
+@app.route('/_ah/health')
+def health():
+    """Handle health check requests"""
+    return handle_health(flask_request)
+
+@app.route('/', methods=['POST'])
+def webhook():
+    """Handle Telegram webhook"""
+    return handle_telegram_webhook(flask_request)
+
+# For local testing
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080, debug=True)
