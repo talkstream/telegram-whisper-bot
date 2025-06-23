@@ -68,16 +68,17 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.0.2
-- Enhanced warmup performance for faster response times
-- Upgraded to F2 instance class
-- Added health checks and improved cron jobs
-- Better concurrency with Gunicorn workers
+### Current Version: v1.0.3
+- Fixed critical deployment issues
+- Added Flask for WSGI compatibility
+- Fixed missing services folder in root
+- All endpoints working correctly
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
 - **v1.0.1** - Codebase cleanup and organization
 - **v1.0.2** - Performance improvements and warmup optimization
+- **v1.0.3** - Critical fixes: Flask integration and services folder
 
 ## Development
 
@@ -196,6 +197,10 @@ gcloud functions deploy audio-processor \
   - Improved warmup handler with Firestore connection preloading
   - More aggressive cron jobs (warmup every 3min, health check every 2min)
   - Added Gunicorn workers and threads for better concurrency
+- ✅ Fixed critical deployment issues (June 24, 2025):
+  - Added Flask for WSGI compatibility with App Engine
+  - Fixed missing services folder in root directory
+  - All endpoints now working correctly
 
 ## Known Issues to Address Next Time
 1. **Inline keyboards not working** - Currently using text commands for settings
