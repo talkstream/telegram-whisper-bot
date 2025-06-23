@@ -1,0 +1,8 @@
+openai
+requests
+pytz
+google-cloud-secret-manager
+google-cloud-firestore
+google-cloud-aiplatform
+google-cloud-pubsub
+gunicorn

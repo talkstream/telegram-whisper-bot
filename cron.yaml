@@ -1,0 +1,6 @@
+cron:
+- description: "Keep bot warm"
+  url: /_ah/warmup
+  schedule: every 5 minutes
+  retry_parameters:
+    job_retry_limit: 1

@@ -1,0 +1,23 @@
+runtime: python311
+
+# Automatic scaling to keep at least one instance warm
+automatic_scaling:
+  min_instances: 1
+  max_instances: 5
+  min_idle_instances: 1
+  max_idle_instances: 2
+
+# Environment variables
+env_variables:
+  GCP_PROJECT: "editorials-robot"
+  USE_ASYNC_PROCESSING: "true"
+  AUDIO_PROCESSING_TOPIC: "audio-processing-jobs"
+
+# Request handling
+handlers:
+- url: /.*
+  script: auto
+  secure: always
+
+# Entry point
+entrypoint: gunicorn -b :$PORT main:app
