@@ -110,6 +110,17 @@ Save a new version when:
 gcloud app deploy --project=editorials-robot
 ```
 
+#### Update Telegram Webhook (if needed)
+```bash
+# Get bot token
+BOT_TOKEN=$(gcloud secrets versions access latest --secret="telegram-bot-token" --project=editorials-robot)
+
+# Set webhook to App Engine
+curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://editorials-robot.ew.r.appspot.com/"}'
+```
+
 #### Audio Processor (Cloud Function)
 ```bash
 cd audio-processor-deploy
@@ -201,6 +212,10 @@ gcloud functions deploy audio-processor \
   - Added Flask for WSGI compatibility with App Engine
   - Fixed missing services folder in root directory
   - All endpoints now working correctly
+- ✅ Migrated webhook from Cloud Functions to App Engine (June 24, 2025):
+  - Updated Telegram webhook URL to App Engine endpoint
+  - Deleted old Cloud Function (was causing 16-second delays)
+  - Bot now responds in <1 second with proper warmup
 
 ## Known Issues to Address Next Time
 1. **Inline keyboards not working** - Currently using text commands for settings
