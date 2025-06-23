@@ -164,14 +164,14 @@ gcloud functions deploy audio-processor \
 - **payment_logs**: Payment history
 
 ## Testing Checklist
-- [ ] Test with `USE_ASYNC_PROCESSING=false` (sync mode)
-- [ ] Test with `USE_ASYNC_PROCESSING=true` (async mode)
-- [ ] Test payment flow with Telegram Stars
-- [ ] Test trial request flow
-- [ ] Test admin commands
-- [ ] Test settings menu and code tag toggle
-- [ ] Monitor Pub/Sub queue performance
-- [ ] Check memory usage stays under 1GB
+- [x] Test with `USE_ASYNC_PROCESSING=false` (sync mode)
+- [x] Test with `USE_ASYNC_PROCESSING=true` (async mode) 
+- [x] Test payment flow with Telegram Stars
+- [x] Test trial request flow
+- [x] Test admin commands
+- [x] Test settings menu and code tag toggle - FIXED June 24
+- [x] Monitor Pub/Sub queue performance
+- [x] Check memory usage stays under 1GB
 
 ## Common Issues & Solutions
 
