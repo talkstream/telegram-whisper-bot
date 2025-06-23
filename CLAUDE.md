@@ -68,11 +68,15 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.0.0
-- Stable release with all core features
-- Simplified settings without inline keyboards
-- Keep-alive functionality
-- All features tested and working
+### Current Version: v1.0.1
+- Cleaned up codebase (removed 33% duplicate code)
+- All duplicate files removed
+- Better organized structure
+- No functional changes from v1.0.0
+
+### Version History
+- **v1.0.0** - Initial stable release with all core features
+- **v1.0.1** - Codebase cleanup and organization
 
 ## Development
 
