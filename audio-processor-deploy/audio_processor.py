@@ -249,6 +249,7 @@ class AudioProcessor:
         duration = job_data['duration']
         user_name = job_data['user_name']
         status_message_id = job_data.get('status_message_id')
+        is_batch_confirmation = job_data.get('is_batch_confirmation', False)
         
         # Start timing
         self.start_time = time.time()
@@ -400,7 +401,7 @@ class AudioProcessor:
                                           processing_time=processing_time)
             
             # Send result first (this will edit/delete the status message)
-            self._send_result_to_user(user_id, chat_id, formatted_text, status_message_id)
+            self._send_result_to_user(user_id, chat_id, formatted_text, status_message_id, is_batch_confirmation)
             
             # Save result after sending
             result = {
@@ -501,7 +502,7 @@ class AudioProcessor:
         except Exception as e:
             logging.error(f"Error logging attempt: {e}")
             
-    def _send_result_to_user(self, user_id: int, chat_id: int, formatted_text: str, status_message_id: int = None):
+    def _send_result_to_user(self, user_id: int, chat_id: int, formatted_text: str, status_message_id: int = None, is_batch_confirmation: bool = False):
         """Send transcription result to user"""
         MAX_MESSAGE_LENGTH = 4000
         
@@ -536,20 +537,30 @@ class AudioProcessor:
             if status_message_id:
                 self.telegram.delete_message(chat_id, status_message_id)
         else:
-            # Send as message based on user preference
-            if use_code_tags:
-                escaped_text = formatted_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                if status_message_id:
-                    self.telegram.edit_message_text(chat_id, status_message_id, 
-                        f"<code>{escaped_text}</code>", parse_mode="HTML")
-                else:
+            # For batch confirmation messages, always delete and send new message
+            if is_batch_confirmation and status_message_id:
+                self.telegram.delete_message(chat_id, status_message_id)
+                # Send new message
+                if use_code_tags:
+                    escaped_text = formatted_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     self.telegram.send_message(chat_id, f"<code>{escaped_text}</code>", parse_mode="HTML")
-            else:
-                # Send as plain text
-                if status_message_id:
-                    self.telegram.edit_message_text(chat_id, status_message_id, formatted_text)
                 else:
                     self.telegram.send_message(chat_id, formatted_text)
+            else:
+                # Send as message based on user preference
+                if use_code_tags:
+                    escaped_text = formatted_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    if status_message_id:
+                        self.telegram.edit_message_text(chat_id, status_message_id, 
+                            f"<code>{escaped_text}</code>", parse_mode="HTML")
+                    else:
+                        self.telegram.send_message(chat_id, f"<code>{escaped_text}</code>", parse_mode="HTML")
+                else:
+                    # Send as plain text
+                    if status_message_id:
+                        self.telegram.edit_message_text(chat_id, status_message_id, formatted_text)
+                    else:
+                        self.telegram.send_message(chat_id, formatted_text)
 
 
 def handle_pubsub_message(event, context):

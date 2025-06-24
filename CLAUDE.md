@@ -68,12 +68,15 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.0.5
-- Improved audio duration accuracy with dual tracking (Telegram + FFmpeg)
-- Reduced pause from 5 to 3 seconds for better user experience
-- Enhanced metadata collection (format, codec, bitrate, processing time)
-- Fixed average duration calculation to use FFmpeg data
-- Better progress updates during formatting stage
+### Current Version: v1.0.7
+- Fixed batch processing leaving orphaned messages
+- Added pluralize_russian for proper number declensions
+- Fixed queue counter to show only pending/processing jobs
+- Made /status command admin-only
+- Changed /batch to show current queue status
+- Added Gemini API rate limit retry logic
+- Fixed timezone comparison in job cleanup
+- Fixed critical edit_message_text parse_mode error
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
@@ -82,6 +85,8 @@ git tag -l
 - **v1.0.3** - Critical fixes: Flask integration and services folder
 - **v1.0.4** - Fixed /settings command HTML parsing error
 - **v1.0.5** - Duration accuracy improvements and progress timing optimization
+- **v1.0.6** - Added /help command with full command list
+- **v1.0.7** - Multiple critical fixes (June 24, 2025)
 
 ## Development
 
@@ -229,6 +234,12 @@ gcloud functions deploy audio-processor \
   - Reduced pause from 5 to 3 seconds (saves 2 seconds per audio)
   - Enhanced metadata collection for better diagnostics
   - Deployed as v1.0.5
+- ✅ Fixed batch processing issues (June 24, 2025 - v1.0.7):
+  - Batch file confirmation messages now properly deleted after processing
+  - Fixed queue counter logic
+  - Added proper Russian text declensions
+  - Fixed critical parse_mode error
+  - Added Gemini retry logic
 
 ## Known Issues to Address Next Time
 1. **Inline keyboards investigation** - Could try implementing them again now that HTML parsing is fixed

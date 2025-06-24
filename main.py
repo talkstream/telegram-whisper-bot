@@ -163,7 +163,7 @@ def transcribe_audio(audio_path): # ИЗМЕНЕНИЕ: используем к�
     return None
 
 # --- РАБОТА С PUB/SUB ---
-def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name, status_message_id=None):
+def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name, status_message_id=None, is_batch_confirmation=False):
     """Publish audio processing job to Pub/Sub"""
     if not publisher or not SECRETS_LOADED:
         logging.error("Publisher not initialized")
@@ -205,7 +205,8 @@ def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name,
         'file_size': file_size,
         'duration': duration,
         'user_name': user_name,
-        'status_message_id': status_message_id
+        'status_message_id': status_message_id,
+        'is_batch_confirmation': is_batch_confirmation
     }
     
     # Publish to Pub/Sub
@@ -1258,10 +1259,11 @@ def handle_telegram_webhook(request):
                             if original_file_name:
                                 simple_msg += f"📄 {original_file_name}\n"
                             simple_msg += f"⏱ {format_duration(duration)}"
-                            send_message(chat_id, simple_msg)
+                            confirmation_msg = send_message(chat_id, simple_msg)
+                            confirmation_message_id = confirmation_msg.get('result', {}).get('message_id') if confirmation_msg else None
                             
-                            # Publish job without status message
-                            job_id = publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name, None)
+                            # Publish job with confirmation message ID to delete it later
+                            job_id = publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name, confirmation_message_id, is_batch_confirmation=True)
                             if job_id:
                                 logging.info(f"Batch audio job {job_id} published for user {user_id}")
                             else:
