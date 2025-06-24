@@ -128,8 +128,8 @@ class AudioProcessor:
     def estimate_total_time(self, duration_seconds: int) -> str:
         """Estimate total processing time based on audio duration
         
-        Simple linear model: processing_time = 15 + duration * 0.4
-        (15 seconds base + 40% of audio duration)
+        More accurate model: processing_time = 12 + duration * 0.35
+        (12 seconds base overhead + 35% of audio duration)
         
         Args:
             duration_seconds: Audio file duration in seconds
@@ -137,10 +137,10 @@ class AudioProcessor:
         Returns:
             Formatted time estimate string
         """
-        # Simple formula based on empirical observations
-        # Base overhead: 15 seconds (download, convert, send)
-        # Processing rate: ~40% of audio duration
-        total_estimate = 15 + (duration_seconds * 0.4)
+        # Updated formula based on 3-second pause reduction
+        # Base overhead: 12 seconds (download, convert, send)
+        # Processing rate: ~35% of audio duration
+        total_estimate = 12 + (duration_seconds * 0.35)
         
         if total_estimate < 60:
             return f"~{int(total_estimate)} секунд"
@@ -231,8 +231,8 @@ class AudioProcessor:
                     chat_id, status_message_id, 
                     f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}"
                 )
-                # Give user 5 seconds to read the estimate
-                time.sleep(5)
+                # Give user 3 seconds to read the estimate (non-blocking would require major refactoring)
+                time.sleep(3)
             
             # Download file
             tg_file_path = self.telegram.get_file_path(file_id)
@@ -291,6 +291,23 @@ class AudioProcessor:
                         os.remove(local_audio_path)
                         gc.collect()  # Force garbage collection
             
+            # Get actual duration and audio info from FFmpeg before transcribing
+            actual_duration = None
+            audio_format = None
+            audio_codec = None
+            audio_sample_rate = None
+            audio_bitrate = None
+            if self.audio_service and converted_mp3_path:
+                audio_info = self.audio_service.get_audio_info(converted_mp3_path)
+                if audio_info:
+                    actual_duration = audio_info.get('duration', 0)
+                    audio_format = audio_info.get('format', 'unknown')
+                    audio_codec = audio_info.get('codec', 'unknown')
+                    audio_sample_rate = audio_info.get('sample_rate', 0)
+                    audio_bitrate = audio_info.get('bit_rate', 0)
+                    logging.info(f"FFmpeg reported duration: {actual_duration}s vs Telegram duration: {duration}s")
+                    logging.info(f"Audio info: format={audio_format}, codec={audio_codec}, sample_rate={audio_sample_rate}, bitrate={audio_bitrate}")
+            
             # Stage 3: Transcribing
             stage = 3
             self.update_job_status(job_id, 'processing', 'transcribing')
@@ -327,11 +344,26 @@ class AudioProcessor:
             # Format text
             formatted_text = self.format_text_with_gemini(transcribed_text)
             
+            # Update progress after formatting
+            if status_message_id:
+                progress = self.calculate_progress(stage, 0.8)
+                self.telegram.send_progress_update(
+                    chat_id, status_message_id, 
+                    "Подготавливаю результат...", progress
+                )
+            
             # Skip intermediate updates - go directly to sending result
             # because _send_result_to_user will edit or delete the message anyway
             
-            # Log success
-            self._log_transcription_attempt(user_id, user_name, file_size, duration, 'success', len(formatted_text))
+            # Calculate processing time
+            processing_time = int(time.time() - self.start_time) if self.start_time else None
+            
+            # Log success with both durations and additional metadata
+            self._log_transcription_attempt(user_id, user_name, file_size, duration, 'success', len(formatted_text), 
+                                          telegram_duration=duration, ffmpeg_duration=actual_duration,
+                                          audio_format=audio_format, audio_codec=audio_codec,
+                                          audio_sample_rate=audio_sample_rate, audio_bitrate=audio_bitrate,
+                                          processing_time=processing_time)
             
             # Send result first (this will edit/delete the status message)
             self._send_result_to_user(user_id, chat_id, formatted_text, status_message_id)
@@ -340,12 +372,16 @@ class AudioProcessor:
             result = {
                 'transcribed_text': transcribed_text,
                 'formatted_text': formatted_text,
-                'char_count': len(formatted_text)
+                'char_count': len(formatted_text),
+                'telegram_duration': duration,
+                'ffmpeg_duration': actual_duration
             }
             self.update_job_status(job_id, 'completed', result=result)
             
             # Deduct minutes after successful processing (for all users, including owner)
-            duration_minutes = max(1, (duration + 59) // 60)  # Round up to nearest minute
+            # Use FFmpeg duration if available as it's more accurate
+            billing_duration = int(actual_duration) if actual_duration else duration
+            duration_minutes = max(1, (billing_duration + 59) // 60)  # Round up to nearest minute
             if self.firestore_service:
                 # Update user balance
                 user_ref = self.db.collection('users').document(str(user_id))
@@ -391,7 +427,11 @@ class AudioProcessor:
                 self.telegram.edit_message_text(chat_id, status_message_id, error_msg)
                     
     def _log_transcription_attempt(self, user_id: int, user_name: str, file_size: int, 
-                                  duration: int, status: str, char_count: int = 0):
+                                  duration: int, status: str, char_count: int = 0,
+                                  telegram_duration: int = None, ffmpeg_duration: float = None,
+                                  audio_format: str = None, audio_codec: str = None,
+                                  audio_sample_rate: int = None, audio_bitrate: int = None,
+                                  processing_time: int = None):
         """Log transcription attempt to Firestore"""
         try:
             log_data = {
@@ -403,6 +443,22 @@ class AudioProcessor:
                 'status': status,
                 'char_count': char_count
             }
+            # Add new duration fields if available
+            if telegram_duration is not None:
+                log_data['telegram_duration'] = telegram_duration
+            if ffmpeg_duration is not None:
+                log_data['ffmpeg_duration'] = int(ffmpeg_duration)  # Store as int seconds
+            # Add audio metadata if available
+            if audio_format:
+                log_data['audio_format'] = audio_format
+            if audio_codec:
+                log_data['audio_codec'] = audio_codec
+            if audio_sample_rate:
+                log_data['audio_sample_rate'] = audio_sample_rate
+            if audio_bitrate:
+                log_data['audio_bitrate'] = audio_bitrate
+            if processing_time is not None:
+                log_data['processing_time'] = processing_time
             if self.firestore_service:
                 self.firestore_service.log_transcription(log_data)
             else:

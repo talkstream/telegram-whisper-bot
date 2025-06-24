@@ -607,11 +607,12 @@ def get_average_audio_length_last_30_days(user_id_str):
         count = 0
         for doc in docs:
             data = doc.to_dict()
-            doc_duration = data.get('duration', 0)
+            # Use FFmpeg duration if available, otherwise fall back to duration
+            doc_duration = data.get('ffmpeg_duration', data.get('duration', 0))
             retrieved_doc_timestamps.append(data.get('timestamp')) 
             total_duration += doc_duration
             count += 1
-            logging.info(f"AVG_LEN_LOG: Doc {count}: duration={doc_duration}s ({doc_duration/60:.1f}m)")
+            logging.info(f"AVG_LEN_LOG: Doc {count}: duration={doc_duration}s ({doc_duration/60:.1f}m), ffmpeg={data.get('ffmpeg_duration')}, telegram={data.get('telegram_duration')}")
         logging.info(f"AVG_LEN_LOG: Found {count} successful logs for user {user_id_str} in last 30 days. Total duration: {total_duration}s, Average: {total_duration/count if count > 0 else 0:.1f}s")
         if count > 0:
             avg_seconds = total_duration / count
