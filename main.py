@@ -1509,6 +1509,68 @@ def handle_health(request):
     """Handle health check requests"""
     return "healthy", 200
 
+# Automatic cleanup handler
+def handle_cleanup_stuck_jobs(request):
+    """Handle automatic cleanup of stuck jobs via cron"""
+    try:
+        # Only allow requests from App Engine cron
+        if request.headers.get('X-Appengine-Cron') != 'true':
+            logging.warning("Cleanup request from non-cron source")
+            return "Forbidden", 403
+        
+        # Initialize if needed
+        if not initialize():
+            logging.error("Failed to initialize for cleanup")
+            return "Failed to initialize", 500
+        
+        if not firestore_service:
+            logging.error("Firestore service not available for cleanup")
+            return "Service unavailable", 503
+        
+        # Get stuck jobs (older than 1 hour)
+        stuck_jobs = firestore_service.get_stuck_jobs(hours=1)
+        
+        if not stuck_jobs:
+            logging.info("No stuck jobs found during automatic cleanup")
+            return "OK - No stuck jobs", 200
+        
+        # Log detailed information about stuck jobs before cleanup
+        logging.warning(f"Found {len(stuck_jobs)} stuck jobs during automatic cleanup")
+        
+        for job in stuck_jobs:
+            job_data = job.to_dict()
+            logging.warning(f"Stuck job details - ID: {job.id}, "
+                          f"User: {job_data.get('user_id', 'unknown')}, "
+                          f"Status: {job_data.get('status')}, "
+                          f"Duration: {job_data.get('duration', 0)}s, "
+                          f"Created: {job_data.get('created_at')}, "
+                          f"File ID: {job_data.get('file_id', 'unknown')[:20]}..., "
+                          f"File Size: {job_data.get('file_size', 0)} bytes")
+        
+        # Clean up stuck jobs
+        cleaned_count, total_duration = firestore_service.cleanup_stuck_jobs(hours=1)
+        
+        summary = f"Automatic cleanup completed: {cleaned_count} jobs cleaned, " \
+                 f"total duration: {total_duration}s ({total_duration/60:.1f} min)"
+        logging.info(summary)
+        
+        # Notify admin if significant number of stuck jobs
+        if cleaned_count >= 5 and OWNER_ID and SECRETS_LOADED:
+            try:
+                send_message(OWNER_ID, 
+                    f"🔧 Автоматическая очистка выполнена\n\n"
+                    f"Удалено зависших задач: {cleaned_count}\n"
+                    f"Общая длительность: {total_duration/60:.1f} мин.\n\n"
+                    f"Проверьте логи для деталей.")
+            except Exception as e:
+                logging.error(f"Failed to notify admin about cleanup: {e}")
+        
+        return f"OK - {summary}", 200
+        
+    except Exception as e:
+        logging.exception(f"Error during automatic cleanup: {e}")
+        return "Internal Server Error", 500
+
 # Import Flask for WSGI compatibility
 from flask import Flask, request
 
@@ -1530,6 +1592,11 @@ def health():
 def webhook():
     """Handle Telegram webhook"""
     return handle_telegram_webhook(request)
+
+@app.route('/cleanup_stuck_jobs')
+def cleanup_stuck_jobs():
+    """Handle automatic cleanup of stuck jobs"""
+    return handle_cleanup_stuck_jobs(request)
 
 # For local testing
 if __name__ == '__main__':

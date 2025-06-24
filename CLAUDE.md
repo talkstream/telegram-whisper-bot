@@ -39,7 +39,9 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 - `/remove_user` - Remove user from system
 - `/stat` - Show usage statistics
 - `/cost` - Calculate processing costs
-- `/flush` - Clean up stuck jobs (pending/processing for >1 hour)
+- `/status` - Show current queue status
+- `/batch` - Show batch queue status
+- `/flush` - Clean stuck jobs (>1 hour old)
 
 ## Settings
 Users can customize their experience through the following commands:
@@ -245,6 +247,12 @@ gcloud functions deploy audio-processor \
   - Added proper Russian text declensions
   - Fixed critical parse_mode error
   - Added Gemini retry logic
+- ✅ Added automatic stuck job cleanup (June 25, 2025):
+  - Added /flush admin command for manual cleanup
+  - Automatic cleanup runs every 30 minutes via cron
+  - Detailed logging of stuck jobs before cleanup
+  - Admin notification if 5+ jobs are stuck
+  - Fixed missing user_name in job documents
 
 ## Known Issues to Address Next Time
 1. **Inline keyboards investigation** - Could try implementing them again now that HTML parsing is fixed

@@ -10,3 +10,9 @@ cron:
   schedule: every 2 minutes
   retry_parameters:
     job_retry_limit: 1
+    
+- description: "Clean stuck audio jobs"
+  url: /cleanup_stuck_jobs
+  schedule: every 30 minutes
+  retry_parameters:
+    job_retry_limit: 1
