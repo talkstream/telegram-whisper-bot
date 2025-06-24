@@ -97,8 +97,8 @@ class FirestoreService:
         """Count jobs that are pending or processing"""
         # Clean up old completed jobs separately to avoid complex queries
         try:
-            from datetime import datetime, timedelta
-            cutoff_time = datetime.utcnow() - timedelta(hours=1)
+            from datetime import datetime, timedelta, timezone
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
             
             # Simple query for old completed jobs
             old_completed = self.db.collection('audio_jobs').where(
@@ -107,8 +107,17 @@ class FirestoreService:
             
             for doc in old_completed:
                 data = doc.to_dict()
-                if data.get('updated_at') and data['updated_at'] < cutoff_time:
-                    doc.reference.delete()
+                updated_at = data.get('updated_at')
+                if updated_at:
+                    # Convert Firestore timestamp to datetime if needed
+                    if hasattr(updated_at, 'timestamp'):
+                        updated_at = datetime.fromtimestamp(updated_at.timestamp(), tz=timezone.utc)
+                    elif isinstance(updated_at, datetime) and updated_at.tzinfo is None:
+                        # Make timezone-aware if it's naive
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    
+                    if updated_at < cutoff_time:
+                        doc.reference.delete()
                     
             # Simple query for old failed jobs  
             old_failed = self.db.collection('audio_jobs').where(
@@ -117,8 +126,17 @@ class FirestoreService:
             
             for doc in old_failed:
                 data = doc.to_dict()
-                if data.get('updated_at') and data['updated_at'] < cutoff_time:
-                    doc.reference.delete()
+                updated_at = data.get('updated_at')
+                if updated_at:
+                    # Convert Firestore timestamp to datetime if needed
+                    if hasattr(updated_at, 'timestamp'):
+                        updated_at = datetime.fromtimestamp(updated_at.timestamp(), tz=timezone.utc)
+                    elif isinstance(updated_at, datetime) and updated_at.tzinfo is None:
+                        # Make timezone-aware if it's naive
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    
+                    if updated_at < cutoff_time:
+                        doc.reference.delete()
         except Exception as e:
             logging.error(f"Error cleaning up old jobs: {e}")
         
