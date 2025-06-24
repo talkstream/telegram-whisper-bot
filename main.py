@@ -1250,14 +1250,14 @@ def handle_telegram_webhook(request):
                         batch_state['batch_files'] = batch_files
                         set_user_state(user_id, batch_state)
                         
-                        batch_indicator = f"📦 Пакет файлов ({len(batch_files[media_group_id])} из нескольких)\n"
+                        batch_indicator = f"📦 Файл {len(batch_files[media_group_id])} из нескольких\n"
                         
                         # For batch files after the first, don't create individual status messages
                         if len(batch_files[media_group_id]) > 1:
                             # Just send a simple confirmation
-                            simple_msg = f"📎 Файл добавлен в очередь\n"
+                            simple_msg = f"📎 Файл {len(batch_files[media_group_id])}\n"
                             if original_file_name:
-                                simple_msg += f"📄 {original_file_name}\n"
+                                simple_msg += f"{original_file_name}\n"
                             simple_msg += f"⏱ {format_duration(duration)}"
                             confirmation_msg = send_message(chat_id, simple_msg)
                             confirmation_message_id = confirmation_msg.get('result', {}).get('message_id') if confirmation_msg else None
@@ -1270,15 +1270,21 @@ def handle_telegram_webhook(request):
                                 send_message(chat_id, '❌ Ошибка: Не удалось добавить файл в очередь.')
                             return "OK", 200
                     
-                    # Create informative initial message
-                    file_info_msg = "📎 <b>Файл получен</b>\n\n"
+                    # Create cleaner initial message
                     if batch_indicator:
-                        file_info_msg += batch_indicator
+                        file_info_msg = f"{batch_indicator}"
+                    else:
+                        file_info_msg = "📎 Файл получен\n"
+                    
                     if original_file_name:
-                        file_info_msg += f"📄 Имя: {original_file_name}\n"
-                    file_info_msg += f"⏱ Длительность: {format_duration(duration)}\n"
-                    file_info_msg += f"📊 Размер: {format_size(file_size)}\n"
-                    file_info_msg += f"💳 Будет списано: {duration_minutes} мин.\n\n"
+                        file_info_msg += f"{original_file_name}\n"
+                    file_info_msg += f"⏱ {format_duration(duration)} • {format_size(file_size)}\n"
+                    file_info_msg += f"💳 Спишется {duration_minutes} мин.\n\n"
+                    
+                    # Check queue first
+                    queue_count = firestore_service.count_pending_jobs() if firestore_service else 0
+                    if queue_count > 1:
+                        file_info_msg += f"📊 В очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
                     file_info_msg += "⏳ Обрабатываю..."
                     
                     # Send initial status message
@@ -1291,13 +1297,7 @@ def handle_telegram_webhook(request):
                     if job_id:
                         logging.info(f"Audio job {job_id} published for user {user_id}")
                         
-                        # Check queue position
-                        if firestore_service:
-                            queue_count = firestore_service.count_pending_jobs()
-                            if queue_count > 1:
-                                queue_msg = file_info_msg.replace("⏳ Обрабатываю...", 
-                                    f"📊 В очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n⏳ Обрабатываю...")
-                                edit_message_text(chat_id, status_message_id, queue_msg, parse_mode="HTML")
+                        # No need to update queue info as it's already included
                     else:
                         send_message(chat_id, '❌ Ошибка: Не удалось начать обработку файла.')
                         # Refund the minutes
@@ -1308,13 +1308,12 @@ def handle_telegram_webhook(request):
                     return "OK", 200
                 
                 # Fallback to synchronous processing
-                file_info_msg = "📎 <b>Файл получен</b>\n\n"
+                file_info_msg = "📎 Файл получен\n"
                 if original_file_name:
-                    file_info_msg += f"📄 Имя: {original_file_name}\n"
-                file_info_msg += f"⏱ Длительность: {format_duration(duration)}\n"
-                file_info_msg += f"📊 Размер: {format_size(file_size)}\n"
-                file_info_msg += f"💳 Будет списано: {duration_minutes} мин.\n\n"
-                file_info_msg += "⏳ Распознаю и форматирую..."
+                    file_info_msg += f"{original_file_name}\n"
+                file_info_msg += f"⏱ {format_duration(duration)} • {format_size(file_size)}\n"
+                file_info_msg += f"💳 Спишется {duration_minutes} мин.\n\n"
+                file_info_msg += "⏳ Обрабатываю..."
                 send_message(chat_id, file_info_msg, parse_mode="HTML")
                 tg_file_path = get_file_path(file_id)
                 if not tg_file_path:
