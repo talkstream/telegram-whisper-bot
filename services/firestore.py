@@ -95,6 +95,34 @@ class FirestoreService:
         
     def count_pending_jobs(self) -> int:
         """Count jobs that are pending or processing"""
+        # Clean up old completed jobs separately to avoid complex queries
+        try:
+            from datetime import datetime, timedelta
+            cutoff_time = datetime.utcnow() - timedelta(hours=1)
+            
+            # Simple query for old completed jobs
+            old_completed = self.db.collection('audio_jobs').where(
+                filter=FieldFilter('status', '==', 'completed')
+            ).limit(50).stream()
+            
+            for doc in old_completed:
+                data = doc.to_dict()
+                if data.get('updated_at') and data['updated_at'] < cutoff_time:
+                    doc.reference.delete()
+                    
+            # Simple query for old failed jobs  
+            old_failed = self.db.collection('audio_jobs').where(
+                filter=FieldFilter('status', '==', 'failed')
+            ).limit(50).stream()
+            
+            for doc in old_failed:
+                data = doc.to_dict()
+                if data.get('updated_at') and data['updated_at'] < cutoff_time:
+                    doc.reference.delete()
+        except Exception as e:
+            logging.error(f"Error cleaning up old jobs: {e}")
+        
+        # Now count only pending/processing jobs
         query = self.db.collection('audio_jobs').where(
             filter=FieldFilter('status', 'in', ['pending', 'processing'])
         )

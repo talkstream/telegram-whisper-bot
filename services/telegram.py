@@ -279,10 +279,10 @@ def send_message(chat_id, text, parse_mode="", reply_markup=None):
     return None
 
 
-def edit_message_text(chat_id, message_id, text, reply_markup=None):
+def edit_message_text(chat_id, message_id, text, parse_mode="", reply_markup=None):
     """Legacy wrapper for edit_message_text"""
     if _telegram_service:
-        return _telegram_service.edit_message_text(chat_id, message_id, text, reply_markup=reply_markup)
+        return _telegram_service.edit_message_text(chat_id, message_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
     return None
 
 

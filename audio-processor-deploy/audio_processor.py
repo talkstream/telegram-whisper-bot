@@ -202,7 +202,41 @@ class AudioProcessor:
             
             return result
         except Exception as e:
-            logging.error(f"Error calling Gemini API: {e}")
+            error_str = str(e)
+            logging.error(f"Error calling Gemini API: {error_str}")
+            
+            # Check for rate limit error
+            if "429" in error_str or "Resource exhausted" in error_str:
+                logging.warning("Gemini API rate limit hit, waiting 30 seconds before retry...")
+                time.sleep(30)
+                
+                # Try once more with a simpler prompt
+                try:
+                    simple_prompt = f"Отформатируй этот текст, разбив на абзацы:\n{text[:3000]}"  # Limit text length
+                    response = model.generate_content(simple_prompt)
+                    result = response.text
+                    del simple_prompt, response
+                    gc.collect()
+                    return result
+                except Exception as retry_e:
+                    logging.error(f"Gemini retry also failed: {retry_e}")
+                    # Return original text with basic paragraph breaks
+                    sentences = text.split('. ')
+                    paragraphs = []
+                    current_para = []
+                    
+                    for i, sentence in enumerate(sentences):
+                        current_para.append(sentence)
+                        # Create paragraph every 3-5 sentences
+                        if len(current_para) >= 3 and (len(current_para) >= 5 or i == len(sentences) - 1):
+                            paragraphs.append('. '.join(current_para) + '.')
+                            current_para = []
+                    
+                    if current_para:
+                        paragraphs.append('. '.join(current_para) + '.')
+                    
+                    return '\n\n'.join(paragraphs)
+            
             return text
             
     def process_audio_job(self, job_data: Dict[str, Any]):

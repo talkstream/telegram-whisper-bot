@@ -589,6 +589,21 @@ def format_size(bytes_size):
     elif bytes_size < 1024**2: return f"{bytes_size/1024:.1f} KB"
     elif bytes_size < 1024**3: return f"{bytes_size/1024**2:.1f} MB"
     else: return f"{bytes_size/1024**3:.1f} GB"
+
+def pluralize_russian(number, one, two_four, many):
+    """
+    Правильное склонение существительных с числительными в русском языке
+    number: число
+    one: форма для 1 (файл)
+    two_four: форма для 2-4 (файла)
+    many: форма для 5+ (файлов)
+    """
+    if number % 10 == 1 and number % 100 != 11:
+        return f"{number} {one}"
+    elif 2 <= number % 10 <= 4 and (number % 100 < 10 or number % 100 >= 20):
+        return f"{number} {two_four}"
+    else:
+        return f"{number} {many}"
 def get_average_audio_length_last_30_days(user_id_str):
     if not db: return None
     utc_tz = pytz.utc
@@ -889,7 +904,7 @@ def handle_telegram_webhook(request):
                     user_position = firestore_service.get_user_queue_position(user_id)
                     
                     status_msg = "📊 <b>Статус очереди обработки</b>\n\n"
-                    status_msg += f"Всего в очереди: {queue_count} файлов\n"
+                    status_msg += f"Всего в очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
                     
                     if user_position:
                         status_msg += f"Ваша позиция: #{user_position}\n"
@@ -921,11 +936,11 @@ def handle_telegram_webhook(request):
                         batch_msg += f"<b>Пакет {group_id[-4:]}:</b>\n"
                         for idx, file in enumerate(files, 1):
                             batch_msg += f"  {idx}. {file['file_name']} ({format_duration(file['duration'])})\n"
-                        batch_msg += f"  Всего: {len(files)} файлов, ~{sum(f['duration_minutes'] for f in files)} мин.\n\n"
+                        batch_msg += f"  Всего: {pluralize_russian(len(files), 'файл', 'файла', 'файлов')}, ~{pluralize_russian(sum(f['duration_minutes'] for f in files), 'минута', 'минуты', 'минут')}\n\n"
                         total_files += len(files)
                         total_minutes += sum(f['duration_minutes'] for f in files)
                     
-                    batch_msg += f"<b>Итого:</b> {total_files} файлов, ~{total_minutes} минут"
+                    batch_msg += f"<b>Итого:</b> {pluralize_russian(total_files, 'файл', 'файла', 'файлов')}, ~{pluralize_russian(total_minutes, 'минута', 'минуты', 'минут')}"
                     send_message(chat_id, batch_msg, parse_mode="HTML")
                 return "OK", 200
             
@@ -1227,6 +1242,23 @@ def handle_telegram_webhook(request):
                         set_user_state(user_id, batch_state)
                         
                         batch_indicator = f"📦 Пакет файлов ({len(batch_files[media_group_id])} из нескольких)\n"
+                        
+                        # For batch files after the first, don't create individual status messages
+                        if len(batch_files[media_group_id]) > 1:
+                            # Just send a simple confirmation
+                            simple_msg = f"📎 Файл добавлен в очередь\n"
+                            if original_file_name:
+                                simple_msg += f"📄 {original_file_name}\n"
+                            simple_msg += f"⏱ {format_duration(duration)}"
+                            send_message(chat_id, simple_msg)
+                            
+                            # Publish job without status message
+                            job_id = publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name, None)
+                            if job_id:
+                                logging.info(f"Batch audio job {job_id} published for user {user_id}")
+                            else:
+                                send_message(chat_id, '❌ Ошибка: Не удалось добавить файл в очередь.')
+                            return "OK", 200
                     
                     # Create informative initial message
                     file_info_msg = "📎 <b>Файл получен</b>\n\n"
@@ -1254,7 +1286,7 @@ def handle_telegram_webhook(request):
                             queue_count = firestore_service.count_pending_jobs()
                             if queue_count > 1:
                                 queue_msg = file_info_msg.replace("⏳ Обрабатываю...", 
-                                    f"📊 В очереди: {queue_count} файлов\n⏳ Обрабатываю...")
+                                    f"📊 В очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n⏳ Обрабатываю...")
                                 edit_message_text(chat_id, status_message_id, queue_msg, parse_mode="HTML")
                     else:
                         send_message(chat_id, '❌ Ошибка: Не удалось начать обработку файла.')
