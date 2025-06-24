@@ -93,6 +93,31 @@ class FirestoreService:
         update_data['updated_at'] = firestore.SERVER_TIMESTAMP
         doc_ref.update(update_data)
         
+    def count_pending_jobs(self) -> int:
+        """Count jobs that are pending or processing"""
+        query = self.db.collection('audio_jobs').where(
+            filter=FieldFilter('status', 'in', ['pending', 'processing'])
+        )
+        return len(list(query.stream()))
+        
+    def get_user_queue_position(self, user_id: int) -> Optional[int]:
+        """Get user's position in the processing queue"""
+        # Get all pending/processing jobs ordered by creation time
+        query = self.db.collection('audio_jobs') \
+                      .where(filter=FieldFilter('status', 'in', ['pending', 'processing'])) \
+                      .order_by('created_at', direction=firestore.Query.ASCENDING)
+        
+        position = 0
+        found = False
+        for doc in query.stream():
+            position += 1
+            data = doc.to_dict()
+            if str(data.get('user_id')) == str(user_id) and not found:
+                found = True
+                return position
+                
+        return None if not found else position
+        
     # --- Trial Request Management ---
     
     def get_trial_request(self, user_id: int) -> Optional[Dict[str, Any]]:

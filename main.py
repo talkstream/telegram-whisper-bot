@@ -821,11 +821,13 @@ def handle_telegram_webhook(request):
 
 <b>Как пользоваться:</b>
 1. Просто перешлите аудиофайл или голосовое сообщение, либо пришлите файлом.
-2. Для работы сервиса вам необходимы минуты на балансе. 
+2. Можете отправить несколько файлов сразу - они будут обработаны по очереди.
+3. Для работы сервиса вам необходимы минуты на балансе. 
    - Если вы новый пользователь, отправьте команду /trial, чтобы запросить пробный доступ.
    - Узнать свой баланс: команда /balance
    - Пополнить баланс: команда /buy_minutes
    - Настройки: команда /settings
+   - Статус пакетов: команда /batch
 
 <b>Технические лимиты и рекомендации:</b>
 • <b>Макс. размер файла:</b> 20 МБ (ограничение Telegram).
@@ -869,6 +871,52 @@ def handle_telegram_webhook(request):
                     send_message(chat_id, "Вы еще не зарегистрированы. Пожалуйста, отправьте /start или /trial, чтобы запросить доступ.")
                 return "OK", 200
 
+            if text == "/status": # Show queue status
+                if firestore_service:
+                    queue_count = firestore_service.count_pending_jobs()
+                    user_position = firestore_service.get_user_queue_position(user_id)
+                    
+                    status_msg = "📊 <b>Статус очереди обработки</b>\n\n"
+                    status_msg += f"Всего в очереди: {queue_count} файлов\n"
+                    
+                    if user_position:
+                        status_msg += f"Ваша позиция: #{user_position}\n"
+                        estimated_wait = user_position * 20  # ~20 seconds per file
+                        if estimated_wait < 60:
+                            status_msg += f"Примерное время ожидания: {estimated_wait} сек."
+                        else:
+                            status_msg += f"Примерное время ожидания: {estimated_wait // 60} мин."
+                    else:
+                        status_msg += "У вас нет файлов в очереди."
+                    
+                    send_message(chat_id, status_msg, parse_mode="HTML")
+                else:
+                    send_message(chat_id, "Информация о очереди недоступна.")
+                return "OK", 200
+            
+            if text == "/batch" or text == "/queue": # Show batch processing status
+                batch_state = get_user_state(user_id) or {}
+                batch_files = batch_state.get('batch_files', {})
+                
+                if not batch_files:
+                    send_message(chat_id, "У вас нет активных пакетов файлов для обработки.")
+                else:
+                    batch_msg = "📦 <b>Ваши пакеты файлов:</b>\n\n"
+                    total_files = 0
+                    total_minutes = 0
+                    
+                    for group_id, files in batch_files.items():
+                        batch_msg += f"<b>Пакет {group_id[-4:]}:</b>\n"
+                        for idx, file in enumerate(files, 1):
+                            batch_msg += f"  {idx}. {file['file_name']} ({format_duration(file['duration'])})\n"
+                        batch_msg += f"  Всего: {len(files)} файлов, ~{sum(f['duration_minutes'] for f in files)} мин.\n\n"
+                        total_files += len(files)
+                        total_minutes += sum(f['duration_minutes'] for f in files)
+                    
+                    batch_msg += f"<b>Итого:</b> {total_files} файлов, ~{total_minutes} минут"
+                    send_message(chat_id, batch_msg, parse_mode="HTML")
+                return "OK", 200
+            
             if text == "/settings": # Команда настроек
                 logging.info(f"Processing /settings for user {user_id}")
                 if not user_data:
@@ -1059,6 +1107,9 @@ def handle_telegram_webhook(request):
             
             balance = user_data.get('balance_minutes', 0) if user_id != OWNER_ID else float('inf')
             
+            # Check for media group (batch files)
+            media_group_id = message.get("media_group_id")
+            
             file_id, file_size, duration = None, 0, 0
             original_file_name, original_mime_type = None, None
             audio, voice, document = message.get("audio"), message.get("voice"), message.get("document")
@@ -1095,8 +1146,40 @@ def handle_telegram_webhook(request):
                 
                 # Check if async processing is enabled
                 if USE_ASYNC_PROCESSING and publisher:
+                    # Check if this is part of a batch
+                    batch_indicator = ""
+                    if media_group_id:
+                        # Track batch files in user state
+                        batch_state = get_user_state(user_id) or {}
+                        batch_files = batch_state.get('batch_files', {})
+                        
+                        if media_group_id not in batch_files:
+                            batch_files[media_group_id] = []
+                        
+                        batch_files[media_group_id].append({
+                            'file_name': original_file_name or f"Файл {len(batch_files[media_group_id]) + 1}",
+                            'duration': duration,
+                            'duration_minutes': duration_minutes
+                        })
+                        
+                        batch_state['batch_files'] = batch_files
+                        set_user_state(user_id, batch_state)
+                        
+                        batch_indicator = f"📦 Пакет файлов ({len(batch_files[media_group_id])} из нескольких)\n"
+                    
+                    # Create informative initial message
+                    file_info_msg = "📎 <b>Файл получен</b>\n\n"
+                    if batch_indicator:
+                        file_info_msg += batch_indicator
+                    if original_file_name:
+                        file_info_msg += f"📄 Имя: {original_file_name}\n"
+                    file_info_msg += f"⏱ Длительность: {format_duration(duration)}\n"
+                    file_info_msg += f"📊 Размер: {format_size(file_size)}\n"
+                    file_info_msg += f"💳 Будет списано: {duration_minutes} мин.\n\n"
+                    file_info_msg += "⏳ Обрабатываю..."
+                    
                     # Send initial status message
-                    status_msg = send_message(chat_id, '⏳ Файл получен. Обрабатываю...')
+                    status_msg = send_message(chat_id, file_info_msg, parse_mode="HTML")
                     status_message_id = status_msg.get('result', {}).get('message_id') if status_msg else None
                     
                     # Publish job to Pub/Sub
@@ -1104,7 +1187,14 @@ def handle_telegram_webhook(request):
                     
                     if job_id:
                         logging.info(f"Audio job {job_id} published for user {user_id}")
-                        # The audio_processor will handle the rest
+                        
+                        # Check queue position
+                        if firestore_service:
+                            queue_count = firestore_service.count_pending_jobs()
+                            if queue_count > 1:
+                                queue_msg = file_info_msg.replace("⏳ Обрабатываю...", 
+                                    f"📊 В очереди: {queue_count} файлов\n⏳ Обрабатываю...")
+                                edit_message_text(chat_id, status_message_id, queue_msg, parse_mode="HTML")
                     else:
                         send_message(chat_id, '❌ Ошибка: Не удалось начать обработку файла.')
                         # Refund the minutes
@@ -1115,7 +1205,14 @@ def handle_telegram_webhook(request):
                     return "OK", 200
                 
                 # Fallback to synchronous processing
-                send_message(chat_id, '✅ Файл получен. Распознаю и форматирую...')
+                file_info_msg = "📎 <b>Файл получен</b>\n\n"
+                if original_file_name:
+                    file_info_msg += f"📄 Имя: {original_file_name}\n"
+                file_info_msg += f"⏱ Длительность: {format_duration(duration)}\n"
+                file_info_msg += f"📊 Размер: {format_size(file_size)}\n"
+                file_info_msg += f"💳 Будет списано: {duration_minutes} мин.\n\n"
+                file_info_msg += "⏳ Распознаю и форматирую..."
+                send_message(chat_id, file_info_msg, parse_mode="HTML")
                 tg_file_path = get_file_path(file_id)
                 if not tg_file_path:
                     send_message(chat_id, '❌ Ошибка: Не удалось получить информацию о файле.');
