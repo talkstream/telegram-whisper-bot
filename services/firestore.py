@@ -134,6 +134,52 @@ class FirestoreService:
                 
         return None if not found else position
         
+    def get_stuck_jobs(self, hours_threshold: int = 1) -> List[Tuple[str, Dict[str, Any]]]:
+        """Get jobs that are stuck in pending/processing state for more than specified hours"""
+        from datetime import timedelta
+        import pytz
+        
+        # Calculate threshold timestamp
+        threshold_time = datetime.now(pytz.utc) - timedelta(hours=hours_threshold)
+        
+        # Query for old pending/processing jobs
+        stuck_jobs = []
+        
+        # Get pending jobs older than threshold
+        pending_query = self.db.collection('audio_jobs') \
+                             .where(filter=FieldFilter('status', 'in', ['pending', 'processing'])) \
+                             .where(filter=FieldFilter('created_at', '<', threshold_time))
+        
+        for doc in pending_query.stream():
+            data = doc.to_dict()
+            stuck_jobs.append((doc.id, data))
+            
+        return stuck_jobs
+        
+    def delete_audio_job(self, job_id: str) -> None:
+        """Delete an audio job"""
+        self.db.collection('audio_jobs').document(job_id).delete()
+        
+    def cleanup_stuck_jobs(self, hours_threshold: int = 1) -> Tuple[int, List[Dict[str, Any]]]:
+        """Clean up stuck jobs and return count and details of cleaned jobs"""
+        stuck_jobs = self.get_stuck_jobs(hours_threshold)
+        cleaned_jobs = []
+        
+        for job_id, job_data in stuck_jobs:
+            # Store job info before deletion
+            cleaned_jobs.append({
+                'job_id': job_id,
+                'user_id': job_data.get('user_id', 'Unknown'),
+                'created_at': job_data.get('created_at'),
+                'status': job_data.get('status'),
+                'duration': job_data.get('duration', 0)
+            })
+            
+            # Delete the stuck job
+            self.delete_audio_job(job_id)
+            
+        return len(cleaned_jobs), cleaned_jobs
+        
     # --- Trial Request Management ---
     
     def get_trial_request(self, user_id: int) -> Optional[Dict[str, Any]]:

@@ -39,6 +39,7 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 - `/remove_user` - Remove user from system
 - `/stat` - Show usage statistics
 - `/cost` - Calculate processing costs
+- `/flush` - Clean up stuck jobs (pending/processing for >1 hour)
 
 ## Settings
 Users can customize their experience through the following commands:
@@ -228,6 +229,10 @@ gcloud functions deploy audio-processor \
   - Escaped HTML special characters (&lt; and &gt;)
   - Fixed "can't parse entities" error that persisted for months
   - All bot commands now working correctly
+- ✅ Added /flush command for cleaning stuck jobs (December 2024):
+  - Admin command to clean up jobs stuck in pending/processing state
+  - Automatically removes jobs older than 1 hour
+  - Fixed issue where user_name wasn't stored in Firestore for jobs
 - ✅ Improved duration accuracy and timing (June 24, 2025):
   - Added dual duration tracking (Telegram metadata + FFmpeg actual)
   - Fixed average duration calculation using FFmpeg data

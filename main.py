@@ -176,6 +176,7 @@ def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name,
         firestore_service.create_audio_job(job_id, {
             'job_id': job_id,
             'user_id': str(user_id),
+            'user_name': user_name,  # Add user_name for display in /status
             'chat_id': chat_id,
             'status': 'pending',
             'created_at': firestore.SERVER_TIMESTAMP,
@@ -188,6 +189,7 @@ def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name,
         job_ref.set({
             'job_id': job_id,
             'user_id': str(user_id),
+            'user_name': user_name,  # Add user_name for display in /status
             'chat_id': chat_id,
             'status': 'pending',
             'created_at': firestore.SERVER_TIMESTAMP,
@@ -877,6 +879,7 @@ def handle_telegram_webhook(request):
 • /stat - Детальная статистика использования
 • /cost - Расчет затрат на API за текущий месяц
 • /status - Статус очереди обработки (все пользователи)
+• /flush - Очистить застрявшие задачи (старше 1 часа)
 ━━━━━━━━━━━━━━━━━━━━"""
                 send_message(chat_id, help_text_user, parse_mode="HTML")
                 return "OK", 200
@@ -1118,6 +1121,59 @@ def handle_telegram_webhook(request):
                     except Exception as e:
                         logging.error(f"Error calculating costs: {e}")
                         send_message(chat_id, "Ошибка при расчете затрат.")
+                    return "OK", 200
+                
+                if text == "/flush":
+                    # Clean up stuck jobs
+                    try:
+                        send_message(chat_id, "🔄 Проверяю застрявшие задачи...")
+                        
+                        if firestore_service:
+                            # First show what will be cleaned
+                            stuck_jobs = firestore_service.get_stuck_jobs(hours_threshold=1)
+                            
+                            if not stuck_jobs:
+                                send_message(chat_id, "✅ Нет застрявших задач. Очередь чистая.")
+                                return "OK", 200
+                            
+                            # Show details of stuck jobs
+                            details_msg = f"🔍 Найдено {len(stuck_jobs)} застрявших задач:\n\n"
+                            for job_id, job_data in stuck_jobs[:10]:  # Show max 10
+                                user_id_str = job_data.get('user_id', 'Unknown')
+                                status = job_data.get('status', 'unknown')
+                                created_at = job_data.get('created_at')
+                                duration = job_data.get('duration', 0)
+                                
+                                details_msg += f"• User ID: {user_id_str}\n"
+                                details_msg += f"  Status: {status}\n"
+                                details_msg += f"  Duration: {format_duration(duration)}\n"
+                                if created_at:
+                                    details_msg += f"  Created: {created_at}\n"
+                                details_msg += "\n"
+                            
+                            if len(stuck_jobs) > 10:
+                                details_msg += f"... и еще {len(stuck_jobs) - 10} задач\n"
+                            
+                            send_message(chat_id, details_msg)
+                            
+                            # Clean up the jobs
+                            cleaned_count, cleaned_jobs = firestore_service.cleanup_stuck_jobs(hours_threshold=1)
+                            
+                            cleanup_msg = f"🧹 <b>Очистка завершена</b>\n\n"
+                            cleanup_msg += f"Удалено задач: {cleaned_count}\n"
+                            
+                            # Calculate total duration
+                            total_duration = sum(job.get('duration', 0) for job in cleaned_jobs)
+                            if total_duration > 0:
+                                cleanup_msg += f"Общая длительность: {format_duration(total_duration)}\n"
+                            
+                            send_message(chat_id, cleanup_msg, parse_mode="HTML")
+                        else:
+                            send_message(chat_id, "❌ Firestore service не инициализирован.")
+                            
+                    except Exception as e:
+                        logging.error(f"Error during /flush command: {e}")
+                        send_message(chat_id, f"❌ Ошибка при очистке: {str(e)}")
                     return "OK", 200
                 
                 if text == "/stat":
