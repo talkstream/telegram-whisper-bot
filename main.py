@@ -852,8 +852,7 @@ def handle_telegram_webhook(request):
 • /settings - Настройки форматирования вывода
 • /code_on - Включить вывод с тегами &lt;code&gt;
 • /code_off - Выключить теги &lt;code&gt;
-• /status - Проверить статус очереди обработки
-• /batch (или /queue) - Просмотр пакетов файлов
+• /batch (или /queue) - Просмотр ваших файлов в очереди
 
 <b>Технические лимиты:</b>
 • <b>Макс. размер файла:</b> 20 МБ
@@ -876,6 +875,7 @@ def handle_telegram_webhook(request):
 <b>Статистика и финансы:</b>
 • /stat - Детальная статистика использования
 • /cost - Расчет затрат на API за текущий месяц
+• /status - Статус очереди обработки (все пользователи)
 ━━━━━━━━━━━━━━━━━━━━"""
                 send_message(chat_id, help_text_user, parse_mode="HTML")
                 return "OK", 200
@@ -898,50 +898,58 @@ def handle_telegram_webhook(request):
                     send_message(chat_id, "Вы еще не зарегистрированы. Пожалуйста, отправьте /start или /trial, чтобы запросить доступ.")
                 return "OK", 200
 
-            if text == "/status": # Show queue status
+            if text == "/status" and user_id == OWNER_ID: # Show queue status - owner only
                 if firestore_service:
                     queue_count = firestore_service.count_pending_jobs()
-                    user_position = firestore_service.get_user_queue_position(user_id)
                     
                     status_msg = "📊 <b>Статус очереди обработки</b>\n\n"
-                    status_msg += f"Всего в очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
-                    
-                    if user_position:
-                        status_msg += f"Ваша позиция: #{user_position}\n"
-                        estimated_wait = user_position * 20  # ~20 seconds per file
-                        if estimated_wait < 60:
-                            status_msg += f"Примерное время ожидания: {estimated_wait} сек."
-                        else:
-                            status_msg += f"Примерное время ожидания: {estimated_wait // 60} мин."
+                    if queue_count == 0:
+                        status_msg += "Очередь пуста."
                     else:
-                        status_msg += "У вас нет файлов в очереди."
+                        status_msg += f"Всего в очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
+                        
+                        # Show details about pending jobs
+                        pending_jobs = db.collection('audio_jobs').where(
+                            filter=FieldFilter('status', 'in', ['pending', 'processing'])
+                        ).limit(10).stream()
+                        
+                        status_msg += "\nАктивные задачи:\n"
+                        for doc in pending_jobs:
+                            job_data = doc.to_dict()
+                            status_msg += f"• {job_data.get('user_name', 'Unknown')} - {job_data.get('status', 'unknown')}\n"
                     
                     send_message(chat_id, status_msg, parse_mode="HTML")
                 else:
                     send_message(chat_id, "Информация о очереди недоступна.")
                 return "OK", 200
             
-            if text == "/batch" or text == "/queue": # Show batch processing status
-                batch_state = get_user_state(user_id) or {}
-                batch_files = batch_state.get('batch_files', {})
-                
-                if not batch_files:
-                    send_message(chat_id, "У вас нет активных пакетов файлов для обработки.")
+            if text == "/batch" or text == "/queue": # Show current processing queue
+                # Check for actually pending/processing jobs for this user
+                if firestore_service:
+                    user_jobs = db.collection('audio_jobs').where(
+                        filter=FieldFilter('user_id', '==', str(user_id))
+                    ).where(
+                        filter=FieldFilter('status', 'in', ['pending', 'processing'])
+                    ).stream()
+                    
+                    jobs_list = list(user_jobs)
+                    if not jobs_list:
+                        send_message(chat_id, "У вас нет файлов в очереди обработки.")
+                        # Clear old batch state
+                        set_user_state(user_id, None)
+                    else:
+                        queue_msg = "📋 <b>Ваши файлы в очереди:</b>\n\n"
+                        for idx, doc in enumerate(jobs_list, 1):
+                            job_data = doc.to_dict()
+                            status = job_data.get('status', 'unknown')
+                            status_emoji = "⏳" if status == 'pending' else "⚙️"
+                            duration = job_data.get('duration', 0)
+                            queue_msg += f"{idx}. {status_emoji} {format_duration(duration)} - {status}\n"
+                        
+                        queue_msg += f"\n<b>Всего:</b> {pluralize_russian(len(jobs_list), 'файл', 'файла', 'файлов')} в очереди"
+                        send_message(chat_id, queue_msg, parse_mode="HTML")
                 else:
-                    batch_msg = "📦 <b>Ваши пакеты файлов:</b>\n\n"
-                    total_files = 0
-                    total_minutes = 0
-                    
-                    for group_id, files in batch_files.items():
-                        batch_msg += f"<b>Пакет {group_id[-4:]}:</b>\n"
-                        for idx, file in enumerate(files, 1):
-                            batch_msg += f"  {idx}. {file['file_name']} ({format_duration(file['duration'])})\n"
-                        batch_msg += f"  Всего: {pluralize_russian(len(files), 'файл', 'файла', 'файлов')}, ~{pluralize_russian(sum(f['duration_minutes'] for f in files), 'минута', 'минуты', 'минут')}\n\n"
-                        total_files += len(files)
-                        total_minutes += sum(f['duration_minutes'] for f in files)
-                    
-                    batch_msg += f"<b>Итого:</b> {pluralize_russian(total_files, 'файл', 'файла', 'файлов')}, ~{pluralize_russian(total_minutes, 'минута', 'минуты', 'минут')}"
-                    send_message(chat_id, batch_msg, parse_mode="HTML")
+                    send_message(chat_id, "Информация о очереди недоступна.")
                 return "OK", 200
             
             if text == "/settings": # Команда настроек

@@ -95,56 +95,26 @@ class FirestoreService:
         
     def count_pending_jobs(self) -> int:
         """Count jobs that are pending or processing"""
-        # Clean up old completed jobs separately to avoid complex queries
+        # Count only pending/processing jobs - don't count completed ones
         try:
-            from datetime import datetime, timedelta, timezone
-            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
+            pending_count = 0
             
-            # Simple query for old completed jobs
-            old_completed = self.db.collection('audio_jobs').where(
-                filter=FieldFilter('status', '==', 'completed')
-            ).limit(50).stream()
+            # Count pending jobs
+            pending_query = self.db.collection('audio_jobs').where(
+                filter=FieldFilter('status', '==', 'pending')
+            )
+            pending_count += len(list(pending_query.stream()))
             
-            for doc in old_completed:
-                data = doc.to_dict()
-                updated_at = data.get('updated_at')
-                if updated_at:
-                    # Convert Firestore timestamp to datetime if needed
-                    if hasattr(updated_at, 'timestamp'):
-                        updated_at = datetime.fromtimestamp(updated_at.timestamp(), tz=timezone.utc)
-                    elif isinstance(updated_at, datetime) and updated_at.tzinfo is None:
-                        # Make timezone-aware if it's naive
-                        updated_at = updated_at.replace(tzinfo=timezone.utc)
-                    
-                    if updated_at < cutoff_time:
-                        doc.reference.delete()
-                    
-            # Simple query for old failed jobs  
-            old_failed = self.db.collection('audio_jobs').where(
-                filter=FieldFilter('status', '==', 'failed')
-            ).limit(50).stream()
+            # Count processing jobs
+            processing_query = self.db.collection('audio_jobs').where(
+                filter=FieldFilter('status', '==', 'processing')
+            )
+            pending_count += len(list(processing_query.stream()))
             
-            for doc in old_failed:
-                data = doc.to_dict()
-                updated_at = data.get('updated_at')
-                if updated_at:
-                    # Convert Firestore timestamp to datetime if needed
-                    if hasattr(updated_at, 'timestamp'):
-                        updated_at = datetime.fromtimestamp(updated_at.timestamp(), tz=timezone.utc)
-                    elif isinstance(updated_at, datetime) and updated_at.tzinfo is None:
-                        # Make timezone-aware if it's naive
-                        updated_at = updated_at.replace(tzinfo=timezone.utc)
-                    
-                    if updated_at < cutoff_time:
-                        doc.reference.delete()
+            return pending_count
         except Exception as e:
-            logging.error(f"Error cleaning up old jobs: {e}")
-        
-        # Now count only pending/processing jobs
-        query = self.db.collection('audio_jobs').where(
-            filter=FieldFilter('status', 'in', ['pending', 'processing'])
-        )
-        return len(list(query.stream()))
+            logging.error(f"Error counting pending jobs: {e}")
+            return 0
         
     def get_user_queue_position(self, user_id: int) -> Optional[int]:
         """Get user's position in the processing queue"""
