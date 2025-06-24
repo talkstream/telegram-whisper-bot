@@ -68,10 +68,12 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.0.4
-- Fixed /settings command HTML parsing error
-- All commands now working correctly
-- Bot responds in <1 second with proper warmup
+### Current Version: v1.0.5
+- Improved audio duration accuracy with dual tracking (Telegram + FFmpeg)
+- Reduced pause from 5 to 3 seconds for better user experience
+- Enhanced metadata collection (format, codec, bitrate, processing time)
+- Fixed average duration calculation to use FFmpeg data
+- Better progress updates during formatting stage
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
@@ -79,6 +81,7 @@ git tag -l
 - **v1.0.2** - Performance improvements and warmup optimization
 - **v1.0.3** - Critical fixes: Flask integration and services folder
 - **v1.0.4** - Fixed /settings command HTML parsing error
+- **v1.0.5** - Duration accuracy improvements and progress timing optimization
 
 ## Development
 
@@ -220,11 +223,17 @@ gcloud functions deploy audio-processor \
   - Escaped HTML special characters (&lt; and &gt;)
   - Fixed "can't parse entities" error that persisted for months
   - All bot commands now working correctly
+- ✅ Improved duration accuracy and timing (June 24, 2025):
+  - Added dual duration tracking (Telegram metadata + FFmpeg actual)
+  - Fixed average duration calculation using FFmpeg data
+  - Reduced pause from 5 to 3 seconds (saves 2 seconds per audio)
+  - Enhanced metadata collection for better diagnostics
+  - Deployed as v1.0.5
 
 ## Known Issues to Address Next Time
-1. **Average audio duration** - Shows 11.2 minutes for many entries (needs investigation)
-2. **Inline keyboards investigation** - Could try implementing them again now that HTML parsing is fixed
-3. **Progress bar timing** - Formatting stage may appear stuck longer than actual processing time
+1. **Inline keyboards investigation** - Could try implementing them again now that HTML parsing is fixed
+2. **Non-blocking pause** - Current 3-second pause still blocks processing (requires async refactoring)
+3. **Progress granularity** - Could add more sub-progress updates within each stage
 
 ## Next Development Priorities
 1. **Fix inline keyboards** - Investigate Telegram API compatibility issues
