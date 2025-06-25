@@ -33,10 +33,24 @@ class FirestoreService:
         else:
             doc_ref.set(user_data)
             
-    def update_user_balance(self, user_id: int, new_balance: float) -> Optional[Dict[str, Any]]:
-        """Update user balance and return updated user data"""
+    def update_user_balance(self, user_id: int, minutes_to_add: float) -> Optional[Dict[str, Any]]:
+        """Update user balance by adding minutes and return updated user data"""
         doc_ref = self.db.collection('users').document(str(user_id))
-        doc_ref.update({'balance_minutes': new_balance})
+        doc = doc_ref.get()
+        
+        if doc.exists:
+            # Update existing user
+            doc_ref.update({'balance_minutes': firestore.Increment(minutes_to_add)})
+        else:
+            # Create new user with initial balance
+            doc_ref.set({
+                'first_name': f'User_{user_id}',
+                'added_at': firestore.SERVER_TIMESTAMP,
+                'balance_minutes': minutes_to_add,
+                'micro_package_purchases': 0
+            })
+        
+        # Return updated data
         doc = doc_ref.get()
         return doc.to_dict() if doc.exists else None
         
@@ -164,6 +178,7 @@ class FirestoreService:
         """Clean up stuck jobs and return count and details of cleaned jobs"""
         stuck_jobs = self.get_stuck_jobs(hours_threshold)
         cleaned_jobs = []
+        refunded_users = {}
         
         for job_id, job_data in stuck_jobs:
             # Store job info before deletion
@@ -175,8 +190,21 @@ class FirestoreService:
                 'duration': job_data.get('duration', 0)
             })
             
+            # Track refunds
+            user_id = job_data.get('user_id')
+            duration = job_data.get('duration', 0)
+            if user_id and duration > 0:
+                if user_id not in refunded_users:
+                    refunded_users[user_id] = 0
+                refunded_users[user_id] += duration
+            
             # Delete the stuck job
             self.delete_audio_job(job_id)
+        
+        # Apply refunds
+        for refund_user_id, total_seconds in refunded_users.items():
+            minutes_to_refund = total_seconds / 60
+            self.update_user_balance(int(refund_user_id), minutes_to_refund)
             
         return len(cleaned_jobs), cleaned_jobs
         
@@ -355,3 +383,8 @@ class FirestoreService:
                 'added_at': firestore.SERVER_TIMESTAMP,
                 'settings': {setting_name: value}
             })
+    
+    def update_user_trial_status(self, user_id: int, status: str) -> None:
+        """Update user trial status"""
+        doc_ref = self.db.collection('users').document(str(user_id))
+        doc_ref.update({'trial_status': status})

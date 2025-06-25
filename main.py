@@ -970,7 +970,7 @@ def handle_cleanup_stuck_jobs(request):
             return "Service unavailable", 503
         
         # Get stuck jobs (older than 1 hour)
-        stuck_jobs = firestore_service.get_stuck_jobs(hours=1)
+        stuck_jobs = firestore_service.get_stuck_jobs(hours_threshold=1)
         
         if not stuck_jobs:
             logging.info("No stuck jobs found during automatic cleanup")
@@ -990,7 +990,10 @@ def handle_cleanup_stuck_jobs(request):
                           f"File Size: {job_data.get('file_size', 0)} bytes")
         
         # Clean up stuck jobs
-        cleaned_count, total_duration = firestore_service.cleanup_stuck_jobs(hours=1)
+        cleaned_count, cleaned_jobs = firestore_service.cleanup_stuck_jobs(hours_threshold=1)
+        
+        # Calculate total duration from cleaned jobs
+        total_duration = sum(job.get('duration', 0) for job in cleaned_jobs)
         
         summary = f"Automatic cleanup completed: {cleaned_count} jobs cleaned, " \
                  f"total duration: {total_duration}s ({total_duration/60:.1f} min)"

@@ -33,10 +33,24 @@ class FirestoreService:
         else:
             doc_ref.set(user_data)
             
-    def update_user_balance(self, user_id: int, new_balance: float) -> Optional[Dict[str, Any]]:
-        """Update user balance and return updated user data"""
+    def update_user_balance(self, user_id: int, minutes_to_add: float) -> Optional[Dict[str, Any]]:
+        """Update user balance by adding minutes and return updated user data"""
         doc_ref = self.db.collection('users').document(str(user_id))
-        doc_ref.update({'balance_minutes': new_balance})
+        doc = doc_ref.get()
+        
+        if doc.exists:
+            # Update existing user
+            doc_ref.update({'balance_minutes': firestore.Increment(minutes_to_add)})
+        else:
+            # Create new user with initial balance
+            doc_ref.set({
+                'first_name': f'User_{user_id}',
+                'added_at': firestore.SERVER_TIMESTAMP,
+                'balance_minutes': minutes_to_add,
+                'micro_package_purchases': 0
+            })
+        
+        # Return updated data
         doc = doc_ref.get()
         return doc.to_dict() if doc.exists else None
         
@@ -92,6 +106,107 @@ class FirestoreService:
         doc_ref = self.db.collection('audio_jobs').document(job_id)
         update_data['updated_at'] = firestore.SERVER_TIMESTAMP
         doc_ref.update(update_data)
+        
+    def count_pending_jobs(self) -> int:
+        """Count jobs that are pending or processing"""
+        # Count only pending/processing jobs - don't count completed ones
+        try:
+            pending_count = 0
+            
+            # Count pending jobs
+            pending_query = self.db.collection('audio_jobs').where(
+                filter=FieldFilter('status', '==', 'pending')
+            )
+            pending_count += len(list(pending_query.stream()))
+            
+            # Count processing jobs
+            processing_query = self.db.collection('audio_jobs').where(
+                filter=FieldFilter('status', '==', 'processing')
+            )
+            pending_count += len(list(processing_query.stream()))
+            
+            return pending_count
+        except Exception as e:
+            logging.error(f"Error counting pending jobs: {e}")
+            return 0
+        
+    def get_user_queue_position(self, user_id: int) -> Optional[int]:
+        """Get user's position in the processing queue"""
+        # Get all pending/processing jobs ordered by creation time
+        query = self.db.collection('audio_jobs') \
+                      .where(filter=FieldFilter('status', 'in', ['pending', 'processing'])) \
+                      .order_by('created_at', direction=firestore.Query.ASCENDING)
+        
+        position = 0
+        found = False
+        for doc in query.stream():
+            position += 1
+            data = doc.to_dict()
+            if str(data.get('user_id')) == str(user_id) and not found:
+                found = True
+                return position
+                
+        return None if not found else position
+        
+    def get_stuck_jobs(self, hours_threshold: int = 1) -> List[Tuple[str, Dict[str, Any]]]:
+        """Get jobs that are stuck in pending/processing state for more than specified hours"""
+        from datetime import timedelta
+        import pytz
+        
+        # Calculate threshold timestamp
+        threshold_time = datetime.now(pytz.utc) - timedelta(hours=hours_threshold)
+        
+        # Query for old pending/processing jobs
+        stuck_jobs = []
+        
+        # Get pending jobs older than threshold
+        pending_query = self.db.collection('audio_jobs') \
+                             .where(filter=FieldFilter('status', 'in', ['pending', 'processing'])) \
+                             .where(filter=FieldFilter('created_at', '<', threshold_time))
+        
+        for doc in pending_query.stream():
+            data = doc.to_dict()
+            stuck_jobs.append((doc.id, data))
+            
+        return stuck_jobs
+        
+    def delete_audio_job(self, job_id: str) -> None:
+        """Delete an audio job"""
+        self.db.collection('audio_jobs').document(job_id).delete()
+        
+    def cleanup_stuck_jobs(self, hours_threshold: int = 1) -> Tuple[int, List[Dict[str, Any]]]:
+        """Clean up stuck jobs and return count and details of cleaned jobs"""
+        stuck_jobs = self.get_stuck_jobs(hours_threshold)
+        cleaned_jobs = []
+        refunded_users = {}
+        
+        for job_id, job_data in stuck_jobs:
+            # Store job info before deletion
+            cleaned_jobs.append({
+                'job_id': job_id,
+                'user_id': job_data.get('user_id', 'Unknown'),
+                'created_at': job_data.get('created_at'),
+                'status': job_data.get('status'),
+                'duration': job_data.get('duration', 0)
+            })
+            
+            # Track refunds
+            user_id = job_data.get('user_id')
+            duration = job_data.get('duration', 0)
+            if user_id and duration > 0:
+                if user_id not in refunded_users:
+                    refunded_users[user_id] = 0
+                refunded_users[user_id] += duration
+            
+            # Delete the stuck job
+            self.delete_audio_job(job_id)
+        
+        # Apply refunds
+        for refund_user_id, total_seconds in refunded_users.items():
+            minutes_to_refund = total_seconds / 60
+            self.update_user_balance(int(refund_user_id), minutes_to_refund)
+            
+        return len(cleaned_jobs), cleaned_jobs
         
     # --- Trial Request Management ---
     
@@ -268,3 +383,8 @@ class FirestoreService:
                 'added_at': firestore.SERVER_TIMESTAMP,
                 'settings': {setting_name: value}
             })
+    
+    def update_user_trial_status(self, user_id: int, status: str) -> None:
+        """Update user trial status"""
+        doc_ref = self.db.collection('users').document(str(user_id))
+        doc_ref.update({'trial_status': status})
