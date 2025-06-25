@@ -23,6 +23,11 @@ from vertexai.generative_models import GenerativeModel
 from services import telegram as telegram_service
 from services.firestore import FirestoreService
 from services.audio import AudioService
+from services.utility import UtilityService
+from services.stats import StatsService
+
+# Import handlers
+from handlers import CommandRouter
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +59,9 @@ openai_client = None
 db = None
 firestore_service = None
 audio_service = None
+stats_service = None
 publisher = None
+command_router = None
 
 # --- КОНСТАНТЫ ДЛЯ ПАКЕТОВ (Telegram Stars) ---
 PRODUCT_PACKAGES = {
@@ -69,7 +76,7 @@ PRODUCT_PACKAGES = {
 def initialize():
     # ... (код инициализации без изменений) ...
     global SECRETS_LOADED, TELEGRAM_BOT_TOKEN, OPENAI_API_KEY
-    global TELEGRAM_API_URL, TELEGRAM_FILE_URL, openai_client, db, firestore_service, audio_service, publisher
+    global TELEGRAM_API_URL, TELEGRAM_FILE_URL, openai_client, db, firestore_service, audio_service, stats_service, publisher, command_router
     if SECRETS_LOADED: return True
     if not PROJECT_ID:
         logging.error("FATAL: GCP_PROJECT environment variable or fallback Project ID not set.")
@@ -91,6 +98,7 @@ def initialize():
         db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
         firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
         audio_service = AudioService(OPENAI_API_KEY)
+        stats_service = StatsService(db)
         vertexai.init(project=PROJECT_ID, location=LOCATION)
         
         # Initialize Pub/Sub publisher if async processing is enabled
@@ -98,38 +106,36 @@ def initialize():
             publisher = pubsub_v1.PublisherClient()
             logging.info(f"Pub/Sub publisher initialized for topic: {AUDIO_PROCESSING_TOPIC}")
         
+        # Initialize command router
+        services_dict = {
+            'firestore_service': firestore_service,
+            'stats_service': stats_service,
+            'telegram_service': telegram_service.get_telegram_service(),
+            'audio_service': audio_service,
+            'get_user_data': get_user_data,
+            'create_trial_request': create_trial_request,
+            'get_pending_trial_requests': get_pending_trial_requests,
+            'update_trial_request_status': update_trial_request_status,
+            'get_all_users_for_admin': get_all_users_for_admin,
+            'set_user_state': set_user_state,
+            'UtilityService': UtilityService,
+            'db': db
+        }
+        
+        constants_dict = {
+            'OWNER_ID': OWNER_ID,
+            'TRIAL_MINUTES': TRIAL_MINUTES,
+            'PRODUCT_PACKAGES': PRODUCT_PACKAGES
+        }
+        
+        command_router = CommandRouter(services_dict, constants_dict)
+        
         SECRETS_LOADED = True
         logging.info("Initialization successful (Secrets, Firestore & Vertex AI).")
         return True
     except Exception as e:
         logging.exception(f"FATAL: Could not initialize! Project ID: {PROJECT_ID}.")
         return False
-
-# --- ФУНКЦИЯ ФОРМАТИРОВАНИЯ GEMINI ---
-def format_text_with_gemini(text_to_format: str) -> str:
-    # ... (код без изменений) ...
-    if audio_service:
-        return audio_service.format_text_with_gemini(text_to_format)
-    # Fallback to legacy implementation
-    try:
-        model = GenerativeModel("gemini-2.5-flash")
-        prompt = f"""
-        Твоя задача — отформатировать следующий транскрипт устной речи, улучшив его читаемость, но полностью сохранив исходный смысл, стиль и лексику автора.
-        1.  **Формирование абзацев:** Объединяй несколько (обычно от 2 до 5) связанных по теме предложений в один абзац. Начинай новый абзац только при явной смене микро-темы или при переходе к новому аргументу в рассуждении. Избегай создания слишком коротких абзацев из одного предложения.
-        2.  **Обработка предложений:** Сохраняй оригинальную структуру предложений. Вмешивайся и разбивай предложение на несколько частей только в тех случаях, когда оно становится **аномально длинным и громоздким** для чтения из-за обилия придаточных частей или перечислений.
-        3.  **Строгое сохранение контента:** Категорически запрещено изменять слова, добавлять что-либо от себя или делать выводы. Твоя работа — это работа редактора-форматировщика, а не копирайтера. Сохрани исходный текст в максимальной близости к оригиналу, изменив только разбивку на абзацы и, в редких случаях, структуру самых длинных предложений.
-        Исходный текст для обработки:
-        ---
-        {text_to_format}
-        ---
-        """
-        response = model.generate_content(prompt)
-        formatted_text = response.text
-        logging.info("Successfully formatted text with Gemini.")
-        return formatted_text
-    except Exception as e:
-        logging.error(f"Error calling Gemini API: {e}")
-        return text_to_format
 
 # --- РАБОТА С TELEGRAM API ---
 # Import functions from telegram service for backward compatibility
@@ -140,27 +146,6 @@ from services.telegram import (
     get_file_path,
     download_file
 )
-
-# --- РАБОТА С OPENAI ---
-def transcribe_audio(audio_path): # ИЗМЕНЕНИЕ: используем кортеж с именем файла
-    if audio_service:
-        return audio_service.transcribe_audio(audio_path)
-    # Fallback to legacy implementation
-    if not SECRETS_LOADED or not openai_client: return None
-    try:
-        with open(audio_path, "rb") as audio_file:
-            file_tuple = (os.path.basename(audio_path), audio_file)
-            transcription = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=file_tuple,
-                language="ru",
-                response_format="json"
-            )
-        logging.info("Transcription successful.")
-        return transcription.text
-    except Exception as e: 
-        logging.error(f"Error during transcription: {e}")
-    return None
 
 # --- РАБОТА С PUB/SUB ---
 def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name, status_message_id=None, is_batch_confirmation=False):
@@ -232,12 +217,9 @@ def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name,
 # --- РАБОТА С FIRESTORE ---
 # ... (все функции без изменений) ...
 def get_user_data(user_id):
-    if firestore_service:
-        return firestore_service.get_user(user_id)
-    # Fallback to legacy db
-    doc_ref = db.collection('users').document(str(user_id))
-    doc = doc_ref.get()
-    return doc.to_dict() if doc.exists else None
+    if not firestore_service:
+        return None
+    return firestore_service.get_user(user_id)
 def create_or_update_user(user_id, name, balance_minutes_to_add=0, is_trial_approved=False, purchased_micro_package=False):
     # TODO: Migrate this complex function to use firestore_service when ready
     doc_ref = db.collection('users').document(str(user_id))
@@ -269,261 +251,133 @@ def create_or_update_user(user_id, name, balance_minutes_to_add=0, is_trial_appr
 def set_user_state(user_id, state_data=None):
     if firestore_service:
         firestore_service.set_user_state(user_id, state_data)
-    else:
-        doc_ref = db.collection('user_states').document(str(user_id))
-        if state_data: doc_ref.set(state_data if isinstance(state_data, dict) else {'state': state_data})
-        else: doc_ref.delete()
 def get_user_state(user_id):
-    if firestore_service:
-        return firestore_service.get_user_state(user_id)
-    doc_ref = db.collection('user_states').document(str(user_id))
-    doc = doc_ref.get()
-    return doc.to_dict() if doc.exists else None
+    if not firestore_service:
+        return None
+    return firestore_service.get_user_state(user_id)
 def get_all_users_for_admin():
-    if firestore_service:
-        return firestore_service.get_all_users()
-    users_list = []
-    docs = db.collection('users').stream()
-    for doc in docs:
-        data = doc.to_dict()
-        users_list.append({
-            'id': doc.id,
-            'name': data.get('first_name', f'ID_{doc.id}'),
-            'balance': data.get('balance_minutes', 0)
-        })
-    return users_list
+    if not firestore_service:
+        return []
+    return firestore_service.get_all_users()
 def remove_user_from_system(user_id):
     if firestore_service:
         firestore_service.delete_user(user_id)
-    else:
-        db.collection('users').document(str(user_id)).delete()
-        db.collection('user_states').document(str(user_id)).delete()
-        trial_req_ref = db.collection('trial_requests').document(str(user_id))
-        if trial_req_ref.get().exists:
-            trial_req_ref.delete()
 def log_transcription_attempt(user_id, name, size, duration_secs, status, char_count=0):
-    if firestore_service:
-        try:
-            firestore_service.log_transcription({
-                'user_id': str(user_id),
-                'editor_name': name,
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'file_size': size,
-                'duration': duration_secs,
-                'status': status,
-                'char_count': char_count
-            })
-            logging.info(f"Logged attempt for {user_id}: {status}")
-        except Exception as e:
-            logging.error(f"Error logging attempt for {user_id}: {e}")
-    elif db:
-        try:
-            log_ref = db.collection('transcription_logs').document()
-            log_ref.set({
-                'user_id': str(user_id),
-                'editor_name': name,
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'file_size': size,
-                'duration': duration_secs,
-                'status': status,
-                'char_count': char_count
-            })
-            logging.info(f"Logged attempt for {user_id}: {status}")
-        except Exception as e:
-            logging.error(f"Error logging attempt for {user_id}: {e}")
+    if not firestore_service:
+        return
+    try:
+        firestore_service.log_transcription({
+            'user_id': str(user_id),
+            'editor_name': name,
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'file_size': size,
+            'duration': duration_secs,
+            'status': status,
+            'char_count': char_count
+        })
+        logging.info(f"Logged attempt for {user_id}: {status}")
+    except Exception as e:
+        logging.error(f"Error logging attempt for {user_id}: {e}")
 def log_payment(user_id, user_name, telegram_charge_id, provider_charge_id, stars_amount, minutes_credited, package_name):
-    if firestore_service:
-        try:
-            firestore_service.log_payment({
-                'user_id': str(user_id),
-                'user_name': user_name,
-                'telegram_payment_charge_id': telegram_charge_id,
-                'provider_payment_charge_id': provider_charge_id,
-                'stars_amount': stars_amount,
-                'minutes_credited': minutes_credited,
-                'package_name': package_name,
-                'timestamp': firestore.SERVER_TIMESTAMP
-            })
-            logging.info(f"Logged payment for user {user_id}: {stars_amount} Stars for {minutes_credited} minutes.")
-        except Exception as e:
-            logging.error(f"Error logging payment for user {user_id}: {e}")
-    elif db:
-        try:
-            log_ref = db.collection('payment_logs').document()
-            log_ref.set({
-                'user_id': str(user_id),
-                'user_name': user_name,
-                'telegram_payment_charge_id': telegram_charge_id,
-                'provider_payment_charge_id': provider_charge_id,
-                'stars_amount': stars_amount,
-                'minutes_credited': minutes_credited,
-                'package_name': package_name,
-                'timestamp': firestore.SERVER_TIMESTAMP
-            })
-            logging.info(f"Logged payment for user {user_id}: {stars_amount} Stars for {minutes_credited} minutes.")
-        except Exception as e:
-            logging.error(f"Error logging payment for user {user_id}: {e}")
+    if not firestore_service:
+        return
+    try:
+        firestore_service.log_payment({
+            'user_id': str(user_id),
+            'user_name': user_name,
+            'telegram_payment_charge_id': telegram_charge_id,
+            'provider_payment_charge_id': provider_charge_id,
+            'stars_amount': stars_amount,
+            'minutes_credited': minutes_credited,
+            'package_name': package_name,
+            'timestamp': firestore.SERVER_TIMESTAMP
+        })
+        logging.info(f"Logged payment for user {user_id}: {stars_amount} Stars for {minutes_credited} minutes.")
+    except Exception as e:
+        logging.error(f"Error logging payment for user {user_id}: {e}")
 def log_oversized_file(user_id, user_name, file_id, reported_size, file_name=None, mime_type=None):
-    if firestore_service:
-        try:
-            data_to_log = {
-                'user_id': str(user_id),
-                'user_name': user_name,
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'reported_size': reported_size
-            }
-            if file_id: data_to_log['file_id'] = file_id
-            if file_name: data_to_log['file_name'] = file_name
-            if mime_type: data_to_log['mime_type'] = mime_type
-            firestore_service.log_oversized_file(data_to_log)
-            logging.info(f"Logged oversized file from user {user_id}, size: {reported_size}")
-        except Exception as e:
-            logging.error(f"Error logging oversized file for user {user_id}: {e}")
-    elif db:
-        try:
-            log_ref = db.collection('oversized_files_log').document()
-            data_to_log = {
-                'user_id': str(user_id),
-                'user_name': user_name,
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'reported_size': reported_size
-            }
-            if file_id: data_to_log['file_id'] = file_id
-            if file_name: data_to_log['file_name'] = file_name
-            if mime_type: data_to_log['mime_type'] = mime_type
-            log_ref.set(data_to_log)
-            logging.info(f"Logged oversized file from user {user_id}, size: {reported_size}")
-        except Exception as e:
-            logging.error(f"Error logging oversized file for user {user_id}: {e}")
+    if not firestore_service:
+        return
+    try:
+        data_to_log = {
+            'user_id': str(user_id),
+            'user_name': user_name,
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'reported_size': reported_size
+        }
+        if file_id: data_to_log['file_id'] = file_id
+        if file_name: data_to_log['file_name'] = file_name
+        if mime_type: data_to_log['mime_type'] = mime_type
+        firestore_service.log_oversized_file(data_to_log)
+        logging.info(f"Logged oversized file from user {user_id}, size: {reported_size}")
+    except Exception as e:
+        logging.error(f"Error logging oversized file for user {user_id}: {e}")
 
 # --- TRIAL REQUESTS HELPERS ---
 def create_trial_request(user_id, user_name):
-    if firestore_service:
-        trial_request = firestore_service.get_trial_request(user_id)
-        if not trial_request or trial_request.get('status') == 'denied_can_reapply':
-            firestore_service.create_trial_request(user_id, {
-                'user_id': str(user_id),
-                'user_name': user_name,
-                'request_timestamp': firestore.SERVER_TIMESTAMP,
-                'status': 'pending'
-            })
-            return True
-        current_status = trial_request.get('status')
-        if current_status in ['pending', 'pending_reconsideration']:
-            return "already_pending"
-        if current_status == 'approved':
-            return "already_approved"
+    if not firestore_service:
         return False
-    else:
-        doc_ref = db.collection('trial_requests').document(str(user_id))
-        doc = doc_ref.get()
-        if not doc.exists or doc.to_dict().get('status') == 'denied_can_reapply':
-            doc_ref.set({
-                'user_id': str(user_id),
-                'user_name': user_name,
-                'request_timestamp': firestore.SERVER_TIMESTAMP,
-                'status': 'pending'
-            })
-            return True
-        current_status = doc.to_dict().get('status')
-        if current_status in ['pending', 'pending_reconsideration']:
-            return "already_pending"
-        if current_status == 'approved':
-            return "already_approved"
-        return False
+    trial_request = firestore_service.get_trial_request(user_id)
+    if not trial_request or trial_request.get('status') == 'denied_can_reapply':
+        firestore_service.create_trial_request(user_id, {
+            'user_id': str(user_id),
+            'user_name': user_name,
+            'request_timestamp': firestore.SERVER_TIMESTAMP,
+            'status': 'pending'
+        })
+        return True
+    current_status = trial_request.get('status')
+    if current_status in ['pending', 'pending_reconsideration']:
+        return "already_pending"
+    if current_status == 'approved':
+        return "already_approved"
+    return False
 def get_pending_trial_requests():
-    if firestore_service:
-        trial_requests = firestore_service.get_pending_trial_requests(limit=5)
-        requests = []
-        for user_id_str, data in trial_requests:
-            requests.append({
-                'id': user_id_str,
-                'user_name': data.get('user_name'),
-                'user_id_str': data.get('user_id_str'),
-                'timestamp': data.get('timestamp')
-            })
-        return requests
-    else:
-        requests = []
-        docs = db.collection('trial_requests') \
-                 .where(filter=FieldFilter('status', '==', 'pending')) \
-                 .order_by('request_timestamp', direction=firestore.Query.ASCENDING) \
-                 .limit(5) \
-                 .stream()
-        for doc in docs:
-            data = doc.to_dict()
-            requests.append({
-                'id': doc.id,
-                'user_name': data.get('user_name'),
-                'user_id_str': data.get('user_id'),
-                'timestamp': data.get('request_timestamp')
-            })
-        return requests
+    if not firestore_service:
+        return []
+    trial_requests = firestore_service.get_pending_trial_requests(limit=5)
+    requests = []
+    for user_id_str, data in trial_requests:
+        requests.append({
+            'id': user_id_str,
+            'user_name': data.get('user_name'),
+            'user_id_str': data.get('user_id_str'),
+            'timestamp': data.get('timestamp')
+        })
+    return requests
 def update_trial_request_status(user_id, status, admin_comment=None, reconsideration_text=None):
-    if firestore_service:
-        data_to_update = {'status': status}
-        if admin_comment: data_to_update['admin_comment'] = admin_comment
-        if reconsideration_text: data_to_update['reconsideration_text'] = reconsideration_text
-        firestore_service.update_trial_request(user_id, data_to_update)
-    else:
-        doc_ref = db.collection('trial_requests').document(str(user_id))
-        data_to_update = {'status': status, 'last_update_timestamp': firestore.SERVER_TIMESTAMP}
-        if admin_comment: data_to_update['admin_comment'] = admin_comment
-        if reconsideration_text: data_to_update['reconsideration_text'] = reconsideration_text
-        doc_ref.update(data_to_update)
+    if not firestore_service:
+        return
+    data_to_update = {'status': status}
+    if admin_comment: data_to_update['admin_comment'] = admin_comment
+    if reconsideration_text: data_to_update['reconsideration_text'] = reconsideration_text
+    firestore_service.update_trial_request(user_id, data_to_update)
 
 # --- NOTIFICATION HELPER ---
 def check_and_notify_pending_trials(force_check=False):
-    if not (db or firestore_service) or not OWNER_ID or not SECRETS_LOADED : return
-    now = datetime.now(pytz.utc)
+    if not firestore_service or not OWNER_ID or not SECRETS_LOADED:
+        return
     
-    if firestore_service:
-        last_notified_ts = firestore_service.get_last_trial_notification_timestamp()
-        if not force_check and last_notified_ts and (now - last_notified_ts).total_seconds() < MIN_NOTIFICATION_INTERVAL_SECONDS:
-            return
-        
-        try:
-            if force_check:
-                all_pending_docs = firestore_service.get_all_pending_trial_requests()
-                count = len(all_pending_docs)
-                if count > 0:
-                    send_message(OWNER_ID, f"🔔 Ежедневное напоминание: Есть необработанные заявки на пробный доступ ({count} шт.). Для просмотра: /review_trials")
-                    firestore_service.update_last_trial_notification_timestamp(daily_check=True)
-            else:
-                # For new notifications, we'd need to implement filtered query in service
-                # For now, use the get_pending_trial_requests and check manually
-                pending_requests = firestore_service.get_pending_trial_requests(limit=1)
-                if pending_requests:
-                    send_message(OWNER_ID, "🔔 Появились новые заявки на пробный доступ! Для просмотра: /review_trials")
-                    firestore_service.update_last_trial_notification_timestamp()
-        except Exception as e:
-            logging.error(f"Error checking/notifying pending trials: {e}")
-    else:
-        # Legacy implementation
-        state_ref = db.collection('internal_bot_state').document(LAST_TRIAL_NOTIFICATION_TIMESTAMP_DOC_ID)
-        state_doc = state_ref.get()
-        last_notified_ts = None
-        if state_doc.exists:
-            last_notified_ts = state_doc.to_dict().get('timestamp')
-        if not force_check and last_notified_ts and (now - last_notified_ts).total_seconds() < MIN_NOTIFICATION_INTERVAL_SECONDS:
-            return
-        try:
-            pending_requests_query = db.collection('trial_requests').where(filter=FieldFilter('status', '==', 'pending'))
-            if last_notified_ts and not force_check:
-                pending_requests_query = pending_requests_query.where(filter=FieldFilter('request_timestamp', '>', last_notified_ts))
-            if force_check:
-                all_pending_docs = list(db.collection('trial_requests').where(filter=FieldFilter('status', '==', 'pending')).stream())
-                count = len(all_pending_docs)
-                if count > 0:
-                     send_message(OWNER_ID, f"🔔 Ежедневное напоминание: Есть необработанные заявки на пробный доступ ({count} шт.). Для просмотра: /review_trials")
-                     state_ref.set({'timestamp': firestore.SERVER_TIMESTAMP, 'daily_check_done': True}, merge=True)
-            else:
-                pending_docs = list(pending_requests_query.limit(1).stream())
-                if pending_docs:
-                    send_message(OWNER_ID, "🔔 Появились новые заявки на пробный доступ! Для просмотра: /review_trials")
-                    state_ref.set({'timestamp': firestore.SERVER_TIMESTAMP}, merge=True)
-        except Exception as e:
-            logging.error(f"Error checking/notifying pending trials: {e}")
+    now = datetime.now(pytz.utc)
+    last_notified_ts = firestore_service.get_last_trial_notification_timestamp()
+    
+    if not force_check and last_notified_ts and (now - last_notified_ts).total_seconds() < MIN_NOTIFICATION_INTERVAL_SECONDS:
+        return
+    
+    try:
+        if force_check:
+            all_pending_docs = firestore_service.get_all_pending_trial_requests()
+            count = len(all_pending_docs)
+            if count > 0:
+                send_message(OWNER_ID, f"🔔 Ежедневное напоминание: Есть необработанные заявки на пробный доступ ({count} шт.). Для просмотра: /review_trials")
+                firestore_service.update_last_trial_notification_timestamp(daily_check=True)
+        else:
+            pending_requests = firestore_service.get_pending_trial_requests(limit=1)
+            if pending_requests:
+                send_message(OWNER_ID, "🔔 Появились новые заявки на пробный доступ! Для просмотра: /review_trials")
+                firestore_service.update_last_trial_notification_timestamp()
+    except Exception as e:
+        logging.error(f"Error checking/notifying pending trials: {e}")
 
 # --- UTILITY HELPERS ---
 def is_authorized(user_id, user_data_from_db): # ... (без изменений)
@@ -532,112 +386,6 @@ def is_authorized(user_id, user_data_from_db): # ... (без изменений)
         if user_data_from_db.get('trial_status') == 'approved' and user_data_from_db.get('balance_minutes', 0) <= 0: return False
         return True
     return False
-# ... (get_first_sentence, get_moscow_time_str, escape_html, get_moscow_time_ranges, format_duration, format_size - без изменений)
-def get_first_sentence(text):
-    if not text: return ""
-    match = re.search(r'^.*?[.!?](?=\s|$)', text, re.DOTALL)
-    return match.group(0) if match else text.split('\n')[0]
-def get_moscow_time_str():
-    moscow_tz = pytz.timezone("Europe/Moscow")
-    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
-    now_moscow = now_utc.astimezone(moscow_tz)
-    return now_moscow.strftime("%Y-%m-%d_%H-%M-%S")
-def escape_html(text):
-    return (text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
-def get_moscow_time_ranges():
-    moscow_tz = pytz.timezone("Europe/Moscow")
-    now_moscow = datetime.now(moscow_tz)
-    utc_tz = pytz.utc
-    today_start_msk = now_moscow.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end_msk = today_start_msk + timedelta(days=1)
-    week_start_msk = today_start_msk - timedelta(days=now_moscow.weekday())
-    week_end_msk = week_start_msk + timedelta(days=7)
-    month_start_msk = today_start_msk.replace(day=1)
-    next_month_calc = month_start_msk.replace(day=28) + timedelta(days=4)
-    month_end_msk = next_month_calc.replace(day=1) 
-    year_start_msk = today_start_msk.replace(month=1, day=1)
-    next_year_calc = year_start_msk.replace(year=year_start_msk.year + 1)
-    year_end_msk = next_year_calc
-    return {
-        "Сегодня": (today_start_msk.astimezone(utc_tz), today_end_msk.astimezone(utc_tz)),
-        "Эта неделя": (week_start_msk.astimezone(utc_tz), week_end_msk.astimezone(utc_tz)),
-        "Этот месяц": (month_start_msk.astimezone(utc_tz), month_end_msk.astimezone(utc_tz)),
-        "Этот год": (year_start_msk.astimezone(utc_tz), year_end_msk.astimezone(utc_tz)),
-    }
-def get_stats_data(start_utc, end_utc):
-    stats = {}
-    query = db.collection('transcription_logs') \
-              .where(filter=FieldFilter('timestamp', '>=', start_utc)) \
-              .where(filter=FieldFilter('timestamp', '<', end_utc))
-    docs = query.stream()
-    for doc in docs:
-        data = doc.to_dict()
-        user_id_stat = data.get('user_id')
-        if not user_id_stat: continue
-        if user_id_stat not in stats:
-            stats[user_id_stat] = {'name': data.get('editor_name', f'ID_{user_id_stat}'),'requests': 0,'failures': 0,'duration': 0,'size': 0,'chars': 0}
-        stats[user_id_stat]['requests'] += 1
-        stats[user_id_stat]['duration'] += data.get('duration', 0)
-        stats[user_id_stat]['size'] += data.get('file_size', 0)
-        stats[user_id_stat]['chars'] += data.get('char_count', 0)
-        if data.get('status') != 'success':
-            stats[user_id_stat]['failures'] += 1
-    return stats
-def format_duration(seconds):
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
-def format_size(bytes_size):
-    if bytes_size < 1024: return f"{bytes_size} B"
-    elif bytes_size < 1024**2: return f"{bytes_size/1024:.1f} KB"
-    elif bytes_size < 1024**3: return f"{bytes_size/1024**2:.1f} MB"
-    else: return f"{bytes_size/1024**3:.1f} GB"
-
-def pluralize_russian(number, one, two_four, many):
-    """
-    Правильное склонение существительных с числительными в русском языке
-    number: число
-    one: форма для 1 (файл)
-    two_four: форма для 2-4 (файла)
-    many: форма для 5+ (файлов)
-    """
-    if number % 10 == 1 and number % 100 != 11:
-        return f"{number} {one}"
-    elif 2 <= number % 10 <= 4 and (number % 100 < 10 or number % 100 >= 20):
-        return f"{number} {two_four}"
-    else:
-        return f"{number} {many}"
-def get_average_audio_length_last_30_days(user_id_str):
-    if not db: return None
-    utc_tz = pytz.utc
-    now_utc = datetime.now(utc_tz)
-    thirty_days_ago_utc = now_utc - timedelta(days=30)
-    logging.info(f"AVG_LEN_LOG: Fetching logs for user {user_id_str} between {thirty_days_ago_utc} and {now_utc}")
-    try:
-        docs_query = db.collection('transcription_logs') \
-                 .where(filter=FieldFilter('user_id', '==', user_id_str)) \
-                 .where(filter=FieldFilter('timestamp', '>=', thirty_days_ago_utc)) \
-                 .where(filter=FieldFilter('timestamp', '<=', now_utc)) \
-                 .where(filter=FieldFilter('status', '==', 'success'))
-        docs = docs_query.stream()
-        retrieved_doc_timestamps = [] 
-        total_duration = 0
-        count = 0
-        for doc in docs:
-            data = doc.to_dict()
-            # Use FFmpeg duration if available, otherwise fall back to duration
-            doc_duration = data.get('ffmpeg_duration', data.get('duration', 0))
-            retrieved_doc_timestamps.append(data.get('timestamp')) 
-            total_duration += doc_duration
-            count += 1
-            logging.info(f"AVG_LEN_LOG: Doc {count}: duration={doc_duration}s ({doc_duration/60:.1f}m), ffmpeg={data.get('ffmpeg_duration')}, telegram={data.get('telegram_duration')}")
-        logging.info(f"AVG_LEN_LOG: Found {count} successful logs for user {user_id_str} in last 30 days. Total duration: {total_duration}s, Average: {total_duration/count if count > 0 else 0:.1f}s")
-        if count > 0:
-            avg_seconds = total_duration / count
-            return math.floor(avg_seconds / 60)
-    except Exception as e:
-        logging.error(f"AVG_LEN_LOG: Error calculating average audio length for {user_id_str}: {e}")
-    return None
 
 # --- ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ ---
 def handle_telegram_webhook(request):
@@ -833,402 +581,21 @@ def handle_telegram_webhook(request):
                 send_message(user_id, "Ваш запрос на пересмотр отправлен администратору.")
                 return "OK", 200
             
-            # --- БЛОК С КОМАНДАМИ ---
-            if text == "/help": # ... (код как в предыдущем ответе с правками)
-                help_text_user = """<b>Привет!</b> Я ваш бот-помощник для транскрибации аудио в текст с последующим форматированием.
-
-<b>Как пользоваться:</b>
-1. Просто перешлите аудиофайл или голосовое сообщение, либо пришлите файлом.
-2. Можете отправить несколько файлов сразу - они будут обработаны по очереди.
-3. Для работы сервиса вам необходимы минуты на балансе.
-
-<b>Основные команды:</b>
-• /start - Начать работу с ботом
-• /help - Показать это сообщение
-• /trial - Запросить пробный доступ (15 минут)
-
-<b>Управление балансом:</b>
-• /balance - Проверить текущий баланс
-• /buy_minutes - Пополнить баланс через Telegram Stars
-
-<b>Настройки и статус:</b>
-• /settings - Настройки форматирования вывода
-• /code_on - Включить вывод с тегами &lt;code&gt;
-• /code_off - Выключить теги &lt;code&gt;
-• /batch (или /queue) - Просмотр ваших файлов в очереди
-
-<b>Технические лимиты:</b>
-• <b>Макс. размер файла:</b> 20 МБ
-• <b>Форматы:</b> MP3, MP4, M4A, WAV, WEBM, OGG
-• <b>Оптимальная длительность:</b> 7-8 минут
-
-Для особых условий и корпоративных клиентов: @nafigator
-"""
-                if user_id == OWNER_ID:
-                    help_text_user += """
-
-━━━━━━━━━━━━━━━━━━━━
-<b>🔧 Команды администратора:</b>
-
-<b>Управление пользователями:</b>
-• /review_trials - Просмотр заявок на пробный доступ
-• /credit &lt;user_id&gt; &lt;минуты&gt; - Начислить минуты пользователю
-• /remove_user - Удалить пользователя из системы
-
-<b>Статистика и финансы:</b>
-• /stat - Детальная статистика использования
-• /cost - Расчет затрат на API за текущий месяц
-• /status - Статус очереди обработки (все пользователи)
-• /flush - Очистить застрявшие задачи (старше 1 часа)
-━━━━━━━━━━━━━━━━━━━━"""
-                send_message(chat_id, help_text_user, parse_mode="HTML")
-                return "OK", 200
-
-            if text == "/balance": # ... (код как в предыдущем ответе с правками)
-                # Always get fresh user data for balance
-                fresh_user_data = get_user_data(user_id)
-                if fresh_user_data:
-                    balance = fresh_user_data.get('balance_minutes', 0)
-                    balance_message = f"Ваш текущий баланс: {math.floor(balance)} минут."
-                    logging.info(f"Balance command: user {user_id} has {balance} minutes")
-                    avg_len_minutes = get_average_audio_length_last_30_days(str(user_id))
-                    logging.info(f"Balance command: user {user_id} average length = {avg_len_minutes}")
-                    if avg_len_minutes is not None:
-                        balance_message += f"\nСредняя длина ваших аудио за последний месяц: {avg_len_minutes} мин."
-                    else:
-                        balance_message += "\nЗа последний месяц у вас не было успешных распознаваний для расчета средней длины."
-                    send_message(chat_id, balance_message)
-                else:
-                    send_message(chat_id, "Вы еще не зарегистрированы. Пожалуйста, отправьте /start или /trial, чтобы запросить доступ.")
-                return "OK", 200
-
-            if text == "/status" and user_id == OWNER_ID: # Show queue status - owner only
-                if firestore_service:
-                    queue_count = firestore_service.count_pending_jobs()
-                    
-                    status_msg = "📊 <b>Статус очереди обработки</b>\n\n"
-                    if queue_count == 0:
-                        status_msg += "Очередь пуста."
-                    else:
-                        status_msg += f"Всего в очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
-                        
-                        # Show details about pending jobs
-                        pending_jobs = db.collection('audio_jobs').where(
-                            filter=FieldFilter('status', 'in', ['pending', 'processing'])
-                        ).limit(10).stream()
-                        
-                        status_msg += "\nАктивные задачи:\n"
-                        for doc in pending_jobs:
-                            job_data = doc.to_dict()
-                            status_msg += f"• {job_data.get('user_name', 'Unknown')} - {job_data.get('status', 'unknown')}\n"
-                    
-                    send_message(chat_id, status_msg, parse_mode="HTML")
-                else:
-                    send_message(chat_id, "Информация о очереди недоступна.")
-                return "OK", 200
-            
-            if text == "/batch" or text == "/queue": # Show current processing queue
-                # Check for actually pending/processing jobs for this user
-                if firestore_service:
-                    user_jobs = db.collection('audio_jobs').where(
-                        filter=FieldFilter('user_id', '==', str(user_id))
-                    ).where(
-                        filter=FieldFilter('status', 'in', ['pending', 'processing'])
-                    ).stream()
-                    
-                    jobs_list = list(user_jobs)
-                    if not jobs_list:
-                        send_message(chat_id, "У вас нет файлов в очереди обработки.")
-                        # Clear old batch state
-                        set_user_state(user_id, None)
-                    else:
-                        queue_msg = "📋 <b>Ваши файлы в очереди:</b>\n\n"
-                        for idx, doc in enumerate(jobs_list, 1):
-                            job_data = doc.to_dict()
-                            status = job_data.get('status', 'unknown')
-                            status_emoji = "⏳" if status == 'pending' else "⚙️"
-                            duration = job_data.get('duration', 0)
-                            queue_msg += f"{idx}. {status_emoji} {format_duration(duration)} - {status}\n"
-                        
-                        queue_msg += f"\n<b>Всего:</b> {pluralize_russian(len(jobs_list), 'файл', 'файла', 'файлов')} в очереди"
-                        send_message(chat_id, queue_msg, parse_mode="HTML")
-                else:
-                    send_message(chat_id, "Информация о очереди недоступна.")
-                return "OK", 200
-            
-            if text == "/settings": # Команда настроек
-                logging.info(f"Processing /settings for user {user_id}")
-                if not user_data:
-                    logging.warning(f"No user_data for {user_id}")
-                    send_message(chat_id, "Пожалуйста, сначала отправьте /start для регистрации.")
-                    return "OK", 200
+            # --- COMMAND ROUTER ---
+            if text.startswith("/") and command_router:
+                update_data = {
+                    'text': text,
+                    'user_id': user_id,
+                    'chat_id': chat_id,
+                    'user_data': user_data,
+                    'user_name': user_name,
+                    'message': message
+                }
                 
-                # Get current settings
-                settings = firestore_service.get_user_settings(user_id) if firestore_service else {'use_code_tags': False}
-                use_code_tags = settings.get('use_code_tags', False)
-                
-                settings_text = "⚙️ Настройки\n\n"
-                settings_text += "Форматирование вывода:\n"
-                if use_code_tags:
-                    settings_text += "✅ Вывод с тегами &lt;code&gt; (моноширинный шрифт)\n\n"
-                else:
-                    settings_text += "✅ Простой текст (обычный шрифт)\n\n"
-                    
-                settings_text += "Команды:\n"
-                settings_text += "/code_on - включить теги &lt;code&gt;\n"
-                settings_text += "/code_off - выключить теги &lt;code&gt;\n"
-                
-                send_message(chat_id, settings_text, parse_mode="HTML")
-                return "OK", 200
+                result = command_router.route(update_data)
+                if result:
+                    return result
             
-            if text == "/code_on": # Включить теги code
-                if not user_data:
-                    send_message(chat_id, "Пожалуйста, сначала отправьте /start для регистрации.")
-                    return "OK", 200
-                    
-                if firestore_service:
-                    firestore_service.update_user_setting(user_id, 'use_code_tags', True)
-                send_message(chat_id, "✅ Вывод с тегами &lt;code&gt; включен", parse_mode="HTML")
-                return "OK", 200
-                
-            if text == "/code_off": # Выключить теги code
-                if not user_data:
-                    send_message(chat_id, "Пожалуйста, сначала отправьте /start для регистрации.")
-                    return "OK", 200
-                    
-                if firestore_service:
-                    firestore_service.update_user_setting(user_id, 'use_code_tags', False)
-                send_message(chat_id, "✅ Простой текст включен")
-                return "OK", 200
-            
-            if text == "/trial": # Новая команда
-                if user_data and is_authorized(user_id, user_data): # Проверяем, есть ли уже доступ
-                    send_message(chat_id, f"{user_name}, у вас уже есть доступ. Ваш баланс: {math.floor(user_data.get('balance_minutes',0))} минут.")
-                else:
-                    keyboard = {"inline_keyboard": [[{"text": "Подать заявку на пробный доступ", "callback_data": f"requesttrial_{user_id}_{user_name}"}]]}
-                    send_message(chat_id, f"Здравствуйте, {user_name}! Чтобы получить пробный доступ на {TRIAL_MINUTES} минут, пожалуйста, нажмите кнопку ниже.", reply_markup=keyboard)
-                return "OK", 200
-            
-            if text == "/buy_minutes" or text == "/top_up": # ... (код как в предыдущем ответе с правками)
-                buttons = []
-                micro_purchases_count = user_data.get("micro_package_purchases", 0) if user_data else 0
-                for pkg_id, pkg_info in PRODUCT_PACKAGES.items():
-                    if pkg_id == "micro_10" and micro_purchases_count >= pkg_info.get("purchase_limit", 3):
-                        buttons.append([{"text": f"{pkg_info['title']} (лимит исчерпан)", "callback_data": "noop_limit_reached"}])
-                        continue
-                    buttons.append([{"text": f"{pkg_info['title']} ({pkg_info['minutes']} мин) - {pkg_info['stars_amount']} звёзд", "callback_data": f"selectpkg_{pkg_id}"}])
-                reply_markup = {"inline_keyboard": buttons}
-                send_message(chat_id, "Выберите пакет для пополнения баланса:", reply_markup=reply_markup)
-                return "OK", 200
-            
-            if user_id == OWNER_ID: # Остальные админ-команды
-                # ... (/review_trials, /credit, /remove_user, /stat как были)
-                if text == "/review_trials": 
-                    pending_requests = get_pending_trial_requests()
-                    if not pending_requests: send_message(OWNER_ID, "Нет новых заявок на пробный доступ."); return "OK", 200
-                    send_message(OWNER_ID, "Новые заявки на пробный доступ (макс. 5):")
-                    for req in pending_requests:
-                        req_user_id_str = req['user_id_str']
-                        req_user_name_admin = req['user_name']
-                        keyboard = {"inline_keyboard": [[{"text": "✅ Одобрить", "callback_data": f"approvetrial_{req_user_id_str}_{req_user_name_admin}"},{"text": "❌ Отклонить", "callback_data": f"denytrial_{req_user_id_str}_{req_user_name_admin}"}]]}
-                        send_message(OWNER_ID, f"Заявка от: {req_user_name_admin} (ID: {req_user_id_str})", reply_markup=keyboard)
-                    return "OK", 200
-                if text.startswith("/credit"): 
-                    parts = text.split()
-                    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
-                        target_user_id_credit = int(parts[1])
-                        minutes_to_add = int(parts[2])
-                        target_user_data_credit = get_user_data(target_user_id_credit)
-                        target_user_name_credit = target_user_data_credit.get('first_name', f"User_{target_user_id_credit}") if target_user_data_credit else f"User_{target_user_id_credit}"
-                        create_or_update_user(target_user_id_credit, target_user_name_credit, minutes_to_add)
-                        new_balance_credit = (target_user_data_credit.get('balance_minutes', 0) if target_user_data_credit else 0) + minutes_to_add
-                        send_message(chat_id, f"✅ Успешно начислено {minutes_to_add} минут пользователю {target_user_name_credit} ({target_user_id_credit}). Новый баланс: {math.floor(new_balance_credit)} мин.")
-                        if target_user_id_credit != OWNER_ID : send_message(target_user_id_credit, f"🎉 Ваш баланс пополнен администратором! Текущий баланс: {math.floor(new_balance_credit)} минут.")
-                    else: send_message(chat_id, "Ошибка. Используйте формат: /credit <ID_пользователя> <количество_минут>")
-                    return "OK", 200
-                if text == "/remove_user":
-                    all_users = get_all_users_for_admin()
-                    if not all_users: send_message(chat_id, "Список пользователей пуст."); return "OK", 200
-                    
-                    user_list_str = "Выберите номер пользователя для удаления:\n"
-                    user_map_remove = {}
-                    for i, u_data_remove in enumerate(all_users, 1):
-                        user_list_str += f"{i}. {u_data_remove['name']} ({u_data_remove['id']}) - Баланс: {math.floor(u_data_remove['balance'])} мин.\n"
-                        user_map_remove[str(i)] = u_data_remove['id'] # <--- ИСПРАВЛЕНИЕ №1: Ключ теперь строка
-                    
-                    set_user_state(user_id, {'state': 'remove_user', 'map': user_map_remove})
-                    send_message(chat_id, user_list_str + "\nОтправьте только номер или любой другой текст для отмены.")
-                    return "OK", 200
-
-                if owner_state_doc and owner_state_doc.get('state') == 'remove_user':
-                    user_map_to_remove = owner_state_doc.get('map', {})
-                    set_user_state(user_id, None)
-                    
-                    # ИСПРАВЛЕНИЕ №2: Сравниваем строки
-                    if text.isdigit() and text in user_map_to_remove:
-                        user_to_remove_id_str = user_map_to_remove[text] # Используем text (строку) как ключ
-                        all_users_now = get_all_users_for_admin()
-                        removed_name = next((u['name'] for u in all_users_now if u['id'] == str(user_to_remove_id_str)), f"ID {user_to_remove_id_str}")
-                        remove_user_from_system(user_to_remove_id_str)
-                        send_message(chat_id, f"✅ Пользователь {removed_name} ({user_to_remove_id_str}) удален.")
-                    else:
-                        send_message(chat_id, "Отмена. Неверный номер или не число.")
-                    return "OK", 200
-                if text == "/cost":
-                    # Calculate processing costs
-                    try:
-                        # Get stats for the current month
-                        utc_tz = pytz.utc
-                        moscow_tz = pytz.timezone("Europe/Moscow")
-                        now_moscow = datetime.now(moscow_tz)
-                        month_start_msk = now_moscow.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                        month_start_utc = month_start_msk.astimezone(utc_tz)
-                        
-                        # Count successful transcriptions this month
-                        query = db.collection('transcription_logs') \
-                                  .where(filter=FieldFilter('timestamp', '>=', month_start_utc)) \
-                                  .where(filter=FieldFilter('status', '==', 'success'))
-                        
-                        docs = list(query.stream())
-                        total_minutes = 0
-                        total_chars = 0
-                        
-                        for doc in docs:
-                            data = doc.to_dict()
-                            duration = data.get('ffmpeg_duration', data.get('duration', 0))
-                            total_minutes += duration / 60
-                            total_chars += data.get('char_count', 0)
-                        
-                        # Cost estimates (rough)
-                        whisper_cost = total_minutes * 0.006  # $0.006 per minute
-                        gemini_cost = (total_chars / 1000) * 0.00025  # Rough estimate for Gemini
-                        total_cost = whisper_cost + gemini_cost
-                        
-                        cost_msg = f"""💰 <b>Расчет затрат за текущий месяц</b>
-                        
-Обработано: {len(docs)} файлов
-Общая длительность: {total_minutes:.1f} минут
-Общее количество символов: {total_chars:,}
-
-<b>Приблизительные затраты:</b>
-• Whisper API: ${whisper_cost:.2f}
-• Gemini API: ${gemini_cost:.2f}
-• <b>Итого: ${total_cost:.2f}</b>
-
-<i>Примечание: это приблизительный расчет</i>"""
-                        
-                        send_message(chat_id, cost_msg, parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"Error calculating costs: {e}")
-                        send_message(chat_id, "Ошибка при расчете затрат.")
-                    return "OK", 200
-                
-                if text == "/flush":
-                    # Clean up stuck jobs
-                    try:
-                        send_message(chat_id, "🔄 Проверяю застрявшие задачи...")
-                        
-                        if firestore_service:
-                            # First show what will be cleaned
-                            stuck_jobs = firestore_service.get_stuck_jobs(hours_threshold=1)
-                            
-                            if not stuck_jobs:
-                                send_message(chat_id, "✅ Нет застрявших задач. Очередь чистая.")
-                                return "OK", 200
-                            
-                            # Show details of stuck jobs
-                            details_msg = f"🔍 Найдено {len(stuck_jobs)} застрявших задач:\n\n"
-                            for job_id, job_data in stuck_jobs[:10]:  # Show max 10
-                                user_id_str = job_data.get('user_id', 'Unknown')
-                                status = job_data.get('status', 'unknown')
-                                created_at = job_data.get('created_at')
-                                duration = job_data.get('duration', 0)
-                                
-                                details_msg += f"• User ID: {user_id_str}\n"
-                                details_msg += f"  Status: {status}\n"
-                                details_msg += f"  Duration: {format_duration(duration)}\n"
-                                if created_at:
-                                    details_msg += f"  Created: {created_at}\n"
-                                details_msg += "\n"
-                            
-                            if len(stuck_jobs) > 10:
-                                details_msg += f"... и еще {len(stuck_jobs) - 10} задач\n"
-                            
-                            send_message(chat_id, details_msg)
-                            
-                            # Clean up the jobs
-                            cleaned_count, cleaned_jobs = firestore_service.cleanup_stuck_jobs(hours_threshold=1)
-                            
-                            cleanup_msg = f"🧹 <b>Очистка завершена</b>\n\n"
-                            cleanup_msg += f"Удалено задач: {cleaned_count}\n"
-                            
-                            # Calculate total duration
-                            total_duration = sum(job.get('duration', 0) for job in cleaned_jobs)
-                            if total_duration > 0:
-                                cleanup_msg += f"Общая длительность: {format_duration(total_duration)}\n"
-                            
-                            send_message(chat_id, cleanup_msg, parse_mode="HTML")
-                        else:
-                            send_message(chat_id, "❌ Firestore service не инициализирован.")
-                            
-                    except Exception as e:
-                        logging.error(f"Error during /flush command: {e}")
-                        send_message(chat_id, f"❌ Ошибка при очистке: {str(e)}")
-                    return "OK", 200
-                
-                if text == "/stat":
-                    logging.info(f"OWNER {user_id} initiated /stat command.")
-                    send_message(chat_id, "Собираю статистику, подождите...")
-                    logging.info("Sent 'Собираю статистику...' message.")
-                    ranges = get_moscow_time_ranges()
-                    full_report = "📊 <b>Статистика использования бота</b> 📊\n\n"
-                    logging.info(f"Generated time ranges: {ranges}")
-                    for period_name, (start_range, end_range) in ranges.items():
-                        logging.info(f"Processing period: {period_name} from {start_range} to {end_range}")
-                        period_stats = get_stats_data(start_range, end_range)
-                        logging.info(f"Stats for {period_name}: {period_stats}")
-                        full_report += f"--- <b>{period_name}</b> ---\n\n" # Отступ
-                        if not period_stats:
-                            full_report += "Нет данных за этот период.\n\n"
-                            continue
-                        for editor_id_stat, data_stat in period_stats.items():
-                            full_report += f"  👤 <b>{data_stat['name']}</b> ({editor_id_stat}):\n"
-                            full_report += f"     - Запросы: {data_stat['requests']} (Неудач: {data_stat['failures']})\n"
-                            full_report += f"     - Общая длительность: {format_duration(data_stat['duration'])}\n"
-                            avg_duration_per_request = 0
-                            successful_requests = data_stat['requests'] - data_stat['failures']
-                            if successful_requests > 0:
-                                 avg_duration_per_request = data_stat['duration'] / successful_requests
-                            full_report += f"     - Средняя длительность: {format_duration(avg_duration_per_request)}\n"
-                            full_report += f"     - Размер: {format_size(data_stat['size'])}\n"
-                            full_report += f"     - Знаков: {data_stat['chars']:,}\n\n" # Отступ
-                        # full_report += "\n" # Убрали лишний
-                    logging.info(f"Final report generated, length: {len(full_report)}. Preview: {full_report[:500]}")
-                    if len(full_report) > 4096:
-                         logging.info("Report is too long, sending as a file.")
-                         send_message(chat_id, "Отчет слишком длинный, отправляю как файл.")
-                         temp_txt_path = os.path.join('/tmp', 'stat_report.txt')
-                         report_for_file = full_report.replace('<b>','').replace('</b>','').replace('📊','').replace('👤','') # Убираем HTML для txt
-                         report_for_file = re.sub(r'--- (.*?) ---\n\n', r'\1\n\n', report_for_file) # Убираем ---
-                         with open(temp_txt_path, 'w', encoding='utf-8') as f: f.write(report_for_file)
-                         send_document(chat_id, temp_txt_path, caption="Статистика")
-                         if os.path.exists(temp_txt_path): os.remove(temp_txt_path)
-                    else:
-                        logging.info("Sending report as a message.")
-                        send_message(chat_id, full_report, parse_mode="HTML") # Используем HTML для статы
-                    logging.info("/stat command processing finished.")
-                    return "OK", 200
-
-            if text == "/start":
-                # ... (код /start как был) ...
-                if user_data:
-                    balance = user_data.get('balance_minutes', 0)
-                    if user_name and (user_data.get('first_name') != user_name or user_data.get('first_name', '').startswith("Manual_")):
-                        create_or_update_user(user_id, user_name)
-                    send_message(chat_id, f"С возвращением, {user_name}! Ваш баланс: {math.floor(balance)} мин.")
-                else:
-                    send_message(chat_id, f"Здравствуйте, {user_name}! Пожалуйста, используйте команду /trial, чтобы запросить пробный доступ.")
-                return "OK", 200
 
             # --- ПРОВЕРКА АВТОРИЗАЦИИ И ОБРАБОТКА АУДИО ---
             # ... (вся остальная логика как была, с FFmpeg)
@@ -1268,7 +635,7 @@ def handle_telegram_webhook(request):
             if file_id:
                 if file_size and file_size > MAX_TELEGRAM_FILE_SIZE:
                     log_oversized_file(user_id, user_name, file_id, file_size, original_file_name, original_mime_type)
-                    oversized_message = f"""⚠️ Файл '<b>{original_file_name or 'Без имени'}</b>' ({format_size(file_size)}) превышает лимит в 20 МБ для автоматической обработки через Telegram.
+                    oversized_message = f"""⚠️ Файл '<b>{original_file_name or 'Без имени'}</b>' ({UtilityService.format_size(file_size)}) превышает лимит в 20 МБ для автоматической обработки через Telegram.
 
 Пожалуйста, попробуйте один из следующих вариантов:
 • Сжать файл или перекодировать его в другой формат (например, MP3 с меньшим битрейтом).
@@ -1314,7 +681,7 @@ def handle_telegram_webhook(request):
                             simple_msg = f"📎 Файл {len(batch_files[media_group_id])}\n"
                             if original_file_name:
                                 simple_msg += f"{original_file_name}\n"
-                            simple_msg += f"⏱ {format_duration(duration)}"
+                            simple_msg += f"⏱ {UtilityService.format_duration(duration)}"
                             confirmation_msg = send_message(chat_id, simple_msg)
                             confirmation_message_id = confirmation_msg.get('result', {}).get('message_id') if confirmation_msg else None
                             
@@ -1334,13 +701,13 @@ def handle_telegram_webhook(request):
                     
                     if original_file_name:
                         file_info_msg += f"{original_file_name}\n"
-                    file_info_msg += f"⏱ {format_duration(duration)} • {format_size(file_size)}\n"
+                    file_info_msg += f"⏱ {UtilityService.format_duration(duration)} • {UtilityService.format_size(file_size)}\n"
                     file_info_msg += f"💳 Спишется {duration_minutes} мин.\n\n"
                     
                     # Check queue first
                     queue_count = firestore_service.count_pending_jobs() if firestore_service else 0
                     if queue_count > 1:
-                        file_info_msg += f"📊 В очереди: {pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
+                        file_info_msg += f"📊 В очереди: {UtilityService.pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
                     file_info_msg += "⏳ Обрабатываю..."
                     
                     # Send initial status message
@@ -1413,7 +780,7 @@ def handle_telegram_webhook(request):
                     log_transcription_attempt(user_id, user_name, file_size, duration, 'failure_codec')
                     return "OK", 200
 
-                transcribed_text = transcribe_audio(converted_mp3_path)
+                transcribed_text = audio_service.transcribe_audio(converted_mp3_path) if audio_service else None
                 if os.path.exists(converted_mp3_path): os.remove(converted_mp3_path)
                 
                 if transcribed_text:
@@ -1425,11 +792,11 @@ def handle_telegram_webhook(request):
                     else:
                         send_message(chat_id, f"Распознавание завершено (админ). Списано {duration_minutes} мин.")
                     
-                    formatted_text = format_text_with_gemini(transcribed_text)
+                    formatted_text = audio_service.format_text_with_gemini(transcribed_text) if audio_service else transcribed_text
                     char_count = len(formatted_text)
                     log_transcription_attempt(user_id, user_name, file_size, duration, 'success', char_count)
                     
-                    caption = get_first_sentence(formatted_text)
+                    caption = UtilityService.get_first_sentence(formatted_text)
                     if len(caption) > 1024: caption = caption[:1021] + "..."
                     
                     # Get user settings
@@ -1437,7 +804,7 @@ def handle_telegram_webhook(request):
                     use_code_tags = settings.get('use_code_tags', False)
                     
                     if len(formatted_text) > MAX_MESSAGE_LENGTH:
-                        file_name = get_moscow_time_str() + ".txt"
+                        file_name = UtilityService.get_moscow_time_str() + ".txt"
                         temp_txt_path = os.path.join('/tmp', file_name)
                         try:
                             with open(temp_txt_path, 'w', encoding='utf-8') as f: f.write(formatted_text)
@@ -1447,7 +814,7 @@ def handle_telegram_webhook(request):
                              logging.error(f"Error creating/sending txt file: {e}")
                              # Format text based on user preference
                              if use_code_tags:
-                                 error_text = f"❌ Ошибка при создании файла, отправляю как текст:\n<code>{escape_html(formatted_text[:MAX_MESSAGE_LENGTH])}...</code>"
+                                 error_text = f"❌ Ошибка при создании файла, отправляю как текст:\n<code>{UtilityService.escape_html(formatted_text[:MAX_MESSAGE_LENGTH])}...</code>"
                              else:
                                  error_text = f"❌ Ошибка при создании файла, отправляю как текст:\n{formatted_text[:MAX_MESSAGE_LENGTH]}..."
                              send_message(chat_id, error_text, "HTML" if use_code_tags else None)
@@ -1455,7 +822,7 @@ def handle_telegram_webhook(request):
                     else:
                         # Format text based on user preference
                         if use_code_tags:
-                            send_message(chat_id, f"<code>{escape_html(formatted_text)}</code>", parse_mode="HTML")
+                            send_message(chat_id, f"<code>{UtilityService.escape_html(formatted_text)}</code>", parse_mode="HTML")
                         else:
                             send_message(chat_id, formatted_text)
                 else:

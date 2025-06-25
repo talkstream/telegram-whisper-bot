@@ -8,10 +8,16 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 ### Core Components
 1. **Main Bot (main.py)**: Webhook handler for Telegram updates
 2. **Audio Processor (audio_processor.py)**: Async worker for audio processing via Pub/Sub
-3. **Services**:
+3. **Services** (services/):
    - `TelegramService`: All Telegram API operations
    - `FirestoreService`: All database operations
    - `AudioService`: Audio processing, transcription, and formatting
+   - `UtilityService`: Utility functions (formatting, text processing)
+   - `StatsService`: Statistics and analytics operations
+4. **Handlers** (handlers/):
+   - `CommandRouter`: Routes commands to appropriate handlers
+   - `user_commands.py`: User command handlers (help, balance, settings, etc.)
+   - `admin_commands.py`: Admin command handlers (status, stats, credit, etc.)
 
 ### Key Features
 - Async audio processing with Pub/Sub (can be toggled with `USE_ASYNC_PROCESSING`)
@@ -71,15 +77,13 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.0.7
-- Fixed batch processing leaving orphaned messages
-- Added pluralize_russian for proper number declensions
-- Fixed queue counter to show only pending/processing jobs
-- Made /status command admin-only
-- Changed /batch to show current queue status
-- Added Gemini API rate limit retry logic
-- Fixed timezone comparison in job cleanup
-- Fixed critical edit_message_text parse_mode error
+### Current Version: v1.0.9
+- Major code refactoring for better maintainability
+- Created service layer architecture (UtilityService, StatsService)
+- Implemented command handler system with CommandRouter
+- Reduced main.py from 1602 to 969 lines (39.5% reduction)
+- Removed all legacy database code paths
+- Better code organization and scalability
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
@@ -90,6 +94,8 @@ git tag -l
 - **v1.0.5** - Duration accuracy improvements and progress timing optimization
 - **v1.0.6** - Added /help command with full command list
 - **v1.0.7** - Multiple critical fixes (June 24, 2025)
+- **v1.0.8** - Improved UX and automatic cleanup (June 25, 2025)
+- **v1.0.9** - Major refactoring with service layer and command handlers (June 25, 2025)
 
 ## Development
 
@@ -253,6 +259,17 @@ gcloud functions deploy audio-processor \
   - Detailed logging of stuck jobs before cleanup
   - Admin notification if 5+ jobs are stuck
   - Fixed missing user_name in job documents
+- ✅ Major code refactoring (June 25, 2025):
+  - Created service layer architecture:
+    - UtilityService: Format functions (duration, size, etc.)
+    - StatsService: Statistics and analytics functions
+  - Implemented command handler system:
+    - BaseHandler abstract class for all commands
+    - Separate handler classes for each command (8 user, 7 admin)
+    - CommandRouter for routing commands to handlers
+  - Removed all legacy database code paths
+  - Reduced main.py from 1602 to 969 lines (39.5% reduction)
+  - Better code organization and maintainability
 
 ## Known Issues to Address Next Time
 1. **Inline keyboards investigation** - Could try implementing them again now that HTML parsing is fixed
