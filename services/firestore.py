@@ -77,6 +77,97 @@ class FirestoreService:
                 'balance': data.get('balance_minutes', 0)
             })
         return users
+    
+    def search_users(self, query: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Search users by name or ID"""
+        users = []
+        query_lower = query.lower().strip()
+        
+        # Check if query is a user ID
+        if query_lower.isdigit():
+            # Direct ID lookup
+            user_id = int(query_lower)
+            user_data = self.get_user(user_id)
+            if user_data:
+                users.append({
+                    'id': user_id,
+                    'name': user_data.get('first_name', f'ID_{user_id}'),
+                    'balance': user_data.get('balance_minutes', 0),
+                    'trial_status': user_data.get('trial_status', 'none'),
+                    'added_at': user_data.get('added_at'),
+                    'settings': user_data.get('settings', {}),
+                    'micro_package_purchases': user_data.get('micro_package_purchases', 0)
+                })
+        else:
+            # Search by name (case-insensitive partial match)
+            all_users = self.db.collection('users').stream()
+            for doc in all_users:
+                data = doc.to_dict()
+                user_name = data.get('first_name', '').lower()
+                if query_lower in user_name:
+                    users.append({
+                        'id': int(doc.id),
+                        'name': data.get('first_name', f'ID_{doc.id}'),
+                        'balance': data.get('balance_minutes', 0),
+                        'trial_status': data.get('trial_status', 'none'),
+                        'added_at': data.get('added_at'),
+                        'settings': data.get('settings', {}),
+                        'micro_package_purchases': data.get('micro_package_purchases', 0)
+                    })
+                    if len(users) >= limit:
+                        break
+        
+        return users
+    
+    def get_user_details(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get comprehensive user information including activity stats"""
+        user_data = self.get_user(user_id)
+        if not user_data:
+            return None
+            
+        # Get transcription stats
+        from datetime import datetime, timedelta
+        import pytz
+        now = datetime.now(pytz.utc)
+        thirty_days_ago = now - timedelta(days=30)
+        
+        # Count total transcriptions
+        total_transcriptions = 0
+        total_minutes_processed = 0
+        last_activity = None
+        
+        try:
+            # Get all transcriptions for this user
+            transcriptions = self.db.collection('transcription_logs') \
+                                  .where(filter=FieldFilter('user_id', '==', str(user_id))) \
+                                  .where(filter=FieldFilter('status', '==', 'success')) \
+                                  .order_by('timestamp', direction=firestore.Query.DESCENDING) \
+                                  .stream()
+            
+            for doc in transcriptions:
+                trans_data = doc.to_dict()
+                total_transcriptions += 1
+                total_minutes_processed += trans_data.get('duration', 0) / 60
+                
+                # Get last activity timestamp
+                if not last_activity and trans_data.get('timestamp'):
+                    last_activity = trans_data.get('timestamp')
+        except Exception as e:
+            logging.error(f"Error getting user transcription stats: {e}")
+        
+        # Compile detailed user info
+        return {
+            'id': user_id,
+            'name': user_data.get('first_name', f'ID_{user_id}'),
+            'balance': user_data.get('balance_minutes', 0),
+            'trial_status': user_data.get('trial_status', 'none'),
+            'added_at': user_data.get('added_at'),
+            'settings': user_data.get('settings', {}),
+            'micro_package_purchases': user_data.get('micro_package_purchases', 0),
+            'total_transcriptions': total_transcriptions,
+            'total_minutes_processed': round(total_minutes_processed, 1),
+            'last_activity': last_activity
+        }
         
     # --- User State Management ---
     

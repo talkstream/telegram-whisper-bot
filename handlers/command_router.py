@@ -23,7 +23,8 @@ from .admin_commands import (
     FlushCommandHandler,
     StatCommandHandler,
     CreditCommandHandler,
-    MetricsCommandHandler
+    MetricsCommandHandler,
+    UserSearchCommandHandler
 )
 
 from .buy_commands import (
@@ -78,6 +79,7 @@ class CommandRouter:
             '/stat': StatCommandHandler(services, constants),
             '/credit': CreditCommandHandler(services, constants),
             '/metrics': MetricsCommandHandler(services, constants),
+            '/user': UserSearchCommandHandler(services, constants),
         }
     
     def route(self, update_data):

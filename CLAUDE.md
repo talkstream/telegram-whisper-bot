@@ -40,6 +40,7 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 - `/code_off` - Disable code tags in output
 
 ### Admin Commands (owner only)
+- `/user [search]` - Search and manage users (by name or ID)
 - `/review_trials` - Review pending trial requests
 - `/credit <user_id> <minutes>` - Add minutes to user
 - `/remove_user` - Remove user from system

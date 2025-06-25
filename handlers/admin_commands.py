@@ -439,5 +439,137 @@ class CreditCommandHandler(BaseHandler):
         return "OK", 200
 
 
+class UserSearchCommandHandler(BaseHandler):
+    """Handler for /user command (admin only) - search and manage users"""
+    
+    def handle(self, update_data):
+        user_id = update_data['user_id']
+        chat_id = update_data['chat_id']
+        text = update_data['text']
+        firestore_service = self.services.get('firestore_service')
+        send_message = self.services['telegram_service'].send_message
+        UtilityService = self.services['UtilityService']
+        
+        if user_id != self.constants['OWNER_ID']:
+            return None
+            
+        if not firestore_service:
+            send_message(chat_id, "База данных недоступна.")
+            return "OK", 200
+            
+        # Parse command arguments
+        parts = text.split(maxsplit=1)
+        search_query = parts[1] if len(parts) > 1 else None
+        
+        try:
+            if search_query:
+                # Search for users
+                users = firestore_service.search_users(search_query)
+                if not users:
+                    send_message(chat_id, f"❌ Пользователи по запросу '{search_query}' не найдены.")
+                    return "OK", 200
+                    
+                title = f"🔍 <b>Результаты поиска '{search_query}':</b>\n\n"
+            else:
+                # Get all users
+                users = []
+                all_users_data = firestore_service.get_all_users()
+                # Enrich with more data
+                for user_basic in all_users_data[:30]:  # Limit to 30 users
+                    user_data = firestore_service.get_user(user_basic['id'])
+                    if user_data:
+                        users.append({
+                            'id': user_basic['id'],
+                            'name': user_data.get('first_name', f'ID_{user_basic["id"]}'),
+                            'balance': user_data.get('balance_minutes', 0),
+                            'trial_status': user_data.get('trial_status', 'none'),
+                            'added_at': user_data.get('added_at')
+                        })
+                
+                title = f"👥 <b>Все пользователи (показаны первые {len(users)}):</b>\n\n"
+            
+            # Format user list
+            msg = title
+            
+            for idx, user in enumerate(users[:20], 1):  # Show max 20 users
+                user_mention = f"<a href='tg://user?id={user['id']}'>{user['name']}</a>"
+                
+                # Format trial status
+                trial_emoji = ""
+                if user['trial_status'] == 'approved':
+                    trial_emoji = "✅"
+                elif user['trial_status'] == 'pending':
+                    trial_emoji = "⏳"
+                elif user['trial_status'] == 'denied':
+                    trial_emoji = "❌"
+                
+                # Format balance
+                balance_str = f"{user['balance']:.1f}" if user['balance'] % 1 != 0 else f"{int(user['balance'])}"
+                
+                msg += f"{idx}. {user_mention} (ID: {user['id']})\n"
+                msg += f"   💰 Баланс: {balance_str} мин"
+                if trial_emoji:
+                    msg += f" | {trial_emoji} Триал"
+                msg += "\n"
+                
+                # Add join date if available
+                if user.get('added_at'):
+                    try:
+                        join_date = user['added_at'].strftime('%d.%m.%Y')
+                        msg += f"   📅 Регистрация: {join_date}\n"
+                    except:
+                        pass
+                
+                # Add action buttons
+                keyboard = {
+                    "inline_keyboard": [[
+                        {"text": "💰 Добавить минуты", "callback_data": f"add_minutes_{user['id']}"},
+                        {"text": "📊 Подробнее", "callback_data": f"user_details_{user['id']}"},
+                        {"text": "🗑 Удалить", "callback_data": f"delete_user_{user['id']}"}
+                    ]]
+                }
+                
+                msg += "\n"
+            
+            if len(users) > 20:
+                msg += f"\n<i>Показаны первые 20 из {len(users)} пользователей</i>"
+            
+            # Send message without inline keyboards for now (due to compatibility issues)
+            # Just show the info
+            send_message(chat_id, msg, parse_mode="HTML")
+            
+            # If single user found, show detailed info
+            if len(users) == 1:
+                user_details = firestore_service.get_user_details(users[0]['id'])
+                if user_details:
+                    details_msg = "\n📋 <b>Детальная информация:</b>\n"
+                    details_msg += f"📊 Всего транскрипций: {user_details['total_transcriptions']}\n"
+                    details_msg += f"⏱ Обработано минут: {user_details['total_minutes_processed']:.1f}\n"
+                    
+                    if user_details.get('last_activity'):
+                        try:
+                            last_activity = user_details['last_activity'].strftime('%d.%m.%Y %H:%M')
+                            details_msg += f"🕐 Последняя активность: {last_activity}\n"
+                        except:
+                            pass
+                    
+                    if user_details.get('micro_package_purchases', 0) > 0:
+                        details_msg += f"🛍 Промо-покупок: {user_details['micro_package_purchases']}\n"
+                    
+                    send_message(chat_id, details_msg, parse_mode="HTML")
+                    
+                    # Suggest quick actions
+                    actions_msg = "\n<b>Быстрые действия:</b>\n"
+                    actions_msg += f"• Добавить минуты: /credit {users[0]['id']} [МИНУТЫ]\n"
+                    actions_msg += f"• Удалить пользователя: используйте /remove_user"
+                    send_message(chat_id, actions_msg, parse_mode="HTML")
+            
+        except Exception as e:
+            logging.error(f"Error in user search command: {e}")
+            send_message(chat_id, f"❌ Ошибка при поиске: {str(e)}")
+        
+        return "OK", 200
+
+
 # Import the metrics command handler at the module level
 from .metrics_command import MetricsCommandHandler
