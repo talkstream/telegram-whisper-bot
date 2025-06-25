@@ -187,18 +187,20 @@ class CostCommandHandler(BaseHandler):
                 cost_per_minute_total = total_cost / minutes_total if minutes_total > 0 else 0
                 
                 cost_msg = f"""💰 <b>Расчет стоимости за последние 30 дней</b>
+📍 <i>Проект: editorials-robot</i>
 
 📊 Обработано: {count} файлов
 ⏱ Общая длительность: {total_seconds/60:.1f} минут
 📝 Символов обработано: {total_chars:,}
 
-💵 <b>API расходы:</b>
+💵 <b>API расходы (точные):</b>
 • Whisper API: ${whisper_cost:.2f}
 • Gemini API: ${gemini_cost:.2f}
 • <b>Итого API: ${total_api_cost:.2f}</b>
 
-🏗 <b>Инфраструктура GCP:</b>
-• App Engine (30% utilization): ${app_engine_cost:.2f}
+🏗 <b>Инфраструктура GCP (оценка):</b>
+<i>⚠️ Примерные расчеты для проекта editorials-robot:</i>
+• App Engine F2 (30% utilization): ${app_engine_cost:.2f}
 • Cloud Functions: ${cloud_functions_cost:.2f}
 • Firestore: ${firestore_cost:.2f}
 • Прочие сервисы: ${other_gcp_cost:.2f}
@@ -210,7 +212,9 @@ class CostCommandHandler(BaseHandler):
 • API за минуту: ${cost_per_minute_api:.4f}
 • Инфраструктура за минуту: ${cost_per_minute_infra:.4f}
 • <b>Полная себестоимость за минуту: ${cost_per_minute_total:.4f}</b>
-• Средняя стоимость на файл: ${total_cost/count:.3f}"""
+• Средняя стоимость на файл: ${total_cost/count:.3f}
+
+💡 <i>Для точных затрат GCP см. https://console.cloud.google.com/billing проект editorials-robot</i>"""
                 
                 send_message(chat_id, cost_msg, parse_mode="HTML")
             else:
