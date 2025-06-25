@@ -61,6 +61,12 @@ Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request m
 
 ## Version Control
 
+### GitHub Repository
+- **Remote URL**: https://github.com/talkstream/telegram-whisper-bot.git
+- **Visibility**: Private
+- **Main Branch**: main
+- **Latest Tag**: v1.4.1
+
 ### Git Commands
 ```bash
 # Check current status
@@ -72,15 +78,25 @@ git log --oneline
 # Create a new version tag
 git tag -a v1.0.1 -m "Description of changes"
 
+# Push to GitHub
+git push
+git push origin --tags
+
+# Pull latest changes
+git pull
+
 # Revert to previous version
 git checkout v1.0.0
 
 # View all tags
 git tag -l
+
+# Clone repository
+git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.4.0
-Performance monitoring system and metrics tracking.
+### Current Version: v1.4.1
+Documentation updates and GitHub repository setup.
 
 **New Features (v1.4.0):**
 - **Performance Monitoring System:**
@@ -143,10 +159,11 @@ Performance monitoring system and metrics tracking.
 - **v1.3.0** - Optimized trial request handling and re-enabled inline keyboards (June 25, 2025)
 - **v1.3.1** - Improved cost tracking clarity for editorials-robot project (June 25, 2025)
 - **v1.4.0** - Performance monitoring system with metrics tracking (June 25, 2025)
+- **v1.4.1** - Documentation updates and GitHub repository setup (June 25, 2025)
 
 ## Summary of June 25, 2025 Work
 
-Today was a highly productive day with 4 major releases (v1.1.0 → v1.4.0):
+Today was a highly productive day with 5 major releases (v1.1.0 → v1.4.1):
 
 1. **Morning**: Complete service-oriented architecture refactor
    - Reduced codebase by 40%, improved maintainability
@@ -161,12 +178,32 @@ Today was a highly productive day with 4 major releases (v1.1.0 → v1.4.0):
    - Performance monitoring system implementation
    - Comprehensive metrics tracking for all processing stages
    - New /metrics command for performance analysis
+   - Set up private GitHub repository for version control
+   - Pushed all code and version history to remote repository
 
-**Total Progress**: 15 commits, 4 stable releases, ~2000 lines of well-structured code added/refactored
+**Total Progress**: 17 commits, 5 stable releases, ~2000 lines of well-structured code added/refactored
+**GitHub Repository**: https://github.com/talkstream/telegram-whisper-bot (private)
 
 The bot is now in excellent shape with professional architecture, comprehensive monitoring, and all business features implemented.
 
 ## Development
+
+### GitHub Collaboration
+```bash
+# Clone the repository
+git clone https://github.com/talkstream/telegram-whisper-bot.git
+cd telegram-whisper-bot
+
+# Create a new feature branch
+git checkout -b feature/new-feature
+
+# Make changes and commit
+git add .
+git commit -m "feat: Add new feature"
+
+# Push branch and create pull request
+git push origin feature/new-feature
+```
 
 ### Local Testing
 ```bash
@@ -306,6 +343,12 @@ gcloud functions deploy audio-processor \
   - Queue statistics and wait time analysis
   - New /metrics admin command with configurable time periods
   - **User Management Dashboard**: /user command with search by name/ID, detailed user info, activity tracking
+  
+- ✅ **GitHub Repository Setup (v1.4.1)**:
+  - Created private repository at https://github.com/talkstream/telegram-whisper-bot
+  - Pushed complete code history with all 15 version tags
+  - Updated documentation with repository information
+  - Added collaboration workflow instructions
 
 ### Previous Improvements:
 - ✅ Async processing via Pub/Sub
