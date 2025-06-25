@@ -227,6 +227,11 @@ class FirestoreService:
         update_data['updated_at'] = firestore.SERVER_TIMESTAMP
         doc_ref.update(update_data)
         
+    def delete_trial_request(self, user_id: int) -> None:
+        """Delete trial request"""
+        doc_ref = self.db.collection('trial_requests').document(str(user_id))
+        doc_ref.delete()
+        
     def get_pending_trial_requests(self, limit: Optional[int] = None) -> List[Tuple[str, Dict[str, Any]]]:
         """Get pending trial requests"""
         query = self.db.collection('trial_requests') \

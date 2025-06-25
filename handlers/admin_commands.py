@@ -68,14 +68,24 @@ class ReviewTrialsCommandHandler(BaseHandler):
         if not requests:
             send_message(chat_id, "Нет ожидающих заявок на пробный доступ.")
         else:
-            msg = "📋 Заявки на пробный доступ:\n\n"
+            # Send each request as a separate message with inline keyboard
             for req in requests:
                 user_mention = f"<a href='tg://user?id={req['id']}'>{req['user_name']}</a>"
-                msg += f"• {user_mention} (ID: {req['id']})\n"
+                msg = f"📋 <b>Заявка на пробный доступ</b>\n\n"
+                msg += f"👤 Пользователь: {user_mention}\n"
+                msg += f"🆔 ID: {req['id']}\n"
                 if req['timestamp']:
-                    msg += f"  📅 Подана: {req['timestamp'].strftime('%d.%m.%Y %H:%M')}\n"
-            msg += f"\nДля одобрения используйте:\n/credit USER_ID {self.constants['TRIAL_MINUTES']}"
-            send_message(chat_id, msg, parse_mode="HTML")
+                    msg += f"📅 Подана: {req['timestamp'].strftime('%d.%m.%Y %H:%M')}\n"
+                
+                # Create inline keyboard with approve/deny buttons
+                keyboard = {
+                    "inline_keyboard": [[
+                        {"text": "✅ Одобрить", "callback_data": f"approve_trial_{req['id']}"},
+                        {"text": "❌ Отклонить", "callback_data": f"deny_trial_{req['id']}"}
+                    ]]
+                }
+                
+                send_message(chat_id, msg, parse_mode="HTML", reply_markup=keyboard)
         return "OK", 200
 
 
@@ -390,9 +400,18 @@ class CreditCommandHandler(BaseHandler):
                 
                 # If it's a trial approval (15 minutes), update trial status
                 if minutes_to_add == self.constants['TRIAL_MINUTES']:
-                    firestore_service.update_user_trial_status(target_user_id, 'approved')
-                    if update_trial_request_status:
-                        update_trial_request_status(target_user_id, 'approved', admin_comment='Approved via /credit command')
+                    # Check if there's a pending trial request
+                    trial_request = firestore_service.get_trial_request(target_user_id)
+                    if trial_request and trial_request.get('status') == 'pending':
+                        # Update user trial status
+                        firestore_service.update_user_trial_status(target_user_id, 'approved')
+                        # Update trial request status
+                        if update_trial_request_status:
+                            update_trial_request_status(target_user_id, 'approved', admin_comment='Approved via /credit command')
+                        # Delete the trial request to clean up
+                        firestore_service.db.collection('trial_requests').document(str(target_user_id)).delete()
+                        send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}\n✅ Заявка на триал удалена из списка ожидающих")
+                        return "OK", 200
                 
                 send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}")
                 

@@ -655,6 +655,67 @@ def handle_telegram_webhook(request):
                     logging.warning(f"Unknown package ID in callback: {package_full_id}")
                     send_message(user_id_cb, "Выбран неизвестный пакет.")
             elif user_id_cb == OWNER_ID:
+                # Handle new format callbacks (approve_trial_, deny_trial_)
+                if action == "approve" and len(parts) >= 2 and parts[1] == "trial":
+                    target_user_id = int(parts[2]) if len(parts) > 2 else None
+                    if target_user_id:
+                        # Get user info from trial request
+                        trial_req_doc = db.collection('trial_requests').document(str(target_user_id)).get()
+                        if trial_req_doc.exists:
+                            trial_data = trial_req_doc.to_dict()
+                            target_user_name = trial_data.get('user_name', f"User_{target_user_id}")
+                            
+                            # Credit the user with trial minutes
+                            if firestore_service:
+                                firestore_service.update_user_balance(target_user_id, TRIAL_MINUTES)
+                                firestore_service.update_user_trial_status(target_user_id, 'approved')
+                                update_trial_request_status(target_user_id, "approved", admin_comment="Approved via inline button")
+                                
+                                # Delete the trial request
+                                trial_req_doc.reference.delete()
+                                
+                                # Update the message
+                                new_text = f"✅ <b>Заявка одобрена</b>\n\n"
+                                new_text += f"👤 Пользователь: {target_user_name}\n"
+                                new_text += f"🆔 ID: {target_user_id}\n"
+                                new_text += f"💰 Начислено: {TRIAL_MINUTES} минут"
+                                edit_message_text(original_chat_id, original_message_id, new_text, parse_mode="HTML")
+                                
+                                # Notify the user
+                                send_message(target_user_id, f"🎉 Поздравляем! Ваша заявка на пробный доступ одобрена. Вам начислено {TRIAL_MINUTES} минут.")
+                        else:
+                            edit_message_text(original_chat_id, original_message_id, "❌ Заявка не найдена или уже обработана.")
+                    return "OK", 200
+                
+                elif action == "deny" and len(parts) >= 2 and parts[1] == "trial":
+                    target_user_id = int(parts[2]) if len(parts) > 2 else None
+                    if target_user_id:
+                        # Get user info from trial request
+                        trial_req_doc = db.collection('trial_requests').document(str(target_user_id)).get()
+                        if trial_req_doc.exists:
+                            trial_data = trial_req_doc.to_dict()
+                            target_user_name = trial_data.get('user_name', f"User_{target_user_id}")
+                            
+                            # Set state for denial comment
+                            set_user_state(OWNER_ID, {
+                                'state': 'awaiting_denial_comment', 
+                                'target_user_id': target_user_id, 
+                                'target_user_name': target_user_name, 
+                                'admin_message_id': original_message_id
+                            })
+                            
+                            # Update the message
+                            new_text = f"❓ <b>Ожидание комментария для отказа</b>\n\n"
+                            new_text += f"👤 Пользователь: {target_user_name}\n"
+                            new_text += f"🆔 ID: {target_user_id}\n\n"
+                            new_text += "Введите причину отказа или /cancel для отмены."
+                            edit_message_text(original_chat_id, original_message_id, new_text, parse_mode="HTML")
+                            send_message(OWNER_ID, f"Введите причину отказа для {target_user_name} (ID: {target_user_id}). Отправьте /cancel для отмены.")
+                        else:
+                            edit_message_text(original_chat_id, original_message_id, "❌ Заявка не найдена или уже обработана.")
+                    return "OK", 200
+                
+                # Keep old format for backward compatibility
                 target_user_id_str = parts[1] if len(parts) > 1 else None
                 target_user_name_from_cb_parts = parts[2] if len(parts) > 2 else None
                 if not target_user_id_str: logging.warning(f"Callback for owner missing target_user_id_str: {callback_data}"); return "OK", 200
@@ -706,14 +767,21 @@ def handle_telegram_webhook(request):
                 if text.lower() == '/cancel':
                     send_message(OWNER_ID, "Отмена ввода комментария. Заявка остается в ожидании.")
                     if admin_original_message_id:
-                         keyboard = {"inline_keyboard": [[{"text": "✅ Одобрить", "callback_data": f"approvetrial_{target_user_id_for_denial}_{target_user_name_for_denial}"},{"text": "❌ Отклонить", "callback_data": f"denytrial_{target_user_id_for_denial}_{target_user_name_for_denial}"}]]}
-                         edit_message_text(OWNER_ID, admin_original_message_id, f"Заявка от: {target_user_name_for_denial} (ID: {target_user_id_for_denial})", reply_markup=keyboard)
+                         keyboard = {"inline_keyboard": [[{"text": "✅ Одобрить", "callback_data": f"approve_trial_{target_user_id_for_denial}"},{"text": "❌ Отклонить", "callback_data": f"deny_trial_{target_user_id_for_denial}"}]]}
+                         msg = f"📋 <b>Заявка на пробный доступ</b>\n\n"
+                         msg += f"👤 Пользователь: {target_user_name_for_denial}\n"
+                         msg += f"🆔 ID: {target_user_id_for_denial}"
+                         edit_message_text(OWNER_ID, admin_original_message_id, msg, reply_markup=keyboard, parse_mode="HTML")
                 else:
                     update_trial_request_status(target_user_id_for_denial, "denied_with_comment", admin_comment=admin_comment)
+                    # Delete the trial request after denial
+                    if db:
+                        db.collection('trial_requests').document(str(target_user_id_for_denial)).delete()
                     reconsider_keyboard = {"inline_keyboard": [[{"text": "Запросить пересмотр", "callback_data": f"reconsider_{target_user_id_for_denial}"}]]}
                     send_message(target_user_id_for_denial, f"К сожалению, в пробном доступе отказано.\nПричина: {admin_comment}", reply_markup=reconsider_keyboard)
                     send_message(OWNER_ID, f"Отказ для {target_user_name_for_denial} с комментарием отправлен.")
-                    if admin_original_message_id: edit_message_text(OWNER_ID, admin_original_message_id, f"❌ Отказ для {target_user_name_for_denial} отправлен.")
+                    if admin_original_message_id: 
+                        edit_message_text(OWNER_ID, admin_original_message_id, f"❌ <b>Заявка отклонена</b>\n\n👤 Пользователь: {target_user_name_for_denial}\n🆔 ID: {target_user_id_for_denial}\n📝 Причина: {admin_comment}", parse_mode="HTML")
                 return "OK", 200
             
             if user_id != OWNER_ID and current_user_state_doc and current_user_state_doc.get('state') == 'awaiting_reconsideration_text':

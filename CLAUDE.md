@@ -55,7 +55,7 @@ Users can customize their experience through the following commands:
 - `/code_on` - Enable code tags (`<code>`) for monospace font output
 - `/code_off` - Disable code tags for plain text output
 
-Note: Inline keyboard buttons were removed due to compatibility issues.
+Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request management and payment selections.
 
 ## Version Control
 
@@ -77,25 +77,28 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.2.0
-Major update with new tariff system and payment notifications.
+### Current Version: v1.3.0
+Optimized trial request handling and re-enabled inline keyboards.
 
 **New Features:**
+- **Trial Request Improvements:**
+  - Trial requests are now automatically deleted after approval/denial
+  - Re-implemented inline keyboards for one-click approve/deny actions
+  - Enhanced /credit command to properly handle trial approvals
+  - Better UI with formatted messages and real-time status updates
+  - Trial requests are cleaned up to prevent clutter
+  
+**Previous v1.2.0 Features:**
 - Redesigned tariff structure with progressive pricing
 - Added per-minute price display for all packages
 - Implemented payment notification system for owner
 - Added infrastructure cost tracking in /cost command
 
-**Tariff Changes:**
+**Tariff Structure:**
 - Start: 50 minutes for 75 ⭐ (300% markup)
 - Standard: 200 minutes for 270 ⭐ 
 - Profi: 1000 minutes for 1150 ⭐
 - MAX: 8888 minutes for 8800 ⭐ (200% markup)
-
-**Payment Notifications:**
-- Immediate notification for first payment
-- Batched hourly summaries for multiple payments
-- Detailed sales reports for owner
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
@@ -110,6 +113,7 @@ Major update with new tariff system and payment notifications.
 - **v1.0.9** - Major refactoring with service layer and command handlers (June 25, 2025)
 - **v1.1.0** - Stable release of service-oriented architecture (June 25, 2025)
 - **v1.2.0** - New tariff system and payment notifications (June 25, 2025)
+- **v1.3.0** - Optimized trial request handling and re-enabled inline keyboards (June 25, 2025)
 
 ## Development
 
