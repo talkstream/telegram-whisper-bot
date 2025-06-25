@@ -331,6 +331,8 @@ def create_trial_request(user_id, user_name):
             'request_timestamp': firestore.SERVER_TIMESTAMP,
             'status': 'pending'
         })
+        # Queue notification for owner
+        queue_trial_notification_for_owner(user_id, user_name, 'new')
         return True
     current_status = trial_request.get('status')
     if current_status in ['pending', 'pending_reconsideration']:
@@ -453,6 +455,79 @@ def send_payment_notification_to_owner():
         
     except Exception as e:
         logging.error(f"Error sending payment notification to owner: {e}")
+
+# --- TRIAL REQUEST NOTIFICATION SYSTEM ---
+# In-memory storage for trial request notifications
+pending_trial_notifications = []
+last_trial_notification_time = None
+
+def queue_trial_notification_for_owner(user_id, user_name, request_type='new'):
+    """Queue trial request notification for batched sending to owner"""
+    global pending_trial_notifications, last_trial_notification_time
+    
+    try:
+        trial_info = {
+            'user_id': user_id,
+            'user_name': user_name,
+            'request_type': request_type,  # 'new' or 'reconsideration'
+            'timestamp': datetime.now(pytz.utc)
+        }
+        
+        pending_trial_notifications.append(trial_info)
+        
+        # If this is the first notification or it's been more than 10 minutes since last notification
+        if not last_trial_notification_time or (datetime.now(pytz.utc) - last_trial_notification_time).total_seconds() > 600:
+            # Send immediate notification for first request
+            if len(pending_trial_notifications) == 1:
+                send_trial_notification_to_owner()
+            # Otherwise, wait for more requests to accumulate
+        
+    except Exception as e:
+        logging.error(f"Error queuing trial notification: {e}")
+
+def send_trial_notification_to_owner():
+    """Send accumulated trial request notifications to owner"""
+    global pending_trial_notifications, last_trial_notification_time
+    
+    if not pending_trial_notifications or not OWNER_ID or not SECRETS_LOADED:
+        return
+    
+    try:
+        # Copy and clear the list
+        notifications_to_send = pending_trial_notifications[:]
+        pending_trial_notifications = []
+        last_trial_notification_time = datetime.now(pytz.utc)
+        
+        if len(notifications_to_send) == 1:
+            # Single request notification
+            request = notifications_to_send[0]
+            msg = f"🔔 <b>Новая заявка на пробный доступ!</b>\n\n"
+            msg += f"👤 {request['user_name']} (ID: {request['user_id']})\n"
+            if request['request_type'] == 'reconsideration':
+                msg += f"📌 Тип: Запрос на пересмотр\n"
+            msg += f"\nДля просмотра: /review_trials"
+        else:
+            # Multiple requests - show summary
+            new_count = sum(1 for r in notifications_to_send if r['request_type'] == 'new')
+            recon_count = sum(1 for r in notifications_to_send if r['request_type'] == 'reconsideration')
+            
+            msg = f"🔔 <b>Новые заявки на пробный доступ ({len(notifications_to_send)} шт.)</b>\n\n"
+            if new_count > 0:
+                msg += f"📋 Новых заявок: {new_count}\n"
+            if recon_count > 0:
+                msg += f"📌 Запросов на пересмотр: {recon_count}\n"
+            msg += "\n<b>Детали:</b>\n"
+            
+            for request in notifications_to_send:
+                type_emoji = "📌" if request['request_type'] == 'reconsideration' else "📋"
+                msg += f"{type_emoji} {request['user_name']} (ID: {request['user_id']})\n"
+            
+            msg += f"\nДля просмотра: /review_trials"
+        
+        send_message(OWNER_ID, msg, parse_mode="HTML")
+        
+    except Exception as e:
+        logging.error(f"Error sending trial notification to owner: {e}")
 
 # --- UTILITY HELPERS ---
 def is_authorized(user_id, user_data_from_db): # ... (без изменений)
@@ -646,13 +721,8 @@ def handle_telegram_webhook(request):
                 reconsideration_text_from_user = text
                 set_user_state(user_id, None)
                 update_trial_request_status(user_id, "pending_reconsideration", reconsideration_text=reconsideration_text_from_user)
-                trial_request_doc_reconsider = db.collection('trial_requests').document(str(user_id)).get()
-                trial_request = trial_request_doc_reconsider.to_dict() if trial_request_doc_reconsider.exists else None
-                admin_comment_original = trial_request.get('admin_comment', 'Нет') if trial_request else 'Нет'
-                send_message(OWNER_ID, f"❗️Запрос на пересмотр от {user_name} (ID: {user_id}):\n"
-                                     f"Причина отказа: {admin_comment_original}\n"
-                                     f"Обоснование пользователя: {reconsideration_text_from_user}\n"
-                                     f"Для одобрения используйте: /credit {user_id} {TRIAL_MINUTES}")
+                # Queue notification for owner
+                queue_trial_notification_for_owner(user_id, user_name, 'reconsideration')
                 send_message(user_id, "Ваш запрос на пересмотр отправлен администратору.")
                 return "OK", 200
             
@@ -1039,6 +1109,29 @@ def handle_payment_notifications(request):
         logging.exception(f"Error handling payment notifications: {e}")
         return "Internal Server Error", 500
 
+def handle_trial_notifications(request):
+    """Handle periodic trial request notification sending"""
+    try:
+        if not initialize():
+            return "Service unavailable", 503
+        
+        global pending_trial_notifications, last_trial_notification_time
+        
+        # Check if there are pending notifications and if enough time has passed
+        if pending_trial_notifications and last_trial_notification_time:
+            time_since_last = (datetime.now(pytz.utc) - last_trial_notification_time).total_seconds()
+            
+            # Send if it's been more than 1 hour since last notification
+            if time_since_last >= 3600:  # 1 hour
+                logging.info(f"Sending {len(pending_trial_notifications)} pending trial notifications")
+                send_trial_notification_to_owner()
+        
+        return "OK", 200
+        
+    except Exception as e:
+        logging.exception(f"Error handling trial notifications: {e}")
+        return "Internal Server Error", 500
+
 # Import Flask for WSGI compatibility
 from flask import Flask, request
 
@@ -1070,6 +1163,11 @@ def cleanup_stuck_jobs():
 def send_payment_notifications():
     """Handle periodic sending of payment notifications"""
     return handle_payment_notifications(request)
+
+@app.route('/send_trial_notifications')
+def send_trial_notifications():
+    """Handle periodic sending of trial request notifications"""
+    return handle_trial_notifications(request)
 
 # For local testing
 if __name__ == '__main__':
