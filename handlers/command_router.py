@@ -25,6 +25,14 @@ from .admin_commands import (
     CreditCommandHandler
 )
 
+from .buy_commands import (
+    BuyMicroCommandHandler,
+    BuyStartCommandHandler,
+    BuyStandardCommandHandler,
+    BuyProfiCommandHandler,
+    BuyMaxCommandHandler
+)
+
 
 class CommandRouter:
     """Routes commands to appropriate handlers"""
@@ -52,6 +60,13 @@ class CommandRouter:
             '/top_up': BuyMinutesCommandHandler(services, constants),  # Alias
             '/batch': QueueCommandHandler(services, constants),
             '/queue': QueueCommandHandler(services, constants),  # Alias
+            
+            # Buy package commands
+            '/buy_micro': BuyMicroCommandHandler(services, constants),
+            '/buy_start': BuyStartCommandHandler(services, constants),
+            '/buy_standard': BuyStandardCommandHandler(services, constants),
+            '/buy_profi': BuyProfiCommandHandler(services, constants),
+            '/buy_max': BuyMaxCommandHandler(services, constants),
             
             # Admin commands
             '/status': StatusCommandHandler(services, constants),

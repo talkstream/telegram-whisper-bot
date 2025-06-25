@@ -151,7 +151,30 @@ class CostCommandHandler(BaseHandler):
                 # Gemini pricing (estimated)
                 gemini_cost = (total_chars / 1000) * 0.00001  # Rough estimate
                 
-                total_cost = whisper_cost + gemini_cost
+                # Infrastructure costs estimation
+                # App Engine F2: ~$0.10/hour, min 1 instance 24/7 = $72/month
+                # Assuming 30% utilization for bot operations
+                app_engine_daily = (0.10 * 24 * 0.3)  # $0.72/day
+                app_engine_cost = app_engine_daily * 30  # for 30 days
+                
+                # Cloud Functions: ~$0.00045 per audio file processed
+                cloud_functions_cost = count * 0.00045
+                
+                # Firestore: ~$0.000014 per file (10 operations per file)
+                firestore_cost = count * 0.000014
+                
+                # Other GCP services (Pub/Sub, Storage, etc)
+                other_gcp_cost = count * 0.00001
+                
+                total_infra_cost = cloud_functions_cost + firestore_cost + other_gcp_cost
+                total_api_cost = whisper_cost + gemini_cost
+                total_cost = total_api_cost + total_infra_cost + app_engine_cost
+                
+                # Cost per minute calculations
+                minutes_total = total_seconds / 60
+                cost_per_minute_api = total_api_cost / minutes_total if minutes_total > 0 else 0
+                cost_per_minute_infra = total_infra_cost / minutes_total if minutes_total > 0 else 0
+                cost_per_minute_total = total_cost / minutes_total if minutes_total > 0 else 0
                 
                 cost_msg = f"""💰 <b>Расчет стоимости за последние 30 дней</b>
 
@@ -159,12 +182,25 @@ class CostCommandHandler(BaseHandler):
 ⏱ Общая длительность: {total_seconds/60:.1f} минут
 📝 Символов обработано: {total_chars:,}
 
-💵 <b>Расходы:</b>
+💵 <b>API расходы:</b>
 • Whisper API: ${whisper_cost:.2f}
 • Gemini API: ${gemini_cost:.2f}
-• <b>Итого: ${total_cost:.2f}</b>
+• <b>Итого API: ${total_api_cost:.2f}</b>
 
-📈 Средняя стоимость на файл: ${total_cost/count:.3f}"""
+🏗 <b>Инфраструктура GCP:</b>
+• App Engine (30% utilization): ${app_engine_cost:.2f}
+• Cloud Functions: ${cloud_functions_cost:.2f}
+• Firestore: ${firestore_cost:.2f}
+• Прочие сервисы: ${other_gcp_cost:.2f}
+• <b>Итого инфраструктура: ${total_infra_cost + app_engine_cost:.2f}</b>
+
+💰 <b>ОБЩИЕ РАСХОДЫ: ${total_cost:.2f}</b>
+
+📈 <b>Себестоимость:</b>
+• API за минуту: ${cost_per_minute_api:.4f}
+• Инфраструктура за минуту: ${cost_per_minute_infra:.4f}
+• <b>Полная себестоимость за минуту: ${cost_per_minute_total:.4f}</b>
+• Средняя стоимость на файл: ${total_cost/count:.3f}"""
                 
                 send_message(chat_id, cost_msg, parse_mode="HTML")
             else:

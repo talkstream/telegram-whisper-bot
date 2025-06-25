@@ -66,10 +66,10 @@ command_router = None
 # --- КОНСТАНТЫ ДЛЯ ПАКЕТОВ (Telegram Stars) ---
 PRODUCT_PACKAGES = {
     "micro_10": {"title": "Промо-пакет 'Микро'", "description": "10 минут транскрибации", "payload": "buy_micro_10", "stars_amount": 10, "minutes": 10, "purchase_limit": 3},
-    "starter_60": {"title": "Пакет 'Стартовый'", "description": "60 минут транскрибации", "payload": "buy_starter_60", "stars_amount": 240, "minutes": 60},
-    "editor_180": {"title": "Пакет 'Редактор'", "description": "180 минут (Экономия ~5%)", "payload": "buy_editor_180", "stars_amount": 680, "minutes": 180},
-    "lite_600": {"title": "Пакет 'Редакция Lite'", "description": "600 минут (Экономия ~12%)", "payload": "buy_lite_600", "stars_amount": 2100, "minutes": 600},
-    "pro_1500": {"title": "Пакет 'Редакция Pro'", "description": "1500 минут (Экономия 20%)", "payload": "buy_pro_1500", "stars_amount": 4800, "minutes": 1500},
+    "start_50": {"title": "Пакет 'Старт'", "description": "50 минут транскрибации", "payload": "buy_start_50", "stars_amount": 75, "minutes": 50},
+    "standard_200": {"title": "Пакет 'Стандарт'", "description": "200 минут транскрибации", "payload": "buy_standard_200", "stars_amount": 270, "minutes": 200},
+    "profi_1000": {"title": "Пакет 'Профи'", "description": "1000 минут транскрибации", "payload": "buy_profi_1000", "stars_amount": 1150, "minutes": 1000},
+    "max_8888": {"title": "Пакет 'MAX'", "description": "8888 минут транскрибации", "payload": "buy_max_8888", "stars_amount": 8800, "minutes": 8888},
 }
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
@@ -282,7 +282,8 @@ def log_payment(user_id, user_name, telegram_charge_id, provider_charge_id, star
     if not firestore_service:
         return
     try:
-        firestore_service.log_payment({
+        # Log payment to database
+        payment_data = {
             'user_id': str(user_id),
             'user_name': user_name,
             'telegram_payment_charge_id': telegram_charge_id,
@@ -291,8 +292,13 @@ def log_payment(user_id, user_name, telegram_charge_id, provider_charge_id, star
             'minutes_credited': minutes_credited,
             'package_name': package_name,
             'timestamp': firestore.SERVER_TIMESTAMP
-        })
+        }
+        firestore_service.log_payment(payment_data)
         logging.info(f"Logged payment for user {user_id}: {stars_amount} Stars for {minutes_credited} minutes.")
+        
+        # Queue notification for owner
+        queue_payment_notification_for_owner(user_id, user_name, stars_amount, minutes_credited, package_name)
+        
     except Exception as e:
         logging.error(f"Error logging payment for user {user_id}: {e}")
 def log_oversized_file(user_id, user_name, file_id, reported_size, file_name=None, mime_type=None):
@@ -378,6 +384,75 @@ def check_and_notify_pending_trials(force_check=False):
                 firestore_service.update_last_trial_notification_timestamp()
     except Exception as e:
         logging.error(f"Error checking/notifying pending trials: {e}")
+
+# --- PAYMENT NOTIFICATION SYSTEM ---
+# In-memory storage for payment notifications (will be cleared on restart)
+pending_payment_notifications = []
+last_payment_notification_time = None
+
+def queue_payment_notification_for_owner(user_id, user_name, stars_amount, minutes_credited, package_name):
+    """Queue payment notification for batched sending to owner"""
+    global pending_payment_notifications, last_payment_notification_time
+    
+    try:
+        payment_info = {
+            'user_id': user_id,
+            'user_name': user_name,
+            'stars_amount': stars_amount,
+            'minutes_credited': minutes_credited,
+            'package_name': package_name,
+            'timestamp': datetime.now(pytz.utc)
+        }
+        
+        pending_payment_notifications.append(payment_info)
+        
+        # If this is the first notification or it's been more than 10 minutes since last notification
+        if not last_payment_notification_time or (datetime.now(pytz.utc) - last_payment_notification_time).total_seconds() > 600:
+            # Send immediate notification for first payment
+            if len(pending_payment_notifications) == 1:
+                send_payment_notification_to_owner()
+            # Otherwise, wait for more payments to accumulate
+        
+    except Exception as e:
+        logging.error(f"Error queuing payment notification: {e}")
+
+def send_payment_notification_to_owner():
+    """Send accumulated payment notifications to owner"""
+    global pending_payment_notifications, last_payment_notification_time
+    
+    if not pending_payment_notifications or not OWNER_ID or not SECRETS_LOADED:
+        return
+    
+    try:
+        # Copy and clear the list
+        notifications_to_send = pending_payment_notifications[:]
+        pending_payment_notifications = []
+        last_payment_notification_time = datetime.now(pytz.utc)
+        
+        if len(notifications_to_send) == 1:
+            # Single payment notification
+            payment = notifications_to_send[0]
+            msg = f"💰 <b>Новая покупка!</b>\n\n"
+            msg += f"👤 {payment['user_name']} (ID: {payment['user_id']})\n"
+            msg += f"📦 {payment['package_name']}\n"
+            msg += f"⭐ {payment['stars_amount']} Stars\n"
+            msg += f"⏱ {payment['minutes_credited']} минут"
+        else:
+            # Multiple payments - show summary
+            total_stars = sum(p['stars_amount'] for p in notifications_to_send)
+            total_minutes = sum(p['minutes_credited'] for p in notifications_to_send)
+            
+            msg = f"💰 <b>Сводка продаж ({len(notifications_to_send)} покупок)</b>\n\n"
+            msg += f"<b>Итого:</b> {total_stars} ⭐ за {total_minutes} минут\n\n"
+            msg += "<b>Детали:</b>\n"
+            
+            for payment in notifications_to_send:
+                msg += f"• {payment['user_name']} - {payment['package_name']} ({payment['stars_amount']} ⭐)\n"
+        
+        send_message(OWNER_ID, msg, parse_mode="HTML")
+        
+    except Exception as e:
+        logging.error(f"Error sending payment notification to owner: {e}")
 
 # --- UTILITY HELPERS ---
 def is_authorized(user_id, user_data_from_db): # ... (без изменений)
@@ -938,6 +1013,29 @@ def handle_cleanup_stuck_jobs(request):
         logging.exception(f"Error during automatic cleanup: {e}")
         return "Internal Server Error", 500
 
+def handle_payment_notifications(request):
+    """Handle periodic payment notification sending"""
+    try:
+        if not initialize():
+            return "Service unavailable", 503
+        
+        global pending_payment_notifications, last_payment_notification_time
+        
+        # Check if there are pending notifications and if enough time has passed
+        if pending_payment_notifications and last_payment_notification_time:
+            time_since_last = (datetime.now(pytz.utc) - last_payment_notification_time).total_seconds()
+            
+            # Send if it's been more than 1 hour since last notification
+            if time_since_last >= 3600:  # 1 hour
+                logging.info(f"Sending {len(pending_payment_notifications)} pending payment notifications")
+                send_payment_notification_to_owner()
+        
+        return "OK", 200
+        
+    except Exception as e:
+        logging.exception(f"Error handling payment notifications: {e}")
+        return "Internal Server Error", 500
+
 # Import Flask for WSGI compatibility
 from flask import Flask, request
 
@@ -964,6 +1062,11 @@ def webhook():
 def cleanup_stuck_jobs():
     """Handle automatic cleanup of stuck jobs"""
     return handle_cleanup_stuck_jobs(request)
+
+@app.route('/send_payment_notifications')
+def send_payment_notifications():
+    """Handle periodic sending of payment notifications"""
+    return handle_payment_notifications(request)
 
 # For local testing
 if __name__ == '__main__':

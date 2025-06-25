@@ -16,3 +16,9 @@ cron:
   schedule: every 30 minutes
   retry_parameters:
     job_retry_limit: 1
+    
+- description: "Send payment notifications"
+  url: /send_payment_notifications
+  schedule: every 1 hours
+  retry_parameters:
+    job_retry_limit: 1

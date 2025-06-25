@@ -32,7 +32,12 @@ class HelpCommandHandler(BaseHandler):
 
 <b>Управление балансом:</b>
 • /balance - Проверить текущий баланс
-• /buy_minutes - Пополнить баланс через Telegram Stars
+• /buy_minutes - Показать все доступные пакеты
+• /buy_micro - Купить промо-пакет (10 минут за 10 ⭐)
+• /buy_start - Купить пакет Старт (50 минут за 75 ⭐)
+• /buy_standard - Купить пакет Стандарт (200 минут за 270 ⭐)
+• /buy_profi - Купить пакет Профи (1000 минут за 1150 ⭐)
+• /buy_max - Купить пакет MAX (8888 минут за 8800 ⭐)
 
 <b>Настройки и статус:</b>
 • /settings - Настройки форматирования вывода
@@ -196,7 +201,6 @@ class BuyMinutesCommandHandler(BaseHandler):
         chat_id = update_data['chat_id']
         user_name = update_data.get('user_name', f'User_{user_id}')
         user_data = update_data['user_data']
-        send_invoice = self.services['telegram_service'].send_invoice
         send_message = self.services['telegram_service'].send_message
         PRODUCT_PACKAGES = self.constants['PRODUCT_PACKAGES']
         
@@ -205,15 +209,52 @@ class BuyMinutesCommandHandler(BaseHandler):
         micro_package_info = PRODUCT_PACKAGES.get("micro_10")
         can_buy_micro = micro_purchases < micro_package_info.get("purchase_limit", 3) if micro_package_info else False
         
-        # Send invoice for appropriate package
+        # Build package list message
+        msg = "💰 <b>Доступные пакеты минут:</b>\n\n"
+        
+        # Show micro package if available
         if can_buy_micro:
-            send_invoice(chat_id, micro_package_info['title'], micro_package_info['description'], 
-                        micro_package_info['payload'], "XTR", [{"label": "Stars", "amount": micro_package_info['stars_amount']}])
-        else:
-            basic_package = PRODUCT_PACKAGES.get("basic_60")
-            if basic_package:
-                send_invoice(chat_id, basic_package['title'], basic_package['description'], 
-                            basic_package['payload'], "XTR", [{"label": "Stars", "amount": basic_package['stars_amount']}])
+            micro = PRODUCT_PACKAGES["micro_10"]
+            remaining = micro["purchase_limit"] - micro_purchases
+            price_per_min = micro['stars_amount'] / micro['minutes']
+            msg += f"🎁 <b>{micro['title']}</b>\n"
+            msg += f"   {micro['description']} - {micro['stars_amount']} ⭐\n"
+            msg += f"   <i>≈ {price_per_min:.1f} ⭐ за минуту</i>\n"
+            msg += f"   <i>Осталось покупок: {remaining}</i>\n"
+            msg += "   Команда: /buy_micro\n\n"
+        
+        # Show all other packages
+        start = PRODUCT_PACKAGES['start_50']
+        price_per_min = start['stars_amount'] / start['minutes']
+        msg += f"📦 <b>{start['title']}</b>\n"
+        msg += f"   {start['description']} - {start['stars_amount']} ⭐\n"
+        msg += f"   <i>≈ {price_per_min:.1f} ⭐ за минуту</i>\n"
+        msg += "   Команда: /buy_start\n\n"
+        
+        standard = PRODUCT_PACKAGES['standard_200']
+        price_per_min = standard['stars_amount'] / standard['minutes']
+        msg += f"📦 <b>{standard['title']}</b>\n"
+        msg += f"   {standard['description']} - {standard['stars_amount']} ⭐\n"
+        msg += f"   <i>≈ {price_per_min:.2f} ⭐ за минуту</i>\n"
+        msg += "   Команда: /buy_standard\n\n"
+        
+        profi = PRODUCT_PACKAGES['profi_1000']
+        price_per_min = profi['stars_amount'] / profi['minutes']
+        msg += f"📦 <b>{profi['title']}</b>\n"
+        msg += f"   {profi['description']} - {profi['stars_amount']} ⭐\n"
+        msg += f"   <i>≈ {price_per_min:.2f} ⭐ за минуту</i>\n"
+        msg += "   Команда: /buy_profi\n\n"
+        
+        max_pkg = PRODUCT_PACKAGES['max_8888']
+        price_per_min = max_pkg['stars_amount'] / max_pkg['minutes']
+        msg += f"🚀 <b>{max_pkg['title']}</b>\n"
+        msg += f"   {max_pkg['description']} - {max_pkg['stars_amount']} ⭐\n"
+        msg += f"   <i>≈ {price_per_min:.2f} ⭐ за минуту</i>\n"
+        msg += "   Команда: /buy_max\n\n"
+        
+        msg += "💡 <i>Выберите пакет и используйте соответствующую команду для покупки</i>"
+        
+        send_message(chat_id, msg, parse_mode="HTML")
         
         return "OK", 200
 
