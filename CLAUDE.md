@@ -49,6 +49,7 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 - `/status` - Show current queue status
 - `/batch` - Show batch queue status
 - `/flush` - Clean stuck jobs (>1 hour old)
+- `/metrics [hours]` - View performance metrics (default 24h)
 
 ## Settings
 Users can customize their experience through the following commands:
@@ -94,6 +95,12 @@ Performance monitoring system and metrics tracking.
   - API performance metrics with success rates
   - Current queue status and average wait times
   - Accessible to admin only
+- **User Management Dashboard:**
+  - /user command for searching users by name or ID
+  - Shows detailed user info: balance, trial status, join date, last activity
+  - Total transcriptions and minutes processed
+  - Search functionality with partial name matching
+  - Comprehensive user activity tracking
 
 **Previous Updates (v1.3.1):**
 - Clarified /cost command to show data is from editorials-robot project only
@@ -298,6 +305,7 @@ gcloud functions deploy audio-processor \
   - API response time tracking with success rates
   - Queue statistics and wait time analysis
   - New /metrics admin command with configurable time periods
+  - **User Management Dashboard**: /user command with search by name/ID, detailed user info, activity tracking
 
 ### Previous Improvements:
 - ✅ Async processing via Pub/Sub
@@ -343,15 +351,11 @@ gcloud functions deploy audio-processor \
 ## Next Development Priorities
 
 ### High Priority:
-1. **Enhanced User Settings**:
-   - Notification preferences (when processing starts/completes)
-   - Auto-formatting preferences (bullets, paragraphs)
-   - Default output style preferences
-
-2. **Advanced Admin Features**:
-   - User management with sorting/filtering
+1. **Advanced Admin Features** (Partially Complete):
+   - ✅ User management dashboard with search/filtering
    - Export usage reports (CSV)
    - Automated daily/weekly reports
+   - User activity monitoring
 
 ### Medium Priority:
 3. **Enhanced Batch Processing**:
