@@ -4,6 +4,7 @@ Admin command handlers for Telegram Whisper Bot
 
 import logging
 import re
+import os
 from datetime import datetime, timedelta
 import pytz
 import json
@@ -567,6 +568,146 @@ class UserSearchCommandHandler(BaseHandler):
         except Exception as e:
             logging.error(f"Error in user search command: {e}")
             send_message(chat_id, f"❌ Ошибка при поиске: {str(e)}")
+        
+        return "OK", 200
+
+
+class ExportCommandHandler(BaseHandler):
+    """Handler for /export command (admin only) - export usage data to CSV"""
+    
+    def handle(self, update_data):
+        user_id = update_data['user_id']
+        chat_id = update_data['chat_id']
+        text = update_data['text']
+        firestore_service = self.services.get('firestore_service')
+        send_message = self.services['telegram_service'].send_message
+        send_document = self.services['telegram_service'].send_document
+        UtilityService = self.services['UtilityService']
+        
+        if user_id != self.constants['OWNER_ID']:
+            return None
+            
+        if not firestore_service:
+            send_message(chat_id, "База данных недоступна.")
+            return "OK", 200
+            
+        # Parse command arguments
+        parts = text.split()
+        export_type = parts[1] if len(parts) > 1 else 'users'
+        days = int(parts[2]) if len(parts) > 2 else 30
+        
+        try:
+            import csv
+            import tempfile
+            from datetime import datetime, timedelta
+            import pytz
+            
+            # Calculate date range
+            now = datetime.now(pytz.utc)
+            start_date = now - timedelta(days=days)
+            
+            # Create temporary CSV file
+            temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8-sig')
+            csv_writer = csv.writer(temp_file)
+            
+            if export_type == 'users':
+                # Export user data
+                csv_writer.writerow(['User ID', 'Name', 'Balance (min)', 'Trial Status', 
+                                   'Registration Date', 'Total Transcriptions', 'Total Minutes', 
+                                   'Micro Purchases', 'Last Activity'])
+                
+                users = firestore_service.get_all_users()
+                for user_basic in users:
+                    user_details = firestore_service.get_user_details(user_basic['id'])
+                    if user_details:
+                        csv_writer.writerow([
+                            user_details['id'],
+                            user_details['name'],
+                            f"{user_details['balance']:.1f}",
+                            user_details.get('trial_status', 'none'),
+                            user_details.get('added_at').strftime('%Y-%m-%d %H:%M') if user_details.get('added_at') else '',
+                            user_details.get('total_transcriptions', 0),
+                            f"{user_details.get('total_minutes_processed', 0):.1f}",
+                            user_details.get('micro_package_purchases', 0),
+                            user_details.get('last_activity').strftime('%Y-%m-%d %H:%M') if user_details.get('last_activity') else 'Never'
+                        ])
+                
+                temp_file.close()
+                filename = f"users_export_{now.strftime('%Y%m%d_%H%M%S')}.csv"
+                caption = f"📊 Экспорт пользователей\nВсего: {len(users)} пользователей"
+                
+            elif export_type == 'logs':
+                # Export transcription logs
+                csv_writer.writerow(['Timestamp', 'User ID', 'User Name', 'Duration (sec)', 
+                                   'Duration (min)', 'File Size (MB)', 'Characters', 'Status'])
+                
+                # Get all transcription logs for date range
+                logs = firestore_service.get_transcription_logs(start_date, now)
+                count = 0
+                total_duration = 0
+                
+                for log in logs:
+                    count += 1
+                    duration_sec = log.get('duration', 0)
+                    total_duration += duration_sec
+                    csv_writer.writerow([
+                        log.get('timestamp').strftime('%Y-%m-%d %H:%M:%S') if log.get('timestamp') else '',
+                        log.get('user_id', ''),
+                        log.get('editor_name', ''),
+                        duration_sec,
+                        f"{duration_sec/60:.1f}",
+                        f"{log.get('file_size', 0)/1024/1024:.2f}",
+                        log.get('char_count', 0),
+                        log.get('status', '')
+                    ])
+                
+                temp_file.close()
+                filename = f"transcription_logs_{now.strftime('%Y%m%d_%H%M%S')}.csv"
+                caption = f"📊 Экспорт логов за {days} дней\nВсего: {count} записей\nОбщая длительность: {UtilityService.format_duration(total_duration)}"
+                
+            elif export_type == 'payments':
+                # Export payment logs
+                csv_writer.writerow(['Timestamp', 'User ID', 'User Name', 'Package', 
+                                   'Minutes', 'Stars Amount', 'Transaction ID'])
+                
+                # Get payment logs
+                payments = firestore_service.get_payment_logs(start_date, now)
+                count = 0
+                total_revenue = 0
+                
+                for payment in payments:
+                    count += 1
+                    stars = payment.get('stars_amount', 0)
+                    total_revenue += stars
+                    csv_writer.writerow([
+                        payment.get('timestamp').strftime('%Y-%m-%d %H:%M:%S') if payment.get('timestamp') else '',
+                        payment.get('user_id', ''),
+                        payment.get('user_name', ''),
+                        payment.get('package_name', ''),
+                        payment.get('minutes_added', 0),
+                        stars,
+                        payment.get('telegram_payment_id', '')
+                    ])
+                
+                temp_file.close()
+                filename = f"payment_logs_{now.strftime('%Y%m%d_%H%M%S')}.csv"
+                caption = f"💰 Экспорт платежей за {days} дней\nВсего: {count} платежей\nОбщий доход: {total_revenue} ⭐"
+                
+            else:
+                temp_file.close()
+                os.unlink(temp_file.name)
+                send_message(chat_id, "❌ Неверный тип экспорта. Используйте: /export [users|logs|payments] [дней]")
+                return "OK", 200
+            
+            # Send CSV file
+            send_document(chat_id, temp_file.name, caption=caption, filename=filename)
+            
+            # Clean up
+            os.unlink(temp_file.name)
+            
+        except Exception as e:
+            logging.error(f"Error in export command: {e}")
+            send_message(chat_id, f"❌ Ошибка при экспорте: {str(e)}")
         
         return "OK", 200
 

@@ -484,3 +484,29 @@ class FirestoreService:
         """Update user trial status"""
         doc_ref = self.db.collection('users').document(str(user_id))
         doc_ref.update({'trial_status': status})
+    
+    def get_transcription_logs(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
+        """Get all transcription logs for date range"""
+        query = self.db.collection('transcription_logs') \
+                      .where(filter=FieldFilter('timestamp', '>=', start_date)) \
+                      .where(filter=FieldFilter('timestamp', '<=', end_date)) \
+                      .order_by('timestamp', direction=firestore.Query.DESCENDING)
+        
+        logs = []
+        for doc in query.stream():
+            logs.append(doc.to_dict())
+        
+        return logs
+    
+    def get_payment_logs(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
+        """Get all payment logs for date range"""
+        query = self.db.collection('payment_logs') \
+                      .where(filter=FieldFilter('timestamp', '>=', start_date)) \
+                      .where(filter=FieldFilter('timestamp', '<=', end_date)) \
+                      .order_by('timestamp', direction=firestore.Query.DESCENDING)
+        
+        payments = []
+        for doc in query.stream():
+            payments.append(doc.to_dict())
+        
+        return payments

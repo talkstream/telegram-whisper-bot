@@ -24,7 +24,8 @@ from .admin_commands import (
     StatCommandHandler,
     CreditCommandHandler,
     MetricsCommandHandler,
-    UserSearchCommandHandler
+    UserSearchCommandHandler,
+    ExportCommandHandler
 )
 
 from .buy_commands import (
@@ -80,6 +81,7 @@ class CommandRouter:
             '/credit': CreditCommandHandler(services, constants),
             '/metrics': MetricsCommandHandler(services, constants),
             '/user': UserSearchCommandHandler(services, constants),
+            '/export': ExportCommandHandler(services, constants),
         }
     
     def route(self, update_data):
