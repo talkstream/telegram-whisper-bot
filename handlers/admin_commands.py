@@ -437,3 +437,7 @@ class CreditCommandHandler(BaseHandler):
             send_message(chat_id, f"Ошибка: {str(e)}")
             
         return "OK", 200
+
+
+# Import the metrics command handler at the module level
+from .metrics_command import MetricsCommandHandler

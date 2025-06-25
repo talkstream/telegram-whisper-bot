@@ -60,6 +60,7 @@ db = None
 firestore_service = None
 audio_service = None
 stats_service = None
+metrics_service = None
 publisher = None
 command_router = None
 
@@ -76,7 +77,7 @@ PRODUCT_PACKAGES = {
 def initialize():
     # ... (код инициализации без изменений) ...
     global SECRETS_LOADED, TELEGRAM_BOT_TOKEN, OPENAI_API_KEY
-    global TELEGRAM_API_URL, TELEGRAM_FILE_URL, openai_client, db, firestore_service, audio_service, stats_service, publisher, command_router
+    global TELEGRAM_API_URL, TELEGRAM_FILE_URL, openai_client, db, firestore_service, audio_service, stats_service, metrics_service, publisher, command_router
     if SECRETS_LOADED: return True
     if not PROJECT_ID:
         logging.error("FATAL: GCP_PROJECT environment variable or fallback Project ID not set.")
@@ -97,8 +98,10 @@ def initialize():
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
         db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
         firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
-        audio_service = AudioService(OPENAI_API_KEY)
         stats_service = StatsService(db)
+        from services.metrics import MetricsService
+        metrics_service = MetricsService(db)
+        audio_service = AudioService(OPENAI_API_KEY, metrics_service)
         vertexai.init(project=PROJECT_ID, location=LOCATION)
         
         # Initialize Pub/Sub publisher if async processing is enabled
@@ -110,6 +113,7 @@ def initialize():
         services_dict = {
             'firestore_service': firestore_service,
             'stats_service': stats_service,
+            'metrics_service': metrics_service,
             'telegram_service': telegram_service.get_telegram_service(),
             'audio_service': audio_service,
             'get_user_data': get_user_data,

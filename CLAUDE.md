@@ -77,10 +77,24 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.3.1
-Stable release with optimized trial handling and improved cost tracking.
+### Current Version: v1.4.0
+Performance monitoring system and metrics tracking.
 
-**Latest Updates (v1.3.1):**
+**New Features (v1.4.0):**
+- **Performance Monitoring System:**
+  - MetricsService for tracking execution times and API performance
+  - Stage-by-stage timing: download, conversion, transcription, formatting
+  - API response time tracking for Whisper and Gemini
+  - Queue statistics and wait time analysis
+  - Error rate tracking and success metrics
+- **New /metrics Command:**
+  - View performance data for last N hours (default 24)
+  - Processing stage breakdowns with percentiles
+  - API performance metrics with success rates
+  - Current queue status and average wait times
+  - Accessible to admin only
+
+**Previous Updates (v1.3.1):**
 - Clarified /cost command to show data is from editorials-robot project only
 - Added warning that infrastructure costs are estimates
 - Added link to GCP billing console for exact costs
@@ -120,6 +134,7 @@ Stable release with optimized trial handling and improved cost tracking.
 - **v1.2.0** - New tariff system and payment notifications (June 25, 2025)
 - **v1.3.0** - Optimized trial request handling and re-enabled inline keyboards (June 25, 2025)
 - **v1.3.1** - Improved cost tracking clarity for editorials-robot project (June 25, 2025)
+- **v1.4.0** - Performance monitoring system with metrics tracking (June 25, 2025)
 
 ## Development
 

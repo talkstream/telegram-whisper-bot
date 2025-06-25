@@ -5,6 +5,7 @@ import os
 import logging
 import tempfile
 import subprocess
+import time
 from typing import Optional, Tuple
 from openai import OpenAI
 from vertexai.generative_models import GenerativeModel
@@ -24,9 +25,10 @@ class AudioService:
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
     MAX_DURATION_SECONDS = 3600  # 1 hour
     
-    def __init__(self, openai_api_key: str):
+    def __init__(self, openai_api_key: str, metrics_service=None):
         """Initialize with OpenAI client"""
         self.openai_client = OpenAI(api_key=openai_api_key)
+        self.metrics_service = metrics_service
         
     def validate_audio_file(self, file_size: int, duration: int) -> Tuple[bool, Optional[str]]:
         """
@@ -117,6 +119,7 @@ class AudioService:
         Transcribe audio using OpenAI Whisper
         Returns transcribed text or None on error
         """
+        api_start_time = time.time()
         try:
             with open(audio_path, "rb") as audio_file:
                 # Create file tuple with basename for proper MIME type detection
@@ -128,11 +131,21 @@ class AudioService:
                     language=language,
                     response_format="json"
                 )
+            
+            # Log API call metrics
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('whisper', api_duration, True)
                 
             logging.info("Transcription successful")
             return transcription.text
             
         except Exception as e:
+            # Log failed API call
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('whisper', api_duration, False, str(e))
+                
             logging.error(f"Error during transcription: {e}")
             return None
             
@@ -141,6 +154,7 @@ class AudioService:
         Format transcribed text using Google Gemini
         Returns formatted text or original text on error
         """
+        api_start_time = time.time()
         try:
             model = GenerativeModel(model_name)
             
@@ -158,10 +172,20 @@ class AudioService:
             response = model.generate_content(prompt)
             formatted_text = response.text
             
+            # Log API call metrics
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('gemini', api_duration, True)
+            
             logging.info("Successfully formatted text with Gemini")
             return formatted_text
             
         except Exception as e:
+            # Log failed API call
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('gemini', api_duration, False, str(e))
+                
             logging.error(f"Error calling Gemini API: {e}")
             return text
             

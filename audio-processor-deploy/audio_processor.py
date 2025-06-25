@@ -34,14 +34,15 @@ _openai_client = None
 _db_client = None
 _firestore_service = None
 _audio_service = None
+_metrics_service = None
 _secret_manager = None
 
 def initialize_services():
     """Initialize services once per Cloud Function instance"""
-    global _services_initialized, _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _secret_manager
+    global _services_initialized, _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _secret_manager
     
     if _services_initialized:
-        return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service
+        return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service
     
     logging.info("Initializing services for this instance...")
     
@@ -53,6 +54,7 @@ def initialize_services():
     from services.telegram import TelegramService
     from services.firestore import FirestoreService
     from services.audio import AudioService
+    from services.metrics import MetricsService
     
     # Initialize secret manager
     _secret_manager = secretmanager.SecretManagerServiceClient()
@@ -71,7 +73,8 @@ def initialize_services():
     _openai_client = OpenAI(api_key=openai_api_key)
     _db_client = fs.Client(project=PROJECT_ID, database=DATABASE_ID)
     _firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
-    _audio_service = AudioService(openai_api_key)
+    _metrics_service = MetricsService(_db_client)
+    _audio_service = AudioService(openai_api_key, _metrics_service)
     
     # Initialize Vertex AI
     vertexai.init(project=PROJECT_ID, location=LOCATION)
@@ -79,16 +82,17 @@ def initialize_services():
     _services_initialized = True
     logging.info("Services initialized successfully")
     
-    return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service
+    return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service
 
 class AudioProcessor:
-    def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None):
+    def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None, metrics_service=None):
         """Initialize with pre-configured services"""
         self.telegram = telegram_service
         self.openai_client = openai_client
         self.db = db_client
         self.firestore_service = firestore_service
         self.audio_service = audio_service
+        self.metrics_service = metrics_service
         self.start_time = None
         self.total_stages = 5  # downloading, converting, transcribing, formatting, sending
         
@@ -254,10 +258,27 @@ class AudioProcessor:
         # Start timing
         self.start_time = time.time()
         
+        # Start metrics tracking for total processing
+        if self.metrics_service:
+            self.metrics_service.start_timer('total_processing', job_id)
+        
         try:
             # Stage 1: Downloading
             stage = 1
-            self.update_job_status(job_id, 'processing', 'downloading')
+            # Update job status and mark processing start time
+            update_data = {
+                'status': 'processing',
+                'progress': 'downloading',
+                'processing_started_at': firestore.SERVER_TIMESTAMP
+            }
+            if self.firestore_service:
+                self.firestore_service.update_audio_job(job_id, update_data)
+            else:
+                self.update_job_status(job_id, 'processing', 'downloading')
+            
+            # Start download timer
+            if self.metrics_service:
+                self.metrics_service.start_timer('download', job_id)
             if status_message_id:
                 progress = self.calculate_progress(stage, 0)
                 time_estimate = self.estimate_total_time(duration)
@@ -278,6 +299,10 @@ class AudioProcessor:
             if not local_audio_path:
                 raise Exception("Failed to download file")
             
+            # End download timer
+            if self.metrics_service:
+                self.metrics_service.end_timer('download', job_id)
+            
             # Check audio quality before processing
             if self.audio_service:
                 is_processable, quality_msg, audio_info = self.audio_service.analyze_audio_quality(local_audio_path)
@@ -289,6 +314,10 @@ class AudioProcessor:
             # Stage 2: Converting
             stage = 2
             self.update_job_status(job_id, 'processing', 'converting')
+            
+            # Start conversion timer
+            if self.metrics_service:
+                self.metrics_service.start_timer('conversion', job_id)
             if status_message_id:
                 progress = self.calculate_progress(stage, 0)
                 self.telegram.send_progress_update(
@@ -343,9 +372,17 @@ class AudioProcessor:
                     logging.info(f"FFmpeg reported duration: {actual_duration}s vs Telegram duration: {duration}s")
                     logging.info(f"Audio info: format={audio_format}, codec={audio_codec}, sample_rate={audio_sample_rate}, bitrate={audio_bitrate}")
             
+            # End conversion timer
+            if self.metrics_service:
+                self.metrics_service.end_timer('conversion', job_id)
+            
             # Stage 3: Transcribing
             stage = 3
             self.update_job_status(job_id, 'processing', 'transcribing')
+            
+            # Start transcription timer
+            if self.metrics_service:
+                self.metrics_service.start_timer('transcription', job_id)
             if status_message_id:
                 progress = self.calculate_progress(stage, 0)
                 self.telegram.send_progress_update(
@@ -365,10 +402,18 @@ class AudioProcessor:
             
             if not transcribed_text:
                 raise Exception("Failed to transcribe audio")
+            
+            # End transcription timer
+            if self.metrics_service:
+                self.metrics_service.end_timer('transcription', job_id)
                 
             # Stage 4: Formatting
             stage = 4
             self.update_job_status(job_id, 'processing', 'formatting')
+            
+            # Start formatting timer
+            if self.metrics_service:
+                self.metrics_service.start_timer('formatting', job_id)
             if status_message_id:
                 progress = self.calculate_progress(stage, 0)
                 self.telegram.send_progress_update(
@@ -378,6 +423,10 @@ class AudioProcessor:
             
             # Format text
             formatted_text = self.format_text_with_gemini(transcribed_text)
+            
+            # End formatting timer
+            if self.metrics_service:
+                self.metrics_service.end_timer('formatting', job_id)
             
             # Update progress after formatting
             if status_message_id:
@@ -392,6 +441,10 @@ class AudioProcessor:
             
             # Calculate processing time
             processing_time = int(time.time() - self.start_time) if self.start_time else None
+            
+            # End total processing timer
+            if self.metrics_service:
+                self.metrics_service.end_timer('total_processing', job_id)
             
             # Log success with both durations and additional metadata
             self._log_transcription_attempt(user_id, user_name, file_size, duration, 'success', len(formatted_text), 
@@ -567,10 +620,10 @@ def handle_pubsub_message(event, context):
     """Cloud Function entry point for Pub/Sub messages"""
     try:
         # Initialize services (only happens once per instance)
-        telegram, openai, db, firestore_service, audio_service = initialize_services()
+        telegram, openai, db, firestore_service, audio_service, metrics_service = initialize_services()
         
         # Create processor with shared services
-        processor = AudioProcessor(telegram, openai, db, firestore_service, audio_service)
+        processor = AudioProcessor(telegram, openai, db, firestore_service, audio_service, metrics_service)
         
         # Decode the Pub/Sub message
         pubsub_message = base64.b64decode(event['data']).decode('utf-8')

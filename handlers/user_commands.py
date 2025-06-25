@@ -62,6 +62,7 @@ class HelpCommandHandler(BaseHandler):
 • /cost - Расчет стоимости обработки
 • /status - Статус очереди обработки (все пользователи)
 • /flush - Очистить застрявшие задачи (>1 часа)
+• /metrics [hours] - Метрики производительности (по умолчанию 24ч)
 """
             send_message(chat_id, help_text_user + help_text_admin, parse_mode="HTML")
         else:
