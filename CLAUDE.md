@@ -77,16 +77,25 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.1.0
-This is a major release marking the completion of the service-oriented architecture refactoring.
+### Current Version: v1.2.0
+Major update with new tariff system and payment notifications.
 
-**Key Achievements:**
-- Complete service layer architecture implementation
-- Command handler system with clean separation of concerns
-- Reduced main.py from 1602 to 969 lines (39.5% reduction)
-- Removed all legacy code paths
-- Improved maintainability and scalability
-- Successfully deployed and tested in production
+**New Features:**
+- Redesigned tariff structure with progressive pricing
+- Added per-minute price display for all packages
+- Implemented payment notification system for owner
+- Added infrastructure cost tracking in /cost command
+
+**Tariff Changes:**
+- Start: 50 minutes for 75 ⭐ (300% markup)
+- Standard: 200 minutes for 270 ⭐ 
+- Profi: 1000 minutes for 1150 ⭐
+- MAX: 8888 minutes for 8800 ⭐ (200% markup)
+
+**Payment Notifications:**
+- Immediate notification for first payment
+- Batched hourly summaries for multiple payments
+- Detailed sales reports for owner
 
 ### Version History
 - **v1.0.0** - Initial stable release with all core features
@@ -100,6 +109,7 @@ This is a major release marking the completion of the service-oriented architect
 - **v1.0.8** - Improved UX and automatic cleanup (June 25, 2025)
 - **v1.0.9** - Major refactoring with service layer and command handlers (June 25, 2025)
 - **v1.1.0** - Stable release of service-oriented architecture (June 25, 2025)
+- **v1.2.0** - New tariff system and payment notifications (June 25, 2025)
 
 ## Development
 
