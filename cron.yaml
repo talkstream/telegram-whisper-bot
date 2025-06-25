@@ -28,3 +28,17 @@ cron:
   schedule: every 1 hours
   retry_parameters:
     job_retry_limit: 1
+    
+- description: "Daily usage report"
+  url: /send_scheduled_report?type=daily
+  schedule: every day 09:00
+  timezone: Europe/Moscow
+  retry_parameters:
+    job_retry_limit: 1
+    
+- description: "Weekly usage report"
+  url: /send_scheduled_report?type=weekly
+  schedule: every monday 09:00
+  timezone: Europe/Moscow
+  retry_parameters:
+    job_retry_limit: 1

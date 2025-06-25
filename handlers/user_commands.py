@@ -57,6 +57,7 @@ class HelpCommandHandler(BaseHandler):
 <b>Админ-команды:</b>
 • /user [поиск] - Поиск и управление пользователями
 • /export [users|logs|payments] [дней] - Экспорт данных в CSV
+• /report [daily|weekly] - Отправить отчет вручную
 • /review_trials - Просмотр заявок на пробный доступ
 • /credit &lt;user_id&gt; &lt;minutes&gt; - Начислить минуты пользователю
 • /remove_user - Удалить пользователя из системы

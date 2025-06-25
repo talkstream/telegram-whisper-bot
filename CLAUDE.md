@@ -42,6 +42,7 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 ### Admin Commands (owner only)
 - `/user [search]` - Search and manage users (by name or ID)
 - `/export [users|logs|payments] [days]` - Export data to CSV (default: users, 30 days)
+- `/report [daily|weekly]` - Manually trigger scheduled reports
 - `/review_trials` - Review pending trial requests
 - `/credit <user_id> <minutes>` - Add minutes to user
 - `/remove_user` - Remove user from system
@@ -96,10 +97,19 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.5.0
-CSV export functionality for admin reports.
+### Current Version: v1.6.0
+Automated daily and weekly reports with Cloud Scheduler.
 
-**New Features (v1.5.0):**
+**New Features (v1.6.0):**
+- **Automated Scheduled Reports**:
+  - Daily reports at 9:00 AM Moscow time
+  - Weekly reports every Monday at 9:00 AM Moscow time
+  - Comprehensive statistics: users, usage, revenue, top users, system health
+  - Manual trigger with `/report [daily|weekly]` command
+  - Cloud Scheduler integration for reliable delivery
+  - Configurable report times via cron.yaml
+
+**Previous Features (v1.5.0):**
 - **CSV Export Command (/export)**:
   - Export user data with full details and activity stats
   - Export transcription logs with date filtering
@@ -171,10 +181,11 @@ CSV export functionality for admin reports.
 - **v1.4.0** - Performance monitoring system with metrics tracking (June 25, 2025)
 - **v1.4.1** - Documentation updates and GitHub repository setup (June 25, 2025)
 - **v1.5.0** - CSV export functionality for admin reports (June 25, 2025)
+- **v1.6.0** - Automated daily and weekly reports with Cloud Scheduler (June 25, 2025)
 
 ## Summary of June 25, 2025 Work
 
-Today was a highly productive day with 6 major releases (v1.1.0 → v1.5.0):
+Today was an incredibly productive day with 7 major releases (v1.1.0 → v1.6.0):
 
 1. **Morning**: Complete service-oriented architecture refactor
    - Reduced codebase by 40%, improved maintainability
@@ -192,8 +203,9 @@ Today was a highly productive day with 6 major releases (v1.1.0 → v1.5.0):
    - Set up private GitHub repository for version control
    - Pushed all code and version history to remote repository
    - Implemented CSV export functionality for admin reporting
+   - Added automated daily/weekly reports with Cloud Scheduler
 
-**Total Progress**: 18+ commits, 6 stable releases, ~2500 lines of well-structured code added/refactored
+**Total Progress**: 20+ commits, 7 stable releases, ~2700 lines of well-structured code added/refactored
 **GitHub Repository**: https://github.com/talkstream/telegram-whisper-bot (private)
 
 The bot is now in excellent shape with professional architecture, comprehensive monitoring, and all business features implemented.
@@ -406,10 +418,10 @@ gcloud functions deploy audio-processor \
 ## Next Development Priorities
 
 ### High Priority:
-1. **Advanced Admin Features** (Mostly Complete):
+1. **Advanced Admin Features** ✅ (Complete):
    - ✅ User management dashboard with search/filtering
    - ✅ Export usage reports (CSV)
-   - Automated daily/weekly reports
+   - ✅ Automated daily/weekly reports
    - ✅ User activity monitoring (via /user command)
 
 ### Medium Priority:

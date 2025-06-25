@@ -712,5 +712,44 @@ class ExportCommandHandler(BaseHandler):
         return "OK", 200
 
 
+class ReportCommandHandler(BaseHandler):
+    """Handler for /report command (admin only) - manually trigger scheduled reports"""
+    
+    def handle(self, update_data):
+        user_id = update_data['user_id']
+        chat_id = update_data['chat_id']
+        text = update_data['text']
+        send_message = self.services['telegram_service'].send_message
+        
+        if user_id != self.constants['OWNER_ID']:
+            return None
+            
+        # Parse command arguments
+        parts = text.split()
+        report_type = parts[1] if len(parts) > 1 else 'daily'
+        
+        if report_type not in ['daily', 'weekly']:
+            send_message(chat_id, "❌ Неверный тип отчета. Используйте: /report [daily|weekly]")
+            return "OK", 200
+            
+        try:
+            # Import the handler function
+            from main import handle_scheduled_report
+            
+            # Generate and send report
+            result = handle_scheduled_report(report_type)
+            
+            if result[0] == "OK":
+                send_message(chat_id, f"✅ {report_type.capitalize()} отчет отправлен!")
+            else:
+                send_message(chat_id, f"❌ Ошибка при генерации отчета: {result}")
+                
+        except Exception as e:
+            logging.error(f"Error triggering manual report: {e}")
+            send_message(chat_id, f"❌ Ошибка: {str(e)}")
+        
+        return "OK", 200
+
+
 # Import the metrics command handler at the module level
 from .metrics_command import MetricsCommandHandler

@@ -1204,6 +1204,103 @@ def handle_trial_notifications(request):
         logging.exception(f"Error handling trial notifications: {e}")
         return "Internal Server Error", 500
 
+def handle_scheduled_report(report_type='daily'):
+    """Generate and send scheduled reports to admin"""
+    try:
+        if not initialize():
+            logging.error("Failed to initialize services for scheduled report")
+            return "Service Unavailable", 503
+        
+        # Get report data based on type
+        from datetime import datetime, timedelta
+        import pytz
+        
+        moscow_tz = pytz.timezone("Europe/Moscow")
+        now = datetime.now(moscow_tz)
+        
+        if report_type == 'daily':
+            # Daily report for last 24 hours
+            start_date = now - timedelta(days=1)
+            report_title = f"📊 Ежедневный отчет за {now.strftime('%d.%m.%Y')}"
+        else:  # weekly
+            # Weekly report for last 7 days
+            start_date = now - timedelta(days=7)
+            report_title = f"📊 Еженедельный отчет ({start_date.strftime('%d.%m')} - {now.strftime('%d.%m.%Y')})"
+        
+        # Convert to UTC for database queries
+        start_date_utc = start_date.astimezone(pytz.utc)
+        end_date_utc = now.astimezone(pytz.utc)
+        
+        # Get statistics
+        stats = stats_service.get_stats_data(start_date_utc, end_date_utc) if stats_service else {}
+        
+        # Build report message
+        report_msg = f"<b>{report_title}</b>\n\n"
+        
+        # 1. User statistics
+        total_users = len(firestore_service.get_all_users()) if firestore_service else 0
+        new_users = 0
+        active_users = len(stats)
+        
+        report_msg += "👥 <b>Пользователи:</b>\n"
+        report_msg += f"• Всего в системе: {total_users}\n"
+        report_msg += f"• Активных за период: {active_users}\n\n"
+        
+        # 2. Usage statistics
+        total_requests = sum(data['requests'] for data in stats.values())
+        total_duration = sum(data['duration'] for data in stats.values())
+        total_chars = sum(data['chars'] for data in stats.values())
+        total_failures = sum(data['failures'] for data in stats.values())
+        
+        report_msg += "📈 <b>Использование:</b>\n"
+        report_msg += f"• Обработано файлов: {total_requests}\n"
+        if total_requests > 0:
+            report_msg += f"• Успешность: {((total_requests - total_failures) / total_requests * 100):.1f}%\n"
+        report_msg += f"• Общая длительность: {UtilityService.format_duration(total_duration)}\n"
+        report_msg += f"• Символов обработано: {total_chars:,}\n\n"
+        
+        # 3. Revenue statistics
+        if firestore_service:
+            payments = firestore_service.get_payment_logs(start_date_utc, end_date_utc)
+            total_revenue = sum(p.get('stars_amount', 0) for p in payments)
+            payment_count = len(payments)
+            
+            report_msg += "💰 <b>Доходы:</b>\n"
+            report_msg += f"• Платежей: {payment_count}\n"
+            report_msg += f"• Общий доход: {total_revenue} ⭐\n"
+            if payment_count > 0:
+                report_msg += f"• Средний чек: {total_revenue / payment_count:.0f} ⭐\n"
+            report_msg += "\n"
+        
+        # 4. Top users
+        if stats:
+            report_msg += "🏆 <b>Топ пользователей:</b>\n"
+            sorted_stats = sorted(stats.items(), key=lambda x: x[1]['requests'], reverse=True)[:5]
+            for idx, (user_id_str, data) in enumerate(sorted_stats, 1):
+                report_msg += f"{idx}. {data['name']}: {data['requests']} файлов, "
+                report_msg += f"{UtilityService.format_duration(data['duration'])}\n"
+            report_msg += "\n"
+        
+        # 5. System health
+        if firestore_service:
+            stuck_jobs = firestore_service.get_stuck_jobs(hours_threshold=1)
+            queue_count = firestore_service.count_pending_jobs()
+            
+            report_msg += "🔧 <b>Состояние системы:</b>\n"
+            report_msg += f"• Файлов в очереди: {queue_count}\n"
+            report_msg += f"• Застрявших задач: {len(stuck_jobs)}\n"
+        
+        # Send report to owner
+        if telegram_service:
+            telegram_service.send_message(OWNER_ID, report_msg, parse_mode="HTML")
+            logging.info(f"Sent {report_type} report to owner")
+        
+        return "OK", 200
+        
+    except Exception as e:
+        logging.exception(f"Error generating scheduled report: {e}")
+        return "Internal Server Error", 500
+
 # Import Flask for WSGI compatibility
 from flask import Flask, request
 
@@ -1240,6 +1337,12 @@ def send_payment_notifications():
 def send_trial_notifications():
     """Handle periodic sending of trial request notifications"""
     return handle_trial_notifications(request)
+
+@app.route('/send_scheduled_report')
+def send_scheduled_report():
+    """Send scheduled daily or weekly reports to admin"""
+    report_type = request.args.get('type', 'daily')
+    return handle_scheduled_report(report_type)
 
 # For local testing
 if __name__ == '__main__':
