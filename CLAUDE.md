@@ -77,10 +77,15 @@ git checkout v1.0.0
 git tag -l
 ```
 
-### Current Version: v1.3.0
-Optimized trial request handling and re-enabled inline keyboards.
+### Current Version: v1.3.1
+Stable release with optimized trial handling and improved cost tracking.
 
-**New Features:**
+**Latest Updates (v1.3.1):**
+- Clarified /cost command to show data is from editorials-robot project only
+- Added warning that infrastructure costs are estimates
+- Added link to GCP billing console for exact costs
+
+**v1.3.0 Features:**
 - **Trial Request Improvements:**
   - Trial requests are now automatically deleted after approval/denial
   - Re-implemented inline keyboards for one-click approve/deny actions
@@ -88,7 +93,7 @@ Optimized trial request handling and re-enabled inline keyboards.
   - Better UI with formatted messages and real-time status updates
   - Trial requests are cleaned up to prevent clutter
   
-**Previous v1.2.0 Features:**
+**v1.2.0 Features:**
 - Redesigned tariff structure with progressive pricing
 - Added per-minute price display for all packages
 - Implemented payment notification system for owner
@@ -114,6 +119,7 @@ Optimized trial request handling and re-enabled inline keyboards.
 - **v1.1.0** - Stable release of service-oriented architecture (June 25, 2025)
 - **v1.2.0** - New tariff system and payment notifications (June 25, 2025)
 - **v1.3.0** - Optimized trial request handling and re-enabled inline keyboards (June 25, 2025)
+- **v1.3.1** - Improved cost tracking clarity for editorials-robot project (June 25, 2025)
 
 ## Development
 
@@ -225,58 +231,46 @@ gcloud functions deploy audio-processor \
 - Verify Cloud Function deployment
 - Monitor logs in Cloud Logging
 
-## Recent Updates
+## Recent Updates (June 25, 2025)
+
+### Today's Major Achievements:
+- ✅ **Complete Service-Oriented Architecture Refactor (v1.1.0)**:
+  - Extracted all services into dedicated modules (FirestoreService, AudioService, StatsService, UtilityService)
+  - Implemented command handler pattern with CommandRouter
+  - Reduced main.py from 1602 to 969 lines (40% reduction)
+  - Improved code maintainability and testability
+  
+- ✅ **New Tariff System with Progressive Pricing (v1.2.0)**:
+  - Redesigned packages: Start (50min), Standard (200min), Profi (1000min), MAX (8888min)
+  - Progressive pricing from 300% to 200% markup
+  - Added per-minute price display for transparency
+  - Implemented owner payment notifications with batching
+  - Enhanced /cost command with full infrastructure estimates
+  
+- ✅ **Trial Request Handling Optimization (v1.3.0)**:
+  - Re-enabled inline keyboards for one-click approve/deny
+  - Trial requests now auto-delete after processing
+  - Fixed /credit command to properly handle trial approvals
+  - Better formatted UI with real-time status updates
+  
+- ✅ **Trial Request Notifications System**:
+  - Immediate notification for first trial request
+  - Batched hourly summaries for multiple requests
+  - Smart batching to prevent notification spam
+
+### Previous Improvements:
 - ✅ Async processing via Pub/Sub
-- ✅ Service-oriented architecture
 - ✅ Memory optimization (2GB → 1GB)
 - ✅ Gemini 2.5-flash upgrade
-- ✅ User settings with simple command-based interface (inline buttons removed)
-- ✅ Added warmup handler and cron job to keep bot responsive
-- ✅ Fixed 5-second pause timing for time estimates
-- ✅ Improved progress display for formatting stage
-- ✅ Added detailed logging for average audio duration
-- ✅ Codebase cleanup - removed 33% duplicate code (v1.0.1)
-- ✅ Git version control implemented
-- ✅ Enhanced warmup performance (June 24, 2025):
-  - Upgraded to F2 instance class for better performance
-  - Added proper health checks (readiness and liveness)
-  - Improved warmup handler with Firestore connection preloading
-  - More aggressive cron jobs (warmup every 3min, health check every 2min)
-  - Added Gunicorn workers and threads for better concurrency
-- ✅ Fixed critical deployment issues (June 24, 2025):
-  - Added Flask for WSGI compatibility with App Engine
-  - Fixed missing services folder in root directory
-  - All endpoints now working correctly
-- ✅ Migrated webhook from Cloud Functions to App Engine (June 24, 2025):
-  - Updated Telegram webhook URL to App Engine endpoint
-  - Deleted old Cloud Function (was causing 16-second delays)
-  - Bot now responds in <1 second with proper warmup
-- ✅ Fixed /settings command (June 24, 2025):
-  - Escaped HTML special characters (&lt; and &gt;)
-  - Fixed "can't parse entities" error that persisted for months
-  - All bot commands now working correctly
-- ✅ Added /flush command for cleaning stuck jobs (December 2024):
-  - Admin command to clean up jobs stuck in pending/processing state
-  - Automatically removes jobs older than 1 hour
-  - Fixed issue where user_name wasn't stored in Firestore for jobs
-- ✅ Improved duration accuracy and timing (June 24, 2025):
-  - Added dual duration tracking (Telegram metadata + FFmpeg actual)
-  - Fixed average duration calculation using FFmpeg data
-  - Reduced pause from 5 to 3 seconds (saves 2 seconds per audio)
-  - Enhanced metadata collection for better diagnostics
-  - Deployed as v1.0.5
-- ✅ Fixed batch processing issues (June 24, 2025 - v1.0.7):
-  - Batch file confirmation messages now properly deleted after processing
-  - Fixed queue counter logic
-  - Added proper Russian text declensions
-  - Fixed critical parse_mode error
-  - Added Gemini retry logic
-- ✅ Added automatic stuck job cleanup (June 25, 2025):
-  - Added /flush admin command for manual cleanup
-  - Automatic cleanup runs every 30 minutes via cron
-  - Detailed logging of stuck jobs before cleanup
-  - Admin notification if 5+ jobs are stuck
-  - Fixed missing user_name in job documents
+- ✅ User settings with command-based interface
+- ✅ Enhanced warmup performance with F2 instance
+- ✅ Fixed critical deployment issues (Flask integration)
+- ✅ Migrated webhook from Cloud Functions to App Engine
+- ✅ Fixed /settings command HTML parsing
+- ✅ Added /flush command for stuck job cleanup
+- ✅ Improved duration accuracy and progress timing
+- ✅ Fixed batch processing with proper message deletion
+- ✅ Automatic stuck job cleanup every 30 minutes
 - ✅ Major code refactoring (June 25, 2025):
   - Created service layer architecture:
     - UtilityService: Format functions (duration, size, etc.)
