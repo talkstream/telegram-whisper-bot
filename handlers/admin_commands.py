@@ -700,7 +700,7 @@ class ExportCommandHandler(BaseHandler):
                 return "OK", 200
             
             # Send CSV file
-            send_document(chat_id, temp_file.name, caption=caption, filename=filename)
+            send_document(chat_id, temp_file.name, caption=caption)
             
             # Clean up
             os.unlink(temp_file.name)
