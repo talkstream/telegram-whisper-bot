@@ -62,3 +62,6 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Claude AI
+.claude/
