@@ -838,12 +838,22 @@ def handle_telegram_webhook(request):
             file_id, file_size, duration = None, 0, 0
             original_file_name, original_mime_type = None, None
             audio, voice, document = message.get("audio"), message.get("voice"), message.get("document")
+            video, video_note = message.get("video"), message.get("video_note")
+            
             if audio: 
                 file_id, file_size, duration = audio["file_id"], audio.get("file_size", 0), audio.get("duration", 0)
                 original_file_name, original_mime_type = audio.get("file_name"), audio.get("mime_type")
             elif voice: 
                 file_id, file_size, duration = voice["file_id"], voice.get("file_size", 0), voice.get("duration", 0)
                 original_mime_type = voice.get("mime_type")
+            elif video:
+                file_id, file_size, duration = video["file_id"], video.get("file_size", 0), video.get("duration", 0)
+                original_file_name = video.get("file_name", "video.mp4")
+                original_mime_type = video.get("mime_type", "video/mp4")
+            elif video_note:
+                file_id, file_size, duration = video_note["file_id"], video_note.get("file_size", 0), video_note.get("duration", 0)
+                original_file_name = "video_note.mp4"
+                original_mime_type = "video/mp4"
             elif document and document.get("mime_type", "").startswith("audio/"):
                 file_id, file_size = document["file_id"], document.get("file_size", 0)
                 original_file_name, original_mime_type = document.get("file_name"), document.get("mime_type")
@@ -914,7 +924,10 @@ def handle_telegram_webhook(request):
                     if batch_indicator:
                         file_info_msg = f"{batch_indicator}"
                     else:
-                        file_info_msg = "📎 Файл получен\n"
+                        if original_mime_type and original_mime_type.startswith("video/"):
+                            file_info_msg = "🎥 Видео получено\n"
+                        else:
+                            file_info_msg = "📎 Файл получен\n"
                     
                     if original_file_name:
                         file_info_msg += f"{original_file_name}\n"
@@ -925,6 +938,9 @@ def handle_telegram_webhook(request):
                     queue_count = firestore_service.count_pending_jobs() if firestore_service else 0
                     if queue_count > 1:
                         file_info_msg += f"📊 В очереди: {UtilityService.pluralize_russian(queue_count, 'файл', 'файла', 'файлов')}\n"
+                    
+                    if original_mime_type and original_mime_type.startswith("video/"):
+                        file_info_msg += "🎬 Извлекаю аудиодорожку...\n"
                     file_info_msg += "⏳ Обрабатываю..."
                     
                     # Send initial status message

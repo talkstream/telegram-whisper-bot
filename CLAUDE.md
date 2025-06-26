@@ -26,6 +26,7 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 - Payment integration with Telegram Stars
 - User settings menu for output customization
 - FFmpeg audio normalization (MP3 128kbps, 44.1kHz, mono)
+- **Video transcription support**: Extract and transcribe audio from video files and video notes
 
 ## Commands
 
@@ -97,10 +98,22 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.6.1
-Bug fix for CSV export functionality.
+### Current Version: v1.7.0
+Added video transcription support - users can now send videos and video notes for transcription.
 
-**New Features (v1.6.0):**
+**New Features (v1.7.0):**
+- **Video Transcription Support**:
+  - Support for regular video messages (`message.video`)
+  - Support for round video notes (`message.video_note`)
+  - Automatic audio extraction from video files using FFmpeg
+  - Supports popular video formats: MP4, AVI, MOV, MKV, WebM, MPEG
+  - Shows "🎥 Видео получено" notification for video files
+  - Displays "🎬 Извлекаю аудиодорожку..." progress message
+  - Handles videos without audio tracks gracefully with error message
+  - Same 20MB file size limit applies to video files
+  - Billing based on video duration (same as audio)
+
+**Previous Features (v1.6.0):**
 - **Automated Scheduled Reports**:
   - Daily reports at 9:00 AM Moscow time
   - Weekly reports every Monday at 9:00 AM Moscow time
@@ -183,6 +196,7 @@ Bug fix for CSV export functionality.
 - **v1.5.0** - CSV export functionality for admin reports (June 25, 2025)
 - **v1.6.0** - Automated daily and weekly reports with Cloud Scheduler (June 25, 2025)
 - **v1.6.1** - Fixed CSV export send_document parameter error (June 25, 2025)
+- **v1.7.0** - Video transcription support for video messages and video notes (June 26, 2025)
 
 ## Summary of June 25, 2025 Work
 

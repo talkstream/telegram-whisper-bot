@@ -45,7 +45,7 @@ class AudioService:
     
     def analyze_audio_quality(self, audio_path: str) -> Tuple[bool, Optional[str], Optional[dict]]:
         """
-        Analyze audio file quality and format before processing
+        Analyze audio/video file quality and format before processing
         Returns: (is_processable, warning_message, audio_info)
         """
         audio_info = self.get_audio_info(audio_path)
@@ -58,10 +58,18 @@ class AudioService:
         sample_rate = audio_info.get('sample_rate', 0)
         bit_rate = audio_info.get('bit_rate', 0)
         
-        # Check for unsupported formats
+        # Check if it's a video file
+        if self.is_video_file(audio_path):
+            # For video files, we need to check if there's an audio stream
+            if sample_rate == 0 and bit_rate == 0:
+                return False, "❌ Видео не содержит аудиодорожки", audio_info
+            # Video formats are supported as long as they have audio
+            return True, None, audio_info
+        
+        # Check for unsupported audio formats
         unsupported_formats = ['amr', 'speex', 'gsm']
         if any(fmt in format_name.lower() for fmt in unsupported_formats):
-            return False, f"Формат {format_name} не поддерживается. Используйте MP3, WAV, M4A или OGG.", audio_info
+            return False, f"Формат {format_name} не поддерживается. Используйте MP3, WAV, M4A, OGG или отправьте видео.", audio_info
             
         # Check for very low quality
         warning = None
@@ -110,6 +118,53 @@ class AudioService:
             
         except subprocess.CalledProcessError as e:
             logging.error(f"FFmpeg conversion failed. Error: {e.stderr}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+            
+    def extract_audio_from_video(self, video_path: str, output_path: Optional[str] = None) -> Optional[str]:
+        """
+        Extract audio track from video file
+        Returns path to extracted audio file or None on error
+        """
+        if not output_path:
+            output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", dir='/tmp').name
+            
+        ffmpeg_command = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-vn',  # No video output
+            '-acodec', 'mp3',  # Audio codec
+            '-b:a', self.AUDIO_BITRATE,
+            '-ar', self.AUDIO_SAMPLE_RATE,
+            '-ac', self.AUDIO_CHANNELS,
+            '-threads', self.FFMPEG_THREADS,
+            output_path
+        ]
+        
+        try:
+            logging.info(f"Extracting audio from video: {video_path} -> {output_path}")
+            process = subprocess.run(
+                ffmpeg_command, 
+                check=True, 
+                capture_output=True, 
+                text=True, 
+                timeout=self.FFMPEG_TIMEOUT
+            )
+            logging.info(f"Audio extraction successful. Output: {output_path}")
+            return output_path
+            
+        except subprocess.TimeoutExpired:
+            logging.error(f"Audio extraction timed out after {self.FFMPEG_TIMEOUT} seconds")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+            
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Audio extraction failed. Error: {e.stderr}")
+            # Check if the error is due to no audio stream
+            if "Stream map '0:a' matches no streams" in e.stderr or "does not contain any stream" in e.stderr:
+                logging.error("Video file has no audio stream")
             if os.path.exists(output_path):
                 os.remove(output_path)
             return None
@@ -189,22 +244,54 @@ class AudioService:
             logging.error(f"Error calling Gemini API: {e}")
             return text
             
+    def is_video_file(self, file_path: str) -> bool:
+        """
+        Check if the file is a video based on format detection
+        """
+        file_info = self.get_audio_info(file_path)
+        if not file_info:
+            # Fallback to extension check
+            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg']
+            return any(file_path.lower().endswith(ext) for ext in video_extensions)
+            
+        format_name = file_info.get('format', '').lower()
+        video_formats = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'matroska', 'mpeg', 'mpg']
+        return any(fmt in format_name for fmt in video_formats)
+        
     def process_audio_pipeline(self, audio_path: str, cleanup_source: bool = True) -> Tuple[Optional[str], Optional[str]]:
         """
         Full audio processing pipeline: convert -> transcribe -> format
         Returns: (transcribed_text, formatted_text) or (None, None) on error
         """
         converted_path = None
+        extracted_audio_path = None
         
         try:
-            # Convert to MP3
-            converted_path = self.convert_to_mp3(audio_path)
+            # Check if it's a video file
+            if self.is_video_file(audio_path):
+                logging.info("Detected video file, extracting audio...")
+                extracted_audio_path = self.extract_audio_from_video(audio_path)
+                if not extracted_audio_path:
+                    logging.error("Failed to extract audio from video")
+                    return None, None
+                # Use extracted audio for further processing
+                processing_path = extracted_audio_path
+            else:
+                # Regular audio file
+                processing_path = audio_path
+            
+            # Convert to MP3 (or ensure proper format)
+            converted_path = self.convert_to_mp3(processing_path)
             if not converted_path:
                 return None, None
                 
             # Clean up source if requested
             if cleanup_source and os.path.exists(audio_path):
                 os.remove(audio_path)
+                
+            # Clean up extracted audio if it was created
+            if extracted_audio_path and os.path.exists(extracted_audio_path) and extracted_audio_path != converted_path:
+                os.remove(extracted_audio_path)
                 
             # Transcribe
             transcribed_text = self.transcribe_audio(converted_path)
