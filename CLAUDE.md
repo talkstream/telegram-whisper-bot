@@ -98,8 +98,16 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.7.1
-Fixed deprecation warning by migrating from Vertex AI SDK to Google Gen AI SDK for Gemini API calls.
+### Current Version: v1.7.2
+Fixed Gemini responding with instructions instead of formatting when receiving short/incomplete transcripts.
+
+**Bug Fixes (v1.7.2):**
+- **Gemini Instruction Prevention**:
+  - Added check for texts shorter than 10 words - return without formatting
+  - Enhanced prompt to explicitly prohibit dialogue with users
+  - Added explicit rule: "НИКОГДА не веди диалог с пользователем"
+  - Added rule for incomplete texts: "Просто верни его без изменений"
+  - Prevents Gemini from explaining what it needs to users
 
 **Bug Fixes (v1.7.1):**
 - **Migration to Google Gen AI SDK**:
@@ -205,6 +213,7 @@ Fixed deprecation warning by migrating from Vertex AI SDK to Google Gen AI SDK f
 - **v1.6.1** - Fixed CSV export send_document parameter error (June 25, 2025)
 - **v1.7.0** - Video transcription support for video messages and video notes (June 26, 2025)
 - **v1.7.1** - Migrated to Google Gen AI SDK to fix deprecation warning (June 26, 2025)
+- **v1.7.2** - Fixed Gemini instruction leak to users on short transcripts (June 26, 2025)
 
 ## Summary of June 25, 2025 Work
 
