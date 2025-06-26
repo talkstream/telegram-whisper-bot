@@ -211,8 +211,12 @@ class AudioService:
         """
         api_start_time = time.time()
         try:
-            # Initialize the client (it will use default credentials)
-            client = genai.Client()
+            # Initialize the client with Vertex AI configuration
+            client = genai.Client(
+                vertexai=True,
+                project=os.environ.get('GCP_PROJECT', 'editorials-robot'),
+                location='europe-west1'
+            )
             
             prompt = f"""
             Твоя задача — отформатировать следующий транскрипт устной речи, улучшив его читаемость, но полностью сохранив исходный смысл, стиль и лексику автора.
