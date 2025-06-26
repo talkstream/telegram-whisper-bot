@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import Optional, Tuple
 from openai import OpenAI
-from vertexai.generative_models import GenerativeModel
+import google.genai as genai
 
 
 class AudioService:
@@ -211,7 +211,8 @@ class AudioService:
         """
         api_start_time = time.time()
         try:
-            model = GenerativeModel(model_name)
+            # Initialize the client (it will use default credentials)
+            client = genai.Client()
             
             prompt = f"""
             Твоя задача — отформатировать следующий транскрипт устной речи, улучшив его читаемость, но полностью сохранив исходный смысл, стиль и лексику автора.
@@ -224,7 +225,10 @@ class AudioService:
             ---
             """
             
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
             formatted_text = response.text
             
             # Log API call metrics

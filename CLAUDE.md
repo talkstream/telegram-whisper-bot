@@ -98,8 +98,15 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.7.0
-Added video transcription support - users can now send videos and video notes for transcription.
+### Current Version: v1.7.1
+Fixed deprecation warning by migrating from Vertex AI SDK to Google Gen AI SDK for Gemini API calls.
+
+**Bug Fixes (v1.7.1):**
+- **Migration to Google Gen AI SDK**:
+  - Fixed deprecation warning for `vertexai.generative_models`
+  - Migrated from deprecated Vertex AI SDK to new Google Gen AI SDK
+  - Continues to use `gemini-2.5-flash` model (available in new SDK)
+  - Prevents future breaking changes (deprecated API removal scheduled for June 2026)
 
 **New Features (v1.7.0):**
 - **Video Transcription Support**:
@@ -197,6 +204,7 @@ Added video transcription support - users can now send videos and video notes fo
 - **v1.6.0** - Automated daily and weekly reports with Cloud Scheduler (June 25, 2025)
 - **v1.6.1** - Fixed CSV export send_document parameter error (June 25, 2025)
 - **v1.7.0** - Video transcription support for video messages and video notes (June 26, 2025)
+- **v1.7.1** - Migrated to Google Gen AI SDK to fix deprecation warning (June 26, 2025)
 
 ## Summary of June 25, 2025 Work
 
