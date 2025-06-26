@@ -98,8 +98,15 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.7.2
-Fixed Gemini responding with instructions instead of formatting when receiving short/incomplete transcripts.
+### Current Version: v1.7.3
+Added detection for "Продолжение следует..." phrase to properly handle audio without speech.
+
+**Bug Fixes (v1.7.3):**
+- **"Продолжение следует..." Detection**:
+  - Added exact match check for this specific Whisper response
+  - When detected, returns user-friendly error message
+  - Message: "❌ На записи не обнаружено речи или текст не был распознан"
+  - Prevents confusing AI-generated text from reaching users
 
 **Bug Fixes (v1.7.2):**
 - **Gemini Instruction Prevention**:
@@ -214,6 +221,7 @@ Fixed Gemini responding with instructions instead of formatting when receiving s
 - **v1.7.0** - Video transcription support for video messages and video notes (June 26, 2025)
 - **v1.7.1** - Migrated to Google Gen AI SDK to fix deprecation warning (June 26, 2025)
 - **v1.7.2** - Fixed Gemini instruction leak to users on short transcripts (June 26, 2025)
+- **v1.7.3** - Added "Продолжение следует..." detection for speechless audio (June 26, 2025)
 
 ## Summary of June 25, 2025 Work
 

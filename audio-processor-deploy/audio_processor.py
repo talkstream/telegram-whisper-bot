@@ -403,6 +403,11 @@ class AudioProcessor:
             if not transcribed_text:
                 raise Exception("Failed to transcribe audio")
             
+            # Check if Whisper returned the "continuation follows" phrase
+            if transcribed_text.strip() == "Продолжение следует...":
+                logging.warning("Whisper returned 'Продолжение следует...', indicating no speech detected")
+                raise Exception("На записи не обнаружено речи или текст не был распознан")
+            
             # End transcription timer
             if self.metrics_service:
                 self.metrics_service.end_timer('transcription', job_id)
