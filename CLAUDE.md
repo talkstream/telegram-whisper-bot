@@ -98,14 +98,22 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.7.3
-Added detection for "Продолжение следует..." phrase to properly handle audio without speech.
+### Current Version: v1.7.4
+Improved error messages - removed alarming emoji and made messages more user-friendly.
+
+**UI Improvements (v1.7.4):**
+- **Softer Error Messages**:
+  - Removed ❌ emoji from all error messages
+  - Removed 💡 emoji from recommendations
+  - Special handling for "speech not detected" error
+  - Less alarming tone to avoid association with critical failures
+  - Cleaner, more professional error presentation
 
 **Bug Fixes (v1.7.3):**
 - **"Продолжение следует..." Detection**:
   - Added exact match check for this specific Whisper response
   - When detected, returns user-friendly error message
-  - Message: "❌ На записи не обнаружено речи или текст не был распознан"
+  - Message: "На записи не обнаружено речи или текст не был распознан"
   - Prevents confusing AI-generated text from reaching users
 
 **Bug Fixes (v1.7.2):**
@@ -222,6 +230,7 @@ Added detection for "Продолжение следует..." phrase to properl
 - **v1.7.1** - Migrated to Google Gen AI SDK to fix deprecation warning (June 26, 2025)
 - **v1.7.2** - Fixed Gemini instruction leak to users on short transcripts (June 26, 2025)
 - **v1.7.3** - Added "Продолжение следует..." detection for speechless audio (June 26, 2025)
+- **v1.7.4** - Improved error messages UI - removed alarming emoji (June 27, 2025)
 
 ## Summary of June 25, 2025 Work
 

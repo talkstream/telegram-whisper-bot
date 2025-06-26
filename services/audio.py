@@ -321,7 +321,7 @@ class AudioService:
             # Check if Whisper returned the "continuation follows" phrase
             if transcribed_text.strip() == "Продолжение следует...":
                 logging.warning("Whisper returned 'Продолжение следует...', indicating no speech detected")
-                return None, "❌ На записи не обнаружено речи или текст не был распознан."
+                return None, "На записи не обнаружено речи или текст не был распознан."
                 
             # Format
             formatted_text = self.format_text_with_gemini(transcribed_text)
