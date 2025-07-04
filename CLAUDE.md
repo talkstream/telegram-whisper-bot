@@ -245,10 +245,8 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.7.3** - Added "Продолжение следует..." detection for speechless audio (June 26, 2025)
 - **v1.7.4** - Improved error messages UI - removed alarming emoji (June 27, 2025)
 - **v1.7.5** - Added /yo command and unified /code command (June 27, 2025)
-- **v1.8.0** - Major architecture optimization for faster deployment (July 2025)
-- **v1.8.1** - Complete migration from deprecated vertexai SDK - fixed regression (July 2025)
-- **v1.7.5** - Added /yo command and unified /code command (June 27, 2025)
 - **v1.8.0** - Major architecture refactoring for optimized deployment (July 5, 2025)
+- **v1.8.1** - Fixed Vertex AI deprecation warning - completed SDK migration (July 5, 2025)
 
 ## Summary of June 25, 2025 Work
 
@@ -639,6 +637,15 @@ response = client.models.generate_content(
    - No impact on user experience
 
 The refactoring makes the codebase much easier to maintain while significantly improving deployment speed.
+
+### July 5, 2025 - Vertex AI Migration Fix (v1.8.1):
+
+Fixed the deprecation warning by ensuring complete migration from vertexai SDK to Google Gen AI SDK:
+- Removed all vertexai imports (they were accidentally left in v1.8.0)
+- AudioService now uses google-genai SDK directly
+- No more deprecation warnings in logs
+
+**Note**: The migration was initially done in v1.7.1 but some imports were accidentally reintroduced during the v1.8.0 refactoring. This is now fully resolved.
 
 ### July 4, 2025 - SDK Migration Fix (v1.8.1):
 
