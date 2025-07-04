@@ -65,3 +65,6 @@ wheels/
 
 # Claude AI
 .claude/
+
+# Audio processor services (duplicate)
+audio-processor-deploy/services/
