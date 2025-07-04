@@ -107,8 +107,8 @@ def process_audio_file(file_info, user_id, chat_id, user_name, user_data, file_t
         
         if balance < estimated_duration:
             telegram_service.send_message(chat_id,
-                f"Недостаточно минут. Требуется ~{estimated_duration:.1f} мин, "
-                f"ваш баланс: {balance:.1f} мин.")
+                f"Недостаточно минут. Требуется ~{math.ceil(estimated_duration)} мин, "
+                f"ваш баланс: {math.ceil(balance)} мин.")
             return "OK", 200
         
         # Send initial status message
@@ -269,13 +269,13 @@ def process_batch_files(user_id, chat_id, user_name, user_data, batch_state):
     if balance < total_duration:
         telegram_service.send_message(chat_id,
             f"Недостаточно минут для обработки {len(batch_files)} файлов. "
-            f"Требуется ~{total_duration:.1f} мин, ваш баланс: {balance:.1f} мин.")
+            f"Требуется ~{math.ceil(total_duration)} мин, ваш баланс: {math.ceil(balance)} мин.")
         services.firestore_service.set_user_state(user_id, None)
         return "OK", 200
     
     # Send batch confirmation message  
     batch_msg = (f"📦 Получено {UtilityService.pluralize_russian(len(batch_files), 'файл', 'файла', 'файлов')}\n"
-                f"⏱ Общая длительность: ~{total_duration:.1f} мин\n"
+                f"⏱ Общая длительность: ~{math.ceil(total_duration)} мин\n"
                 f"⏳ Начинаю обработку...")
     
     status_msg = telegram_service.send_message(chat_id, batch_msg)

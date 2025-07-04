@@ -5,6 +5,7 @@ Admin command handlers for Telegram Whisper Bot
 import logging
 import re
 import os
+import math
 from datetime import datetime, timedelta
 import pytz
 import json
@@ -191,7 +192,7 @@ class CostCommandHandler(BaseHandler):
 📍 <i>Проект: editorials-robot</i>
 
 📊 Обработано: {count} файлов
-⏱ Общая длительность: {total_seconds/60:.1f} минут
+⏱ Общая длительность: {math.ceil(total_seconds/60)} минут
 📝 Символов обработано: {total_chars:,}
 
 💵 <b>API расходы (точные):</b>

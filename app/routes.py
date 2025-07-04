@@ -52,7 +52,11 @@ def register_routes(app, services):
             
             # Handle different update types
             if 'message' in update:
-                return handle_message(update['message'], services)
+                message = update['message']
+                if 'successful_payment' in message:
+                    return handle_successful_payment(message, services)
+                else:
+                    return handle_message(message, services)
             elif 'pre_checkout_query' in update:
                 return handle_pre_checkout_query(update['pre_checkout_query'], services)
             elif 'callback_query' in update:
@@ -230,6 +234,68 @@ def handle_pre_checkout_query(query, services):
     return "OK", 200
 
 
+def handle_successful_payment(message, services):
+    """Handle successful Telegram Stars payment"""
+    user_id = message['from']['id']
+    chat_id = message['chat']['id']
+    user_name = message['from'].get('first_name', f'User_{user_id}')
+    payment = message['successful_payment']
+    
+    # Extract payment details
+    stars_amount = payment['total_amount']
+    payload = payment['invoice_payload']
+    
+    # Get package details
+    package = services.PRODUCT_PACKAGES.get(payload)
+    if not package:
+        logging.error(f"Unknown payment payload: {payload}")
+        return "OK", 200
+    
+    minutes_to_add = package['minutes']
+    package_name = package['title']
+    
+    # Check if this is a micro package
+    is_micro = payload == "buy_micro_10"
+    
+    # Update user balance
+    if is_micro:
+        # For micro package, also update purchase count
+        user_data = services.firestore_service.get_user(user_id)
+        current_count = user_data.get('micro_package_purchases', 0) if user_data else 0
+        services.firestore_service.increment_micro_package_purchases(user_id, current_count)
+    
+    updated_user = services.firestore_service.update_user_balance(user_id, minutes_to_add)
+    new_balance = updated_user.get('balance_minutes', 0) if updated_user else 0
+    
+    # Log the payment
+    services.firestore_service.log_payment({
+        'user_id': str(user_id),
+        'user_name': user_name,
+        'stars_amount': stars_amount,
+        'minutes_credited': minutes_to_add,
+        'package_name': package_name,
+        'new_balance': new_balance,
+        'timestamp': datetime.now(pytz.utc),
+        'payment_type': 'telegram_stars'
+    })
+    
+    # Send confirmation to user
+    confirm_msg = f"✅ Оплата успешно получена!\n\n"
+    confirm_msg += f"📦 {package_name}\n"
+    confirm_msg += f"💫 Списано: {stars_amount} ⭐\n"
+    confirm_msg += f"⏱ Начислено: {int(minutes_to_add)} минут\n"
+    confirm_msg += f"💰 Ваш баланс: {math.ceil(new_balance)} минут"
+    
+    telegram_service.send_message(chat_id, confirm_msg)
+    
+    # Queue notification for owner
+    services.notification_service.queue_payment_notification(
+        user_id, user_name, stars_amount, minutes_to_add, package_name
+    )
+    
+    return "OK", 200
+
+
 def handle_callback_query(callback_query, services):
     """Handle inline keyboard callbacks"""
     callback_data = callback_query.get('data', '')
@@ -315,13 +381,13 @@ def handle_trial_approval(target_user_id, callback_query, services):
     
     # Notify the user
     telegram_service.send_message(target_user_id,
-        f"✅ Ваша заявка на пробный доступ одобрена! На ваш баланс начислено {services.TRIAL_MINUTES} минут.")
+        f"✅ Ваша заявка на пробный доступ одобрена! На ваш баланс начислено {int(services.TRIAL_MINUTES)} минут.")
     
     # Update the admin message
     telegram_service._telegram_service.edit_message_text(
         callback_query['message']['chat']['id'],
         callback_query['message']['message_id'],
-        f"✅ Заявка пользователя {target_user_id} одобрена и {services.TRIAL_MINUTES} минут начислено."
+        f"✅ Заявка пользователя {target_user_id} одобрена и {int(services.TRIAL_MINUTES)} минут начислено."
     )
     
     # Delete the trial request message after a delay
@@ -399,7 +465,7 @@ def cleanup_stuck_audio_jobs(services):
             chat_id = job_data.get('chat_id', user_id)
             telegram_service.send_message(int(chat_id),
                 f"⚠️ Обработка вашего аудио не завершилась. "
-                f"Возвращено {refund_amount:.1f} минут на баланс.")
+                f"Возвращено {math.ceil(refund_amount)} минут на баланс.")
         
         cleaned_count += 1
         logging.info(f"Cleaned up stuck job: {job_id}")
