@@ -761,9 +761,11 @@ class ReportCommandHandler(BaseHandler):
             
             # Get statistics
             total_users = len(firestore_service.get_all_users())
-            active_users = stats_service.get_active_users_count(start_time, now)
-            total_minutes = stats_service.get_total_minutes_processed(start_time, now)
-            successful_transcriptions = stats_service.get_successful_transcriptions_count(start_time, now)
+            # Calculate days difference for the stats methods
+            days_diff = (now - start_time).days
+            active_users = stats_service.get_active_users_count(days_diff)
+            total_minutes = stats_service.get_total_minutes_processed(days_diff)
+            successful_transcriptions = stats_service.get_successful_transcriptions_count(days_diff)
             
             # Get revenue
             revenue_stars = 0
@@ -783,12 +785,12 @@ class ReportCommandHandler(BaseHandler):
             report += f"  • Telegram Stars: {revenue_stars} ⭐\n\n"
             
             # Get top users
-            top_users = stats_service.get_top_users_by_usage(start_time, now, limit=5)
-            if top_users:
+            top_users_data = stats_service.get_top_users_by_usage(limit=5, days=days_diff)
+            if top_users_data:
                 report += f"🏆 <b>Топ пользователей:</b>\n"
-                for i, (user_id, minutes) in enumerate(top_users, 1):
-                    user_data = firestore_service.get_user(int(user_id))
-                    user_name = user_data.get('first_name', f'User_{user_id}') if user_data else f'User_{user_id}'
+                for i, user_info in enumerate(top_users_data, 1):
+                    user_name = user_info['name']
+                    minutes = user_info['minutes']
                     report += f"  {i}. {user_name}: {minutes:.1f} мин\n"
             
             # Send the report

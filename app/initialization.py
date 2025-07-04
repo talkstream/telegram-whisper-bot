@@ -151,6 +151,7 @@ class ServiceContainer:
             'OWNER_ID': self.OWNER_ID,
             'PROJECT_ID': self.PROJECT_ID,
             'PRODUCT_PACKAGES': self.PRODUCT_PACKAGES,
+            'TRIAL_MINUTES': self.TRIAL_MINUTES,
         }
     
     def _create_trial_request_wrapper(self):
