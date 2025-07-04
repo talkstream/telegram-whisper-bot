@@ -164,9 +164,9 @@ class CodeCommandHandler(BaseHandler):
             
             # Send confirmation message
             if new_use_code_tags:
-                send_message(chat_id, "✅ Теги <code> включены. Теперь отформатированный текст будет отправляться с тегами для моноширинного шрифта.", parse_mode="HTML")
+                send_message(chat_id, "✅ Теги &lt;code&gt; включены. Теперь отформатированный текст будет отправляться с тегами для моноширинного шрифта.", parse_mode="HTML")
             else:
-                send_message(chat_id, "✅ Теги <code> выключены. Теперь отформатированный текст будет отправляться без тегов.", parse_mode="HTML")
+                send_message(chat_id, "✅ Теги &lt;code&gt; выключены. Теперь отформатированный текст будет отправляться без тегов.", parse_mode="HTML")
         else:
             send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
         return "OK", 200
