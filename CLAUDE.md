@@ -98,8 +98,8 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.8.1
-Complete migration from deprecated vertexai SDK (fixed regression from v1.8.0).
+### Current Version: v1.8.2
+Fixed fractional minute display issues - all minutes now display as whole numbers using ceiling function.
 
 **Major Architecture Refactoring (v1.8.0):**
 - **Modular Architecture**:
@@ -264,6 +264,7 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.7.5** - Added /yo command and unified /code command (July 4, 2025)
 - **v1.8.0** - Major architecture refactoring for optimized deployment (July 4, 2025)
 - **v1.8.1** - Fixed Vertex AI deprecation warning - completed SDK migration (July 4, 2025)
+- **v1.8.2** - Fixed fractional minute display issues - all minutes now show as whole numbers (July 5, 2025)
 
 ## Summary of June 25, 2025 Work
 
@@ -593,14 +594,15 @@ gcloud functions deploy audio-processor \
    - Added missing service methods
 
 ### Current State:
-- **Latest Version**: v1.8.1
+- **Latest Version**: v1.8.2
 - **Architecture**: Fully modular with app/ directory
 - **Performance**: 2-3x faster deployments, sub-1s warmup
 - **All features working**: Including new /yo and /code commands
+- **Minute Display**: All minutes now show as whole numbers (using ceiling)
 - **Deployments**: All changes deployed to production
 - **GitHub**: All versions tagged and pushed
 
-The bot now supports both audio and video transcription with customizable output formatting.
+The bot now supports both audio and video transcription with customizable output formatting and clean minute displays.
 
 ## Important Technical Notes
 
@@ -698,3 +700,26 @@ Fixed the deprecation warning by ensuring complete migration from vertexai SDK t
    - Architecture guidelines to prevent direct API calls
 
 This ensures the complete removal of deprecated SDK usage that was scheduled for removal in June 2026.
+
+### July 5, 2025 - Minute Display Fixes (v1.8.2):
+
+#### Fixed Fractional Minute Display Issues:
+1. **User-Facing Display Improvements**:
+   - All minute displays now use `math.ceil()` to show whole numbers
+   - Fixed balance display in all messages (balance check, insufficient balance, etc.)
+   - Fixed batch processing duration display
+   - Fixed refund messages to show whole minutes
+   - Fixed /cost command to show whole minutes
+   - Fixed successful payment handler to display integer minutes
+
+2. **Database Cleanup**:
+   - Identified and fixed 1 user with fractional balance (504.5166666667 → 505 minutes)
+   - Created and executed temporary cleanup script
+   - Removed cleanup script after successful execution
+
+3. **Consistency**:
+   - Ensured all minute calculations throughout the bot display as whole numbers
+   - Improved user experience by eliminating confusing fractional displays
+   - Maintained accuracy while presenting cleaner numbers to users
+
+This update ensures a more professional and user-friendly experience with all minute values displayed as whole numbers.
