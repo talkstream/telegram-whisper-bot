@@ -10,8 +10,6 @@ from openai import OpenAI
 from google.cloud import secretmanager
 from google.cloud import firestore
 from google.cloud import pubsub_v1
-import vertexai
-from vertexai.generative_models import GenerativeModel
 
 # Import services
 from services import telegram as telegram_service
@@ -102,9 +100,9 @@ class ServiceContainer:
             self.openai_client = OpenAI(api_key=self.openai_api_key)
             self.db = firestore.Client(project=self.PROJECT_ID, database=self.DATABASE_ID)
             self.firestore_service = FirestoreService(self.PROJECT_ID, self.DATABASE_ID)
-            self.audio_service = AudioService(self.openai_client, GenerativeModel("gemini-2.0-flash-exp"))
-            self.stats_service = StatsService(self.db)
             self.metrics_service = MetricsService(self.db)
+            self.audio_service = AudioService(self.openai_api_key, self.metrics_service)
+            self.stats_service = StatsService(self.db)
             
             # Initialize notification service
             self.notification_service = NotificationService(
@@ -112,9 +110,6 @@ class ServiceContainer:
                 telegram_service._telegram_service,
                 self.OWNER_ID
             )
-            
-            # Initialize Vertex AI
-            vertexai.init(project=self.PROJECT_ID, location=self.LOCATION)
             
             # Initialize Pub/Sub if async processing is enabled
             if self.USE_ASYNC_PROCESSING:

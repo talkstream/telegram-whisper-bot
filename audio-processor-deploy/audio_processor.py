@@ -50,7 +50,6 @@ def initialize_services():
     from google.cloud import firestore as fs
     from google.cloud import secretmanager
     from openai import OpenAI
-    import vertexai
     from services.telegram import TelegramService
     from services.firestore import FirestoreService
     from services.audio import AudioService
@@ -75,9 +74,6 @@ def initialize_services():
     _firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
     _metrics_service = MetricsService(_db_client)
     _audio_service = AudioService(openai_api_key, _metrics_service)
-    
-    # Initialize Vertex AI
-    vertexai.init(project=PROJECT_ID, location=LOCATION)
     
     _services_initialized = True
     logging.info("Services initialized successfully")
@@ -183,9 +179,14 @@ class AudioProcessor:
         # Fallback to legacy implementation
         try:
             # Lazy import to save memory
-            from vertexai.generative_models import GenerativeModel
+            import google.genai as genai
             
-            model = GenerativeModel("gemini-2.5-flash")
+            # Initialize the client with Vertex AI configuration
+            client = genai.Client(
+                vertexai=True,
+                project=PROJECT_ID,
+                location=LOCATION
+            )
             prompt = f"""
             Твоя задача — отформатировать следующий транскрипт устной речи, улучшив его читаемость, но полностью сохранив исходный смысл, стиль и лексику автора.
             1.  **Формирование абзацев:** Объединяй несколько (обычно от 2 до 5) связанных по теме предложений в один абзац. Начинай новый абзац только при явной смене микро-темы или при переходе к новому аргументу в рассуждении. Избегай создания слишком коротких абзацев из одного предложения.
@@ -196,7 +197,10 @@ class AudioProcessor:
             {text}
             ---
             """
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
             result = response.text
             
             # Clean up prompt to free memory
@@ -217,7 +221,10 @@ class AudioProcessor:
                 # Try once more with a simpler prompt
                 try:
                     simple_prompt = f"Отформатируй этот текст, разбив на абзацы:\n{text[:3000]}"  # Limit text length
-                    response = model.generate_content(simple_prompt)
+                    response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=simple_prompt
+                    )
                     result = response.text
                     del simple_prompt, response
                     gc.collect()
