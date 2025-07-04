@@ -154,10 +154,38 @@ class ServiceContainer:
     def _create_trial_request_wrapper(self):
         """Create wrapper function for trial request creation"""
         def create_trial_request(user_id, user_name):
-            status = self.firestore_service.create_trial_request(user_id, user_name)
-            if status == True:
-                self.notification_service.queue_trial_notification(user_id, user_name, 'new')
-            return status
+            # Create trial request data
+            from datetime import datetime
+            import pytz
+            
+            request_data = {
+                'status': 'pending',
+                'user_name': user_name,
+                'request_timestamp': datetime.now(pytz.utc),
+                'user_id': str(user_id)
+            }
+            
+            # Check if trial request already exists
+            existing = self.db.collection('trial_requests').document(str(user_id)).get()
+            if existing.exists:
+                data = existing.to_dict()
+                if data.get('status') == 'pending':
+                    return "already_pending"
+                elif data.get('status') == 'approved':
+                    return "already_approved"
+            
+            # Check if user already has trial
+            user_data = self.firestore_service.get_user(user_id)
+            if user_data and user_data.get('trial_status') == 'approved':
+                return "already_approved"
+            
+            # Create the trial request
+            self.firestore_service.create_trial_request(user_id, request_data)
+            
+            # Queue notification
+            self.notification_service.queue_trial_notification(user_id, user_name, 'new')
+            
+            return True
         return create_trial_request
     
     def warmup(self) -> float:
