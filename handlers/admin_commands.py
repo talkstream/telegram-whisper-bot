@@ -733,20 +733,71 @@ class ReportCommandHandler(BaseHandler):
             return "OK", 200
             
         try:
-            # Import the handler function
-            from main import handle_scheduled_report
+            # Generate the report directly
+            from datetime import datetime, timedelta
+            import pytz
             
-            # Generate and send report
-            result = handle_scheduled_report(report_type)
+            firestore_service = self.services.get('firestore_service')
+            stats_service = self.services.get('stats_service')
             
-            if result[0] == "OK":
-                send_message(chat_id, f"✅ {report_type.capitalize()} отчет отправлен!")
-            else:
-                send_message(chat_id, f"❌ Ошибка при генерации отчета: {result}")
+            if not firestore_service or not stats_service:
+                send_message(chat_id, "❌ Сервисы не инициализированы")
+                return "OK", 200
+            
+            moscow_tz = pytz.timezone('Europe/Moscow')
+            now = datetime.now(moscow_tz)
+            
+            if report_type == 'daily':
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                period_name = "Ежедневный"
+            else:  # weekly
+                start_time = now - timedelta(days=now.weekday())
+                start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                period_name = "Еженедельный"
+            
+            # Generate report content
+            report = f"📊 <b>{period_name} отчет</b>\n"
+            report += f"📅 {start_time.strftime('%d.%m.%Y')} - {now.strftime('%d.%m.%Y %H:%M')}\n\n"
+            
+            # Get statistics
+            total_users = len(firestore_service.get_all_users())
+            active_users = stats_service.get_active_users_count(start_time, now)
+            total_minutes = stats_service.get_total_minutes_processed(start_time, now)
+            successful_transcriptions = stats_service.get_successful_transcriptions_count(start_time, now)
+            
+            # Get revenue
+            revenue_stars = 0
+            payment_logs = firestore_service.get_payment_logs(start_time, now)
+            for payment in payment_logs:
+                revenue_stars += payment.get('stars_amount', 0)
+            
+            report += f"👥 <b>Пользователи:</b>\n"
+            report += f"  • Всего: {total_users}\n"
+            report += f"  • Активных: {active_users}\n\n"
+            
+            report += f"🎵 <b>Обработка:</b>\n"
+            report += f"  • Транскрипций: {successful_transcriptions}\n"
+            report += f"  • Минут обработано: {total_minutes:.1f}\n\n"
+            
+            report += f"💰 <b>Доходы:</b>\n"
+            report += f"  • Telegram Stars: {revenue_stars} ⭐\n\n"
+            
+            # Get top users
+            top_users = stats_service.get_top_users_by_usage(start_time, now, limit=5)
+            if top_users:
+                report += f"🏆 <b>Топ пользователей:</b>\n"
+                for i, (user_id, minutes) in enumerate(top_users, 1):
+                    user_data = firestore_service.get_user(int(user_id))
+                    user_name = user_data.get('first_name', f'User_{user_id}') if user_data else f'User_{user_id}'
+                    report += f"  {i}. {user_name}: {minutes:.1f} мин\n"
+            
+            # Send the report
+            send_message(chat_id, report, parse_mode="HTML")
+            logging.info(f"Manual {report_type} report sent to {chat_id}")
                 
         except Exception as e:
-            logging.error(f"Error triggering manual report: {e}")
-            send_message(chat_id, f"❌ Ошибка: {str(e)}")
+            logging.error(f"Error generating manual report: {e}", exc_info=True)
+            send_message(chat_id, f"❌ Ошибка генерации отчета: {str(e)}")
         
         return "OK", 200
 
