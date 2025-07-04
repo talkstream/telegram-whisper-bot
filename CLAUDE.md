@@ -535,9 +535,7 @@ gcloud functions deploy audio-processor \
 6. **Language Support** - Russian only per requirements
 7. **Non-blocking Progress** - Requires major async refactor## Summary of June 26-27, 2025 Work
 
-Today we implemented major video transcription support and fixed several important issues:
-
-### Major Features Added:
+### June 26-27 Achievements:
 1. **Video Transcription Support (v1.7.0)**:
    - Support for regular video messages and round video notes
    - Automatic audio extraction using FFmpeg
@@ -550,10 +548,21 @@ Today we implemented major video transcription support and fixed several importa
    - Added detection for 'Продолжение следует...' phrase (v1.7.3)
    - Improved error messages UI - removed alarming emoji (v1.7.4)
 
+### July 4, 2025 Updates:
+1. **New /yo Command (v1.7.5)**:
+   - Toggle use of letter ё in output (default: enabled)
+   - When disabled, all ё letters are replaced with е
+   - Settings persist per user
+
+2. **Unified /code Command**:
+   - Replaced /code_on and /code_off with single toggle
+   - Backward compatibility maintained
+   - Fixed HTML parsing error in confirmation messages
+
 ### Current State:
-- **Latest Version**: v1.7.4
-- **All features working**: Video transcription, error handling, user-friendly messages
+- **Latest Version**: v1.7.5
+- **All features working**: Video transcription, ё toggle, code toggle
 - **Deployments**: All changes deployed to production
 - **GitHub**: All versions tagged and pushed
 
-The bot now supports both audio and video transcription with professional error handling.
+The bot now supports both audio and video transcription with customizable output formatting.
