@@ -98,8 +98,8 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.8.0
-Major architecture refactoring for optimized deployment and faster builds.
+### Current Version: v1.8.1
+Complete migration from deprecated vertexai SDK (fixed regression from v1.8.0).
 
 **UI Improvements (v1.7.5):**
 - **New /yo Command**:
@@ -244,6 +244,9 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.7.2** - Fixed Gemini instruction leak to users on short transcripts (June 26, 2025)
 - **v1.7.3** - Added "Продолжение следует..." detection for speechless audio (June 26, 2025)
 - **v1.7.4** - Improved error messages UI - removed alarming emoji (June 27, 2025)
+- **v1.7.5** - Added /yo command and unified /code command (June 27, 2025)
+- **v1.8.0** - Major architecture optimization for faster deployment (July 2025)
+- **v1.8.1** - Complete migration from deprecated vertexai SDK - fixed regression (July 2025)
 - **v1.7.5** - Added /yo command and unified /code command (June 27, 2025)
 - **v1.8.0** - Major architecture refactoring for optimized deployment (July 5, 2025)
 
@@ -534,7 +537,9 @@ gcloud functions deploy audio-processor \
 ### Low Priority (Future):
 5. **Export Formats** - SRT, VTT, DOCX support (on hold)
 6. **Language Support** - Russian only per requirements
-7. **Non-blocking Progress** - Requires major async refactor## Summary of June 26-27, 2025 Work
+7. **Non-blocking Progress** - Requires major async refactor
+
+## Summary of June 26-27, 2025 Work
 
 ### June 26-27 Achievements:
 1. **Video Transcription Support (v1.7.0)**:
@@ -561,12 +566,52 @@ gcloud functions deploy audio-processor \
    - Fixed HTML parsing error in confirmation messages
 
 ### Current State:
-- **Latest Version**: v1.7.5
+- **Latest Version**: v1.8.1
 - **All features working**: Video transcription, ё toggle, code toggle
 - **Deployments**: All changes deployed to production
 - **GitHub**: All versions tagged and pushed
 
 The bot now supports both audio and video transcription with customizable output formatting.
+
+## Important Technical Notes
+
+### Google AI SDK Migration (CRITICAL)
+**As of v1.8.1, the project uses `google-genai` SDK exclusively. DO NOT use deprecated `vertexai` imports:**
+
+❌ **NEVER use these imports:**
+```python
+import vertexai
+from vertexai.generative_models import GenerativeModel
+vertexai.init()
+```
+
+✅ **ALWAYS use the new SDK:**
+```python
+import google.genai as genai
+
+client = genai.Client(
+    vertexai=True,
+    project=PROJECT_ID,
+    location='europe-west1'
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=prompt
+)
+```
+
+**Why this matters:**
+- The vertexai.generative_models API is deprecated and will be removed in June 2026
+- We've already migrated twice (v1.7.1 and v1.8.1) due to regressions
+- All Gemini API calls must use the google-genai SDK
+- The AudioService constructor takes `openai_api_key` string, not OpenAI client or GenerativeModel
+
+### Architecture Guidelines
+1. **Service Layer**: All business logic should be in services (AudioService, FirestoreService, etc.)
+2. **No Direct API Calls**: Never call OpenAI/Gemini APIs directly in handlers or main.py
+3. **Dependency Injection**: Pass API keys, not client objects to services
+4. **Memory Optimization**: Use lazy imports in Cloud Functions for heavy libraries
 
 ### July 5, 2025 - Major Refactoring (v1.8.0):
 
@@ -594,3 +639,24 @@ The bot now supports both audio and video transcription with customizable output
    - No impact on user experience
 
 The refactoring makes the codebase much easier to maintain while significantly improving deployment speed.
+
+### July 4, 2025 - SDK Migration Fix (v1.8.1):
+
+#### Fixed Regression from v1.8.0:
+1. **Vertexai SDK Removal**:
+   - Removed all remaining vertexai imports that were accidentally left during v1.8.0 refactoring
+   - Fixed initialization.py to not import or use vertexai modules
+   - Updated audio processor deployment to use google-genai SDK
+   
+2. **Changes Made**:
+   - Removed `import vertexai` and `from vertexai.generative_models import GenerativeModel`
+   - Removed `vertexai.init()` calls from both main app and audio processor
+   - Updated AudioService initialization to use API key string instead of GenerativeModel object
+   - Fixed initialization order: MetricsService before AudioService
+   
+3. **Preventing Future Regressions**:
+   - Added comprehensive documentation about SDK migration
+   - Clear examples of what NOT to use and what to use instead
+   - Architecture guidelines to prevent direct API calls
+
+This ensures the complete removal of deprecated SDK usage that was scheduled for removal in June 2026.
