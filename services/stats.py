@@ -97,3 +97,132 @@ class StatsService:
             logging.error(f"AVG_LEN_LOG: Error calculating average audio length for {user_id_str}: {e}")
         
         return None
+    
+    def get_active_users_count(self, days: int = 30) -> int:
+        """Get count of active users in the last N days"""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            
+            now = datetime.now(pytz.utc)
+            start_date = now - timedelta(days=days)
+            
+            # Query transcription logs for unique users
+            docs = self.db.collection('transcription_logs') \
+                         .where(filter=FieldFilter('timestamp', '>=', start_date)) \
+                         .where(filter=FieldFilter('status', '==', 'success')) \
+                         .stream()
+            
+            unique_users = set()
+            for doc in docs:
+                data = doc.to_dict()
+                user_id = data.get('user_id')
+                if user_id:
+                    unique_users.add(user_id)
+            
+            return len(unique_users)
+        except Exception as e:
+            logging.error(f"Error getting active users count: {e}")
+            return 0
+    
+    def get_total_minutes_processed(self, days: int = 30) -> float:
+        """Get total minutes processed in the last N days"""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            
+            now = datetime.now(pytz.utc)
+            start_date = now - timedelta(days=days)
+            
+            docs = self.db.collection('transcription_logs') \
+                         .where(filter=FieldFilter('timestamp', '>=', start_date)) \
+                         .where(filter=FieldFilter('status', '==', 'success')) \
+                         .stream()
+            
+            total_seconds = 0
+            for doc in docs:
+                data = doc.to_dict()
+                # Use FFmpeg duration if available
+                duration = data.get('ffmpeg_duration', data.get('duration', 0))
+                total_seconds += duration
+            
+            return round(total_seconds / 60, 2)
+        except Exception as e:
+            logging.error(f"Error getting total minutes processed: {e}")
+            return 0.0
+    
+    def get_successful_transcriptions_count(self, days: int = 30) -> int:
+        """Get count of successful transcriptions in the last N days"""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            
+            now = datetime.now(pytz.utc)
+            start_date = now - timedelta(days=days)
+            
+            docs = self.db.collection('transcription_logs') \
+                         .where(filter=FieldFilter('timestamp', '>=', start_date)) \
+                         .where(filter=FieldFilter('status', '==', 'success')) \
+                         .stream()
+            
+            count = 0
+            for doc in docs:
+                count += 1
+            
+            return count
+        except Exception as e:
+            logging.error(f"Error getting successful transcriptions count: {e}")
+            return 0
+    
+    def get_top_users_by_usage(self, limit: int = 10, days: int = 30) -> list:
+        """Get top users by usage in the last N days"""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            
+            now = datetime.now(pytz.utc)
+            start_date = now - timedelta(days=days)
+            
+            # Get transcription data
+            docs = self.db.collection('transcription_logs') \
+                         .where(filter=FieldFilter('timestamp', '>=', start_date)) \
+                         .where(filter=FieldFilter('status', '==', 'success')) \
+                         .stream()
+            
+            user_stats = {}
+            for doc in docs:
+                data = doc.to_dict()
+                user_id = data.get('user_id')
+                if not user_id:
+                    continue
+                
+                if user_id not in user_stats:
+                    user_stats[user_id] = {
+                        'name': data.get('editor_name', f'ID_{user_id}'),
+                        'minutes': 0,
+                        'count': 0
+                    }
+                
+                duration = data.get('ffmpeg_duration', data.get('duration', 0))
+                user_stats[user_id]['minutes'] += duration / 60
+                user_stats[user_id]['count'] += 1
+            
+            # Sort by minutes and return top N
+            sorted_users = sorted(
+                user_stats.items(), 
+                key=lambda x: x[1]['minutes'], 
+                reverse=True
+            )[:limit]
+            
+            return [
+                {
+                    'user_id': user_id,
+                    'name': stats['name'],
+                    'minutes': round(stats['minutes'], 2),
+                    'count': stats['count']
+                }
+                for user_id, stats in sorted_users
+            ]
+        except Exception as e:
+            logging.error(f"Error getting top users by usage: {e}")
+            return []

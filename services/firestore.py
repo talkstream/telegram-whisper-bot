@@ -53,6 +53,10 @@ class FirestoreService:
         # Return updated data
         doc = doc_ref.get()
         return doc.to_dict() if doc.exists else None
+    
+    def credit_user(self, user_id: int, minutes: float) -> Optional[Dict[str, Any]]:
+        """Credit user with minutes (alias for update_user_balance)"""
+        return self.update_user_balance(user_id, minutes)
         
     def delete_user(self, user_id: int) -> None:
         """Delete user and all associated data"""

@@ -142,6 +142,7 @@ class ServiceContainer:
             'create_trial_request': self._create_trial_request_wrapper(),
             'send_document': telegram_service.send_document,
             'get_pending_trial_requests': self.firestore_service.get_pending_trial_requests,
+            'get_all_users_for_admin': self.firestore_service.get_all_users,
         }
     
     def _create_constants_dict(self) -> Dict[str, Any]:
