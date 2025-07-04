@@ -324,9 +324,12 @@ def publish_audio_job(user_id, chat_id, file_id, file_size, duration, user_name,
     # Save to Firestore
     services.db.collection('audio_jobs').document(job_id).set(job_data)
     
-    # Publish to Pub/Sub
+    # Publish to Pub/Sub (convert datetime to ISO format for JSON serialization)
+    pubsub_data = job_data.copy()
+    pubsub_data['created_at'] = job_data['created_at'].isoformat()
+    
     topic_path = services.publisher.topic_path(services.PROJECT_ID, services.AUDIO_PROCESSING_TOPIC)
-    message_data = json.dumps(job_data).encode('utf-8')
+    message_data = json.dumps(pubsub_data).encode('utf-8')
     future = services.publisher.publish(topic_path, message_data)
     
     # Log the result
