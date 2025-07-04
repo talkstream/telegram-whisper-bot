@@ -8,11 +8,13 @@ from .user_commands import (
     HelpCommandHandler,
     BalanceCommandHandler,
     SettingsCommandHandler,
+    CodeCommandHandler,
     CodeOnCommandHandler,
     CodeOffCommandHandler,
     TrialCommandHandler,
     BuyMinutesCommandHandler,
-    QueueCommandHandler
+    QueueCommandHandler,
+    YoCommandHandler
 )
 
 from .admin_commands import (
@@ -57,8 +59,10 @@ class CommandRouter:
             '/help': HelpCommandHandler(services, constants),
             '/balance': BalanceCommandHandler(services, constants),
             '/settings': SettingsCommandHandler(services, constants),
-            '/code_on': CodeOnCommandHandler(services, constants),
-            '/code_off': CodeOffCommandHandler(services, constants),
+            '/code': CodeCommandHandler(services, constants),
+            '/code_on': CodeOnCommandHandler(services, constants),  # Backward compatibility
+            '/code_off': CodeOffCommandHandler(services, constants),  # Backward compatibility
+            '/yo': YoCommandHandler(services, constants),
             '/trial': TrialCommandHandler(services, constants),
             '/buy_minutes': BuyMinutesCommandHandler(services, constants),
             '/top_up': BuyMinutesCommandHandler(services, constants),  # Alias

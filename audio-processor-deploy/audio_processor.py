@@ -568,8 +568,13 @@ class AudioProcessor:
         MAX_MESSAGE_LENGTH = 4000
         
         # Get user settings
-        settings = self.firestore_service.get_user_settings(user_id) if self.firestore_service else {'use_code_tags': False}
+        settings = self.firestore_service.get_user_settings(user_id) if self.firestore_service else {'use_code_tags': False, 'use_yo': True}
         use_code_tags = settings.get('use_code_tags', False)
+        use_yo = settings.get('use_yo', True)
+        
+        # Replace ё with е if use_yo is False
+        if not use_yo:
+            formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
         
         # Get first sentence for caption
         import re

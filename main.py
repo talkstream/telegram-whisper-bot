@@ -1033,8 +1033,13 @@ def handle_telegram_webhook(request):
                     if len(caption) > 1024: caption = caption[:1021] + "..."
                     
                     # Get user settings
-                    settings = firestore_service.get_user_settings(user_id) if firestore_service else {'use_code_tags': False}
+                    settings = firestore_service.get_user_settings(user_id) if firestore_service else {'use_code_tags': False, 'use_yo': True}
                     use_code_tags = settings.get('use_code_tags', False)
+                    use_yo = settings.get('use_yo', True)
+                    
+                    # Replace ё with е if use_yo is False
+                    if not use_yo:
+                        formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
                     
                     if len(formatted_text) > MAX_MESSAGE_LENGTH:
                         file_name = UtilityService.get_moscow_time_str() + ".txt"

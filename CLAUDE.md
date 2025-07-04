@@ -37,8 +37,8 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 - `/trial` - Request trial access (15 minutes)
 - `/buy_minutes` - Purchase minutes with Telegram Stars
 - `/settings` - Show current settings
-- `/code_on` - Enable code tags in output
-- `/code_off` - Disable code tags in output
+- `/code` - Toggle code tags in output (monospace font)
+- `/yo` - Toggle use of letter ё (default: enabled)
 
 ### Admin Commands (owner only)
 - `/user [search]` - Search and manage users (by name or ID)
@@ -57,8 +57,8 @@ A Telegram bot that transcribes audio files using OpenAI Whisper and formats the
 ## Settings
 Users can customize their experience through the following commands:
 - `/settings` - Show current settings
-- `/code_on` - Enable code tags (`<code>`) for monospace font output
-- `/code_off` - Disable code tags for plain text output
+- `/code` - Toggle code tags (`<code>`) for monospace font output
+- `/yo` - Toggle use of letter ё in output (enabled by default)
 
 Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request management and payment selections.
 
@@ -98,7 +98,20 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.7.4
+### Current Version: v1.7.5
+Added /yo command to toggle use of letter ё and unified /code command.
+
+**UI Improvements (v1.7.5):**
+- **New /yo Command**:
+  - Toggles use of letter ё in output (default: enabled)
+  - When disabled, all ё letters are replaced with е
+  - Shows informative message: "Использование буквы ё: включено/замена на е"
+- **Unified /code Command**:
+  - Replaced /code_on and /code_off with single /code toggle
+  - Old commands redirect to /code for backward compatibility
+  - Simplified user experience with toggle commands
+
+**Previous Updates (v1.7.4):**
 Improved error messages - removed alarming emoji and made messages more user-friendly.
 
 **UI Improvements (v1.7.4):**
@@ -231,6 +244,7 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.7.2** - Fixed Gemini instruction leak to users on short transcripts (June 26, 2025)
 - **v1.7.3** - Added "Продолжение следует..." detection for speechless audio (June 26, 2025)
 - **v1.7.4** - Improved error messages UI - removed alarming emoji (June 27, 2025)
+- **v1.7.5** - Added /yo command and unified /code command (June 27, 2025)
 
 ## Summary of June 25, 2025 Work
 
@@ -328,6 +342,8 @@ Save a new version when:
 - Critical bug is fixed
 - Before any risky changes
 - After successful deployment
+
+**IMPORTANT**: Never add Claude or AI assistant mentions in commit messages or co-authorship tags. Keep commits professional and focused on the changes made.
 
 ## Deployment
 
@@ -517,4 +533,27 @@ gcloud functions deploy audio-processor \
 ### Low Priority (Future):
 5. **Export Formats** - SRT, VTT, DOCX support (on hold)
 6. **Language Support** - Russian only per requirements
-7. **Non-blocking Progress** - Requires major async refactor
+7. **Non-blocking Progress** - Requires major async refactor## Summary of June 26-27, 2025 Work
+
+Today we implemented major video transcription support and fixed several important issues:
+
+### Major Features Added:
+1. **Video Transcription Support (v1.7.0)**:
+   - Support for regular video messages and round video notes
+   - Automatic audio extraction using FFmpeg
+   - Support for MP4, AVI, MOV, MKV, WebM formats
+   - Video-specific UI notifications
+
+2. **Technical Improvements**:
+   - Migrated to Google Gen AI SDK (v1.7.1) - fixed deprecation warning
+   - Prevented Gemini from showing instructions to users (v1.7.2)
+   - Added detection for 'Продолжение следует...' phrase (v1.7.3)
+   - Improved error messages UI - removed alarming emoji (v1.7.4)
+
+### Current State:
+- **Latest Version**: v1.7.4
+- **All features working**: Video transcription, error handling, user-friendly messages
+- **Deployments**: All changes deployed to production
+- **GitHub**: All versions tagged and pushed
+
+The bot now supports both audio and video transcription with professional error handling.

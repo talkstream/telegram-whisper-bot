@@ -41,8 +41,8 @@ class HelpCommandHandler(BaseHandler):
 
 <b>Настройки и статус:</b>
 • /settings - Настройки форматирования вывода
-• /code_on - Включить вывод с тегами &lt;code&gt;
-• /code_off - Выключить теги &lt;code&gt;
+• /code - Переключить теги &lt;code&gt;
+• /yo - Переключить использование буквы ё
 • /batch (или /queue) - Просмотр ваших файлов в очереди
 
 <b>Технические лимиты:</b>
@@ -122,18 +122,21 @@ class SettingsCommandHandler(BaseHandler):
             return "OK", 200
         
         # Get current settings
-        settings = firestore_service.get_user_settings(user_id) if firestore_service else {'use_code_tags': False}
+        settings = firestore_service.get_user_settings(user_id) if firestore_service else {'use_code_tags': False, 'use_yo': True}
         use_code_tags = settings.get('use_code_tags', False)
+        use_yo = settings.get('use_yo', True)
         
         # Create settings message with current state
-        status_symbol = "✓" if use_code_tags else ""
+        code_status_symbol = "✓" if use_code_tags else ""
+        yo_status_symbol = "✓" if use_yo else ""
         settings_msg = f"""<b>Настройки форматирования вывода</b>
 
-Теги &lt;code&gt;: {'Включены' if use_code_tags else 'Выключены'} {status_symbol}
+Теги &lt;code&gt;: {'Включены' if use_code_tags else 'Выключены'} {code_status_symbol}
+Буква ё: {'Используется' if use_yo else 'Заменяется на е'} {yo_status_symbol}
 
 <b>Команды управления:</b>
-• /code_on - Включить теги &lt;code&gt;
-• /code_off - Выключить теги &lt;code&gt;
+• /code - Переключить теги &lt;code&gt;
+• /yo - Переключить использование буквы ё
 
 <i>Теги &lt;code&gt; отображают текст моноширинным шрифтом, что удобно для кода и технических текстов.</i>"""
         
@@ -141,8 +144,8 @@ class SettingsCommandHandler(BaseHandler):
         return "OK", 200
 
 
-class CodeOnCommandHandler(BaseHandler):
-    """Handler for /code_on command"""
+class CodeCommandHandler(BaseHandler):
+    """Handler for /code command - toggles code tags"""
     
     def handle(self, update_data):
         user_id = update_data['user_id']
@@ -151,27 +154,44 @@ class CodeOnCommandHandler(BaseHandler):
         send_message = self.services['telegram_service'].send_message
         
         if firestore_service:
-            firestore_service.update_user_setting(user_id, 'use_code_tags', True)
-            send_message(chat_id, "✅ Теги <code> включены. Теперь отформатированный текст будет отправляться с тегами для моноширинного шрифта.", parse_mode="HTML")
+            # Get current setting
+            settings = firestore_service.get_user_settings(user_id)
+            current_use_code_tags = settings.get('use_code_tags', False)
+            
+            # Toggle the setting
+            new_use_code_tags = not current_use_code_tags
+            firestore_service.update_user_setting(user_id, 'use_code_tags', new_use_code_tags)
+            
+            # Send confirmation message
+            if new_use_code_tags:
+                send_message(chat_id, "✅ Теги <code> включены. Теперь отформатированный текст будет отправляться с тегами для моноширинного шрифта.", parse_mode="HTML")
+            else:
+                send_message(chat_id, "✅ Теги <code> выключены. Теперь отформатированный текст будет отправляться без тегов.", parse_mode="HTML")
         else:
             send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
         return "OK", 200
 
 
-class CodeOffCommandHandler(BaseHandler):
-    """Handler for /code_off command"""
+# Keep old handlers for backward compatibility, but they will redirect to /code
+class CodeOnCommandHandler(BaseHandler):
+    """Handler for /code_on command - redirects to /code"""
     
     def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
-        firestore_service = self.services.get('firestore_service')
         send_message = self.services['telegram_service'].send_message
-        
-        if firestore_service:
-            firestore_service.update_user_setting(user_id, 'use_code_tags', False)
-            send_message(chat_id, "✅ Теги <code> выключены. Теперь отформатированный текст будет отправляться без тегов.", parse_mode="HTML")
-        else:
-            send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
+        send_message(chat_id, "Команда /code_on устарела. Используйте /code для переключения тегов.")
+        return "OK", 200
+
+
+class CodeOffCommandHandler(BaseHandler):
+    """Handler for /code_off command - redirects to /code"""
+    
+    def handle(self, update_data):
+        user_id = update_data['user_id']
+        chat_id = update_data['chat_id']
+        send_message = self.services['telegram_service'].send_message
+        send_message(chat_id, "Команда /code_off устарела. Используйте /code для переключения тегов.")
         return "OK", 200
 
 
@@ -302,5 +322,34 @@ class QueueCommandHandler(BaseHandler):
                 send_message(chat_id, queue_msg, parse_mode="HTML")
         else:
             send_message(chat_id, "Информация о очереди недоступна.")
+        
+        return "OK", 200
+
+
+class YoCommandHandler(BaseHandler):
+    """Handler for /yo command - toggles use of letter ё"""
+    
+    def handle(self, update_data):
+        user_id = update_data['user_id']
+        chat_id = update_data['chat_id']
+        firestore_service = self.services.get('firestore_service')
+        send_message = self.services['telegram_service'].send_message
+        
+        if firestore_service:
+            # Get current setting
+            settings = firestore_service.get_user_settings(user_id)
+            current_use_yo = settings.get('use_yo', True)
+            
+            # Toggle the setting
+            new_use_yo = not current_use_yo
+            firestore_service.update_user_setting(user_id, 'use_yo', new_use_yo)
+            
+            # Send confirmation message
+            if new_use_yo:
+                send_message(chat_id, "Использование буквы ё: включено")
+            else:
+                send_message(chat_id, "Использование буквы ё: замена на е")
+        else:
+            send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
         
         return "OK", 200
