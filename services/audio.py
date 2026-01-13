@@ -403,17 +403,21 @@ class AudioService:
             logging.warning(f"Could not get audio duration: {e}, using default 600s")
             return 600.0  # Default 10 minutes
             
-    def format_text_with_gemini(self, text: str, model_name: str = "gemini-2.5-flash") -> str:
+    def format_text_with_gemini(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
         """
-        Format transcribed text using Google Gemini
-        Returns formatted text or original text on error
+        Format transcribed text using Gemini 3 Flash.
+
+        Gemini 3 Flash optimizations:
+        - More concise prompts work better
+        - Explicit instructions about NOT adding commentary
+        - Temperature 0.3 for consistency
         """
         # Check if text is too short to format
         word_count = len(text.split())
         if word_count < 10:
             logging.info(f"Text too short for formatting ({word_count} words), returning original")
             return text
-            
+
         api_start_time = time.time()
         try:
             # Initialize the client with Vertex AI configuration
@@ -423,44 +427,73 @@ class AudioService:
                 location='europe-west1'
             )
             
-            prompt = f"""
-            ВАЖНО: Ты работаешь только как форматировщик текста. НИКОГДА не веди диалог с пользователем, не объясняй что тебе нужно, не проси дополнительную информацию.
-            
-            Твоя задача — отформатировать следующий транскрипт устной речи, улучшив его читаемость, но полностью сохранив исходный смысл, стиль и лексику автора.
-            
-            Правила:
-            1.  **Формирование абзацев:** Объединяй несколько (обычно от 2 до 5) связанных по теме предложений в один абзац. Начинай новый абзац только при явной смене микро-темы или при переходе к новому аргументу в рассуждении. Избегай создания слишком коротких абзацев из одного предложения.
-            2.  **Обработка предложений:** Сохраняй оригинальную структуру предложений. Вмешивайся и разбивай предложение на несколько частей только в тех случаях, когда оно становится **аномально длинным и громоздким** для чтения из-за обилия придаточных частей или перечислений.
-            3.  **Строгое сохранение контента:** Категорически запрещено изменять слова, добавлять что-либо от себя или делать выводы. Твоя работа — это работа редактора-форматировщика, а не копирайтера. Сохрани исходный текст в максимальной близости к оригиналу, изменив только разбивку на абзацы и, в редких случаях, структуру самых длинных предложений.
-            4.  **Если текст кажется неполным или обрывочным:** Просто верни его без изменений. НЕ объясняй, что текст неполный. НЕ проси больше информации. НЕ пиши инструкции.
-            
-            Исходный текст для обработки:
-            ---
-            {text}
-            ---
-            """
-            
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
+            # Prepare user settings for prompt
+            code_tag_instruction = (
+                "Оберни ВЕСЬ текст в теги <code></code>."
+                if use_code_tags else
+                "НЕ используй теги <code>."
             )
-            formatted_text = response.text
+
+            yo_instruction = (
+                "Сохраняй букву ё где она есть."
+                if use_yo else
+                "Заменяй все буквы ё на е."
+            )
+
+            # Optimized prompt for Gemini 3
+            prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
+
+1. Исправь ошибки распознавания речи
+2. Добавь знаки препинания
+3. Раздели на абзацы по смыслу
+4. {code_tag_instruction}
+5. {yo_instruction}
+6. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
+7. Если текст короче 10 слов - верни как есть
+
+Текст для форматирования:
+
+{text}"""
+
+            # Generate with Gemini 3 Flash
+            response = client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=prompt,
+                config={
+                    'temperature': 0.3,  # Low temperature for consistency
+                    'top_p': 0.95,
+                    'max_output_tokens': 8192,
+                    # 'thinking_level': 1,  # Control reasoning depth (0-3) - Uncomment if supported
+                }
+            )
+
+            formatted_text = response.text.strip()
+
+            # Remove code tags if present but not wanted
+            if not use_code_tags and formatted_text.startswith('<code>'):
+                formatted_text = formatted_text.replace('<code>', '').replace('</code>', '')
+
+            # Quality check
+            if len(formatted_text) < 5:
+                logging.warning("Gemini returned very short text, using original")
+                return text
             
             # Log API call metrics
             api_duration = time.time() - api_start_time
             if self.metrics_service:
                 self.metrics_service.log_api_call('gemini', api_duration, True)
             
-            logging.info("Successfully formatted text with Gemini")
+            logging.info("Successfully formatted text with Gemini 3")
             return formatted_text
-            
+
         except Exception as e:
             # Log failed API call
             api_duration = time.time() - api_start_time
             if self.metrics_service:
                 self.metrics_service.log_api_call('gemini', api_duration, False, str(e))
-                
-            logging.error(f"Error calling Gemini API: {e}")
+
+            logging.error(f"Gemini 3 formatting failed: {str(e)}")
+            # Fallback: return original text
             return text
             
     def is_video_file(self, file_path: str) -> bool:
