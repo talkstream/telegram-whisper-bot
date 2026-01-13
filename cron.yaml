@@ -1,9 +1,10 @@
 cron:
-- description: "Keep bot warm"
+- description: "Warmup App Engine to prevent cold starts"
   url: /_ah/warmup
-  schedule: every 3 minutes
+  schedule: every 2 minutes
   retry_parameters:
-    job_retry_limit: 1
+    min_backoff_seconds: 2.5
+    max_doublings: 5
     
 - description: "Health check ping"
   url: /health

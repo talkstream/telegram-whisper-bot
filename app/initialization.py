@@ -6,7 +6,6 @@ import os
 import logging
 from typing import Dict, Any, Optional
 
-from openai import OpenAI
 from google.cloud import secretmanager
 from google.cloud import firestore
 from google.cloud import pubsub_v1
@@ -31,11 +30,11 @@ class ServiceContainer:
     
     def __init__(self):
         self.telegram_bot_token: Optional[str] = None
-        self.openai_api_key: Optional[str] = None
+        # openai_api_key removed
         self.telegram_api_url: Optional[str] = None
         self.telegram_file_url: Optional[str] = None
         
-        self.openai_client: Optional[OpenAI] = None
+        # openai_client removed
         self.db: Optional[firestore.Client] = None
         self.firestore_service: Optional[FirestoreService] = None
         self.audio_service: Optional[AudioService] = None
@@ -91,17 +90,17 @@ class ServiceContainer:
                 return response.payload.data.decode("UTF-8").strip()
             
             self.telegram_bot_token = get_secret("telegram-bot-token")
-            self.openai_api_key = get_secret("openai-api-key")
+            # openai_api_key no longer needed
             self.telegram_api_url = f"https://api.telegram.org/bot{self.telegram_bot_token}"
             self.telegram_file_url = f"https://api.telegram.org/file/bot{self.telegram_bot_token}"
             
             # Initialize services
             telegram_service.init_telegram_service(self.telegram_bot_token)
-            self.openai_client = OpenAI(api_key=self.openai_api_key)
+            # openai_client removed
             self.db = firestore.Client(project=self.PROJECT_ID, database=self.DATABASE_ID)
             self.firestore_service = FirestoreService(self.PROJECT_ID, self.DATABASE_ID)
             self.metrics_service = MetricsService(self.db)
-            self.audio_service = AudioService(self.openai_api_key, self.metrics_service)
+            self.audio_service = AudioService(self.metrics_service)
             self.stats_service = StatsService(self.db)
             
             # Initialize notification service

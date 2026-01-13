@@ -2,9 +2,11 @@ runtime: python311
 
 # Automatic scaling to keep at least one instance warm
 automatic_scaling:
-  min_instances: 1
+  min_instances: 0
   max_instances: 10
-  min_idle_instances: 1
+  min_idle_instances: 0
+  max_pending_latency: 1s
+  min_pending_latency: 100ms
   max_idle_instances: 2
   target_cpu_utilization: 0.7
   target_throughput_utilization: 0.7

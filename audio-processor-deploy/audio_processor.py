@@ -53,6 +53,7 @@ def initialize_services():
     from services.firestore import FirestoreService
     from services.audio import AudioService
     from services.metrics import MetricsService
+    from services.cache_service import CacheService
     
     # Initialize secret manager
     _secret_manager = secretmanager.SecretManagerServiceClient()
@@ -73,14 +74,15 @@ def initialize_services():
     _firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
     _metrics_service = MetricsService(_db_client)
     _audio_service = AudioService(_metrics_service)
+    _cache_service = CacheService()
     
     _services_initialized = True
     logging.info("Services initialized successfully")
     
-    return _telegram_service, None, _db_client, _firestore_service, _audio_service, _metrics_service
+    return _telegram_service, None, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
 
 class AudioProcessor:
-    def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None, metrics_service=None):
+    def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None, metrics_service=None, cache_service=None):
         """Initialize with pre-configured services"""
         self.telegram = telegram_service
         # openai_client is unused but kept in signature for compatibility with unpacking
@@ -88,10 +90,11 @@ class AudioProcessor:
         self.firestore_service = firestore_service
         self.audio_service = audio_service
         self.metrics_service = metrics_service
+        self.cache_service = cache_service
         self.start_time = None
         self.total_stages = 5  # downloading, converting, transcribing, formatting, sending
         
-    def update_job_status(self, job_id: str, status: str, progress: str = None, error: str = None, result: Dict = None):
+    def update_job_status(self, job_id: str, status: str, progress: str = None, error: str = None, result: Dict = None, update_firestore: bool = True):
         """Update job status in Firestore"""
         update_data = {'status': status}
         if progress:
@@ -101,14 +104,15 @@ class AudioProcessor:
         if result:
             update_data['result'] = result
             
-        if self.firestore_service:
-            self.firestore_service.update_audio_job(job_id, update_data)
-        else:
-            doc_ref = self.db.collection('audio_jobs').document(job_id)
-            update_data['updated_at'] = firestore.SERVER_TIMESTAMP
-            doc_ref.update(update_data)
+        if update_firestore:
+            if self.firestore_service:
+                self.firestore_service.update_audio_job(job_id, update_data)
+            else:
+                doc_ref = self.db.collection('audio_jobs').document(job_id)
+                update_data['updated_at'] = firestore.SERVER_TIMESTAMP
+                doc_ref.update(update_data)
             
-        logging.info(f"Updated job {job_id}: status={status}, progress={progress}")
+        logging.info(f"Updated job {job_id}: status={status}, progress={progress}, firestore={update_firestore}")
     
     def calculate_progress(self, stage: int, sub_progress: float = 0) -> float:
         """Calculate overall progress percentage
@@ -253,7 +257,7 @@ class AudioProcessor:
         try:
             # Stage 1: Downloading
             stage = 1
-            # Update job status and mark processing start time
+            # Update job status and mark processing start time (WRITE 1 - Essential)
             update_data = {
                 'status': 'processing',
                 'progress': 'downloading',
@@ -275,7 +279,6 @@ class AudioProcessor:
                     chat_id, status_message_id, 
                     f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}"
                 )
-                # Removed artificial delay
             
             # Download file
             tg_file_path = self.telegram.get_file_path(file_id)
@@ -300,7 +303,8 @@ class AudioProcessor:
                 
             # Stage 2: Converting
             stage = 2
-            self.update_job_status(job_id, 'processing', 'converting')
+            # Skip intermediate Firestore update (Optimization)
+            self.update_job_status(job_id, 'processing', 'converting', update_firestore=False)
             
             # Start conversion timer
             if self.metrics_service:
@@ -312,37 +316,22 @@ class AudioProcessor:
                     "Конвертирую аудио...", progress
                 )
             
-            # Convert to MP3 with moderate bitrate for reliability
+            # Convert to MP3
             converted_mp3_path = None
             if self.audio_service:
                 converted_mp3_path = self.audio_service.convert_to_mp3(local_audio_path)
                 # Clean up source file immediately
                 if os.path.exists(local_audio_path):
                     os.remove(local_audio_path)
-                    gc.collect()  # Force garbage collection
+                    gc.collect()
             else:
-                # Fallback to legacy FFmpeg implementation
-                try:
-                    converted_mp3_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", dir='/tmp').name
-                    # Use memory-efficient FFmpeg settings
-                    ffmpeg_command = [
-                        'ffmpeg', '-y',
-                        '-i', local_audio_path,
-                        '-b:a', '128k',
-                        '-ar', '44100',
-                        '-ac', '1',  # Mono to save memory
-                        '-threads', '1',  # Single thread to reduce memory
-                        converted_mp3_path
-                    ]
-                    
-                    process = subprocess.run(ffmpeg_command, check=True, capture_output=True, text=True, timeout=60)
-                finally:
-                    # Clean up source file immediately
-                    if os.path.exists(local_audio_path):
-                        os.remove(local_audio_path)
-                        gc.collect()  # Force garbage collection
+                # Should not happen as audio_service is required now
+                raise Exception("AudioService not initialized")
             
-            # Get actual duration and audio info from FFmpeg before transcribing
+            if not converted_mp3_path:
+                raise Exception("Conversion failed")
+
+            # Get actual duration and audio info
             actual_duration = None
             audio_format = None
             audio_codec = None
@@ -356,37 +345,70 @@ class AudioProcessor:
                     audio_codec = audio_info.get('codec', 'unknown')
                     audio_sample_rate = audio_info.get('sample_rate', 0)
                     audio_bitrate = audio_info.get('bit_rate', 0)
-                    logging.info(f"FFmpeg reported duration: {actual_duration}s vs Telegram duration: {duration}s")
-                    logging.info(f"Audio info: format={audio_format}, codec={audio_codec}, sample_rate={audio_sample_rate}, bitrate={audio_bitrate}")
             
             # End conversion timer
             if self.metrics_service:
                 self.metrics_service.end_timer('conversion', job_id)
             
+            # CACHE CHECK
+            transcribed_text = None
+            cache_hit = False
+            
+            if self.cache_service and converted_mp3_path:
+                try:
+                    audio_hash = self.cache_service.compute_audio_hash(converted_mp3_path)
+                    cached_text = self.cache_service.get_transcription(audio_hash)
+                    if cached_text:
+                        logging.info(f"Cache HIT for {audio_hash[:8]}")
+                        transcribed_text = cached_text
+                        cache_hit = True
+                    else:
+                        logging.info(f"Cache MISS for {audio_hash[:8]}")
+                except Exception as e:
+                    logging.warning(f"Cache check failed: {e}")
+
             # Stage 3: Transcribing
             stage = 3
-            self.update_job_status(job_id, 'processing', 'transcribing')
+            # Skip intermediate Firestore update (Optimization)
+            self.update_job_status(job_id, 'processing', 'transcribing', update_firestore=False)
             
-            # Start transcription timer
-            if self.metrics_service:
-                self.metrics_service.start_timer('transcription', job_id)
-            if status_message_id:
-                progress = self.calculate_progress(stage, 0)
-                self.telegram.send_progress_update(
-                    chat_id, status_message_id, 
-                    "Распознаю речь...", progress
-                )
-            
-            # Transcribe
-            transcribed_text = None
-            try:
-                transcribed_text = self.transcribe_audio(converted_mp3_path)
-            finally:
-                # Clean up converted file immediately
+            if not cache_hit:
+                # Start transcription timer
+                if self.metrics_service:
+                    self.metrics_service.start_timer('transcription', job_id)
+                if status_message_id:
+                    progress = self.calculate_progress(stage, 0)
+                    self.telegram.send_progress_update(
+                        chat_id, status_message_id, 
+                        "Распознаю речь...", progress
+                    )
+                
+                # Transcribe
+                try:
+                    transcribed_text = self.transcribe_audio(converted_mp3_path)
+                    
+                    # Cache result
+                    if self.cache_service and transcribed_text:
+                        try:
+                            self.cache_service.set_transcription(audio_hash, transcribed_text)
+                        except Exception as e:
+                            logging.warning(f"Cache write failed: {e}")
+
+                finally:
+                    # Clean up converted file immediately
+                    if converted_mp3_path and os.path.exists(converted_mp3_path):
+                        os.remove(converted_mp3_path)
+                        gc.collect()
+                
+                # End transcription timer
+                if self.metrics_service:
+                    self.metrics_service.end_timer('transcription', job_id)
+            else:
+                # Skip transcription step, cleanup file
                 if converted_mp3_path and os.path.exists(converted_mp3_path):
                     os.remove(converted_mp3_path)
-                    gc.collect()  # Force garbage collection
-            
+                    gc.collect()
+
             if not transcribed_text:
                 raise Exception("Failed to transcribe audio")
             
@@ -394,14 +416,11 @@ class AudioProcessor:
             if transcribed_text.strip() == "Продолжение следует...":
                 logging.warning("Whisper returned 'Продолжение следует...', indicating no speech detected")
                 raise Exception("На записи не обнаружено речи или текст не был распознан")
-            
-            # End transcription timer
-            if self.metrics_service:
-                self.metrics_service.end_timer('transcription', job_id)
                 
             # Stage 4: Formatting
             stage = 4
-            self.update_job_status(job_id, 'processing', 'formatting')
+            # Skip intermediate Firestore update (Optimization)
+            self.update_job_status(job_id, 'processing', 'formatting', update_firestore=False)
             
             # Start formatting timer
             if self.metrics_service:
@@ -428,9 +447,6 @@ class AudioProcessor:
                     "Подготавливаю результат...", progress
                 )
             
-            # Skip intermediate updates - go directly to sending result
-            # because _send_result_to_user will edit or delete the message anyway
-            
             # Calculate processing time
             processing_time = int(time.time() - self.start_time) if self.start_time else None
             
@@ -438,38 +454,66 @@ class AudioProcessor:
             if self.metrics_service:
                 self.metrics_service.end_timer('total_processing', job_id)
             
-            # Log success with both durations and additional metadata
-            self._log_transcription_attempt(user_id, user_name, file_size, duration, 'success', len(formatted_text), 
+            # Send result first (this will edit/delete the status message)
+            self._send_result_to_user(user_id, chat_id, formatted_text, status_message_id, is_batch_confirmation)
+            
+            # BATCH UPDATE: Job Status + Log + User Balance (Optimized 3 writes -> 1 batch)
+            if self.firestore_service:
+                batch = self.firestore_service.create_batch()
+                
+                # 1. Job Status
+                result_data = {
+                    'transcribed_text': transcribed_text,
+                    'formatted_text': formatted_text,
+                    'char_count': len(formatted_text),
+                    'telegram_duration': duration,
+                    'ffmpeg_duration': actual_duration
+                }
+                job_ref = self.db.collection('audio_jobs').document(job_id)
+                batch.update(job_ref, {
+                    'status': 'completed',
+                    'result': result_data,
+                    'updated_at': firestore.SERVER_TIMESTAMP
+                })
+                
+                # 2. Log Transcription
+                log_data = self._log_transcription_attempt(
+                    user_id, user_name, file_size, duration, 'success', len(formatted_text), 
+                    telegram_duration=duration, ffmpeg_duration=actual_duration,
+                    audio_format=audio_format, audio_codec=audio_codec,
+                    audio_sample_rate=audio_sample_rate, audio_bitrate=audio_bitrate,
+                    processing_time=processing_time, return_data_only=True
+                )
+                log_ref = self.db.collection('transcription_logs').document()
+                batch.set(log_ref, log_data)
+                
+                # 3. User Balance
+                billing_duration = int(actual_duration) if actual_duration else duration
+                duration_minutes = max(1, (billing_duration + 59) // 60)
+                user_ref = self.db.collection('users').document(str(user_id))
+                batch.update(user_ref, {
+                    'balance_minutes': firestore.Increment(-duration_minutes),
+                    'last_seen': firestore.SERVER_TIMESTAMP
+                })
+                
+                batch.commit()
+                logging.info(f"Batched update committed for job {job_id}")
+            else:
+                # Fallback for no service (legacy)
+                # ... legacy update logic ...
+                result = {
+                    'transcribed_text': transcribed_text,
+                    'formatted_text': formatted_text,
+                    'char_count': len(formatted_text),
+                    'telegram_duration': duration,
+                    'ffmpeg_duration': actual_duration
+                }
+                self.update_job_status(job_id, 'completed', result=result)
+                self._log_transcription_attempt(user_id, user_name, file_size, duration, 'success', len(formatted_text), 
                                           telegram_duration=duration, ffmpeg_duration=actual_duration,
                                           audio_format=audio_format, audio_codec=audio_codec,
                                           audio_sample_rate=audio_sample_rate, audio_bitrate=audio_bitrate,
                                           processing_time=processing_time)
-            
-            # Send result first (this will edit/delete the status message)
-            self._send_result_to_user(user_id, chat_id, formatted_text, status_message_id, is_batch_confirmation)
-            
-            # Save result after sending
-            result = {
-                'transcribed_text': transcribed_text,
-                'formatted_text': formatted_text,
-                'char_count': len(formatted_text),
-                'telegram_duration': duration,
-                'ffmpeg_duration': actual_duration
-            }
-            self.update_job_status(job_id, 'completed', result=result)
-            
-            # Deduct minutes after successful processing (for all users, including owner)
-            # Use FFmpeg duration if available as it's more accurate
-            billing_duration = int(actual_duration) if actual_duration else duration
-            duration_minutes = max(1, (billing_duration + 59) // 60)  # Round up to nearest minute
-            if self.firestore_service:
-                # Update user balance
-                user_ref = self.db.collection('users').document(str(user_id))
-                user_ref.update({
-                    'balance_minutes': firestore.Increment(-duration_minutes),
-                    'last_seen': firestore.SERVER_TIMESTAMP
-                })
-                logging.info(f"Deducted {duration_minutes} minutes from user {user_id} balance")
             
         except subprocess.CalledProcessError as e:
             logging.error(f"FFmpeg error: {e}")
@@ -514,8 +558,8 @@ class AudioProcessor:
                                   telegram_duration: int = None, ffmpeg_duration: float = None,
                                   audio_format: str = None, audio_codec: str = None,
                                   audio_sample_rate: int = None, audio_bitrate: int = None,
-                                  processing_time: int = None):
-        """Log transcription attempt to Firestore"""
+                                  processing_time: int = None, return_data_only: bool = False):
+        """Log transcription attempt to Firestore or return data for batching"""
         try:
             log_data = {
                 'user_id': str(user_id),
@@ -542,6 +586,10 @@ class AudioProcessor:
                 log_data['audio_bitrate'] = audio_bitrate
             if processing_time is not None:
                 log_data['processing_time'] = processing_time
+            
+            if return_data_only:
+                return log_data
+                
             if self.firestore_service:
                 self.firestore_service.log_transcription(log_data)
             else:
@@ -549,6 +597,8 @@ class AudioProcessor:
                 log_ref.set(log_data)
         except Exception as e:
             logging.error(f"Error logging attempt: {e}")
+            if return_data_only:
+                return {}
             
     def _send_result_to_user(self, user_id: int, chat_id: int, formatted_text: str, status_message_id: int = None, is_batch_confirmation: bool = False):
         """Send transcription result to user"""
@@ -620,10 +670,10 @@ def handle_pubsub_message(event, context):
     """Cloud Function entry point for Pub/Sub messages"""
     try:
         # Initialize services (only happens once per instance)
-        telegram, openai, db, firestore_service, audio_service, metrics_service = initialize_services()
+        telegram, openai, db, firestore_service, audio_service, metrics_service, cache_service = initialize_services()
         
         # Create processor with shared services
-        processor = AudioProcessor(telegram, openai, db, firestore_service, audio_service, metrics_service)
+        processor = AudioProcessor(telegram, openai, db, firestore_service, audio_service, metrics_service, cache_service)
         
         # Decode the Pub/Sub message
         pubsub_message = base64.b64decode(event['data']).decode('utf-8')

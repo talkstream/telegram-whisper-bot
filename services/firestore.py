@@ -17,6 +17,10 @@ class FirestoreService:
         self.database_id = database_id
         self.db = firestore.Client(project=project_id, database=database_id)
         
+    def create_batch(self):
+        """Create a Firestore batch object"""
+        return self.db.batch()
+
     # --- User Management ---
     
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:

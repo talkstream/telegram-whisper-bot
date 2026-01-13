@@ -5,3 +5,4 @@ google-cloud-firestore==2.19.0
 google-genai==1.0.0
 google-cloud-pubsub==2.25.5
 functions-framework==3.8.2
+redis==5.2.0
