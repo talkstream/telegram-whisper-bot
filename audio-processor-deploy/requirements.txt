@@ -1,8 +1,7 @@
-openai
-requests
-pytz
-google-cloud-secret-manager
-google-cloud-firestore
-google-cloud-aiplatform
-google-genai
-google-cloud-pubsub
+requests==2.32.3
+pytz==2025.1
+google-cloud-secret-manager==2.21.1
+google-cloud-firestore==2.19.0
+google-genai==1.0.0
+google-cloud-pubsub==2.25.5
+functions-framework==3.8.2

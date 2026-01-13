@@ -49,7 +49,6 @@ def initialize_services():
     # Import heavy libraries only when needed
     from google.cloud import firestore as fs
     from google.cloud import secretmanager
-    from openai import OpenAI
     from services.telegram import TelegramService
     from services.firestore import FirestoreService
     from services.audio import AudioService
@@ -65,26 +64,26 @@ def initialize_services():
         return response.payload.data.decode("UTF-8").strip()
     
     telegram_bot_token = get_secret("telegram-bot-token")
-    openai_api_key = get_secret("openai-api-key")
+    # openai-api-key no longer needed
     
     # Initialize services
     _telegram_service = TelegramService(telegram_bot_token)
-    _openai_client = OpenAI(api_key=openai_api_key)
+    # openai_client no longer used
     _db_client = fs.Client(project=PROJECT_ID, database=DATABASE_ID)
     _firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
     _metrics_service = MetricsService(_db_client)
-    _audio_service = AudioService(openai_api_key, _metrics_service)
+    _audio_service = AudioService(_metrics_service)
     
     _services_initialized = True
     logging.info("Services initialized successfully")
     
-    return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service
+    return _telegram_service, None, _db_client, _firestore_service, _audio_service, _metrics_service
 
 class AudioProcessor:
     def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None, metrics_service=None):
         """Initialize with pre-configured services"""
         self.telegram = telegram_service
-        self.openai_client = openai_client
+        # openai_client is unused but kept in signature for compatibility with unpacking
         self.db = db_client
         self.firestore_service = firestore_service
         self.audio_service = audio_service
@@ -154,23 +153,12 @@ class AudioProcessor:
         
         
     def transcribe_audio(self, audio_path: str) -> Optional[str]:
-        """Transcribe audio using OpenAI Whisper"""
+        """Transcribe audio using FFmpeg Whisper"""
         if self.audio_service:
             return self.audio_service.transcribe_audio(audio_path)
-        # Fallback to legacy implementation
-        try:
-            with open(audio_path, "rb") as audio_file:
-                file_tuple = (os.path.basename(audio_path), audio_file)
-                transcription = self.openai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=file_tuple,
-                    language="ru",
-                    response_format="json"
-                )
-            return transcription.text
-        except Exception as e:
-            logging.error(f"Error during transcription: {e}")
-            return None
+        # No fallback available without audio_service
+        logging.error("AudioService not initialized")
+        return None
             
     def format_text_with_gemini(self, text: str) -> str:
         """Format text using Gemini AI"""
@@ -203,11 +191,6 @@ class AudioProcessor:
             )
             result = response.text
             
-            # Clean up prompt to free memory
-            del prompt
-            del response
-            gc.collect()
-            
             return result
         except Exception as e:
             error_str = str(e)
@@ -226,8 +209,6 @@ class AudioProcessor:
                         contents=simple_prompt
                     )
                     result = response.text
-                    del simple_prompt, response
-                    gc.collect()
                     return result
                 except Exception as retry_e:
                     logging.error(f"Gemini retry also failed: {retry_e}")
@@ -294,8 +275,7 @@ class AudioProcessor:
                     chat_id, status_message_id, 
                     f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}"
                 )
-                # Give user 3 seconds to read the estimate (non-blocking would require major refactoring)
-                time.sleep(3)
+                # Removed artificial delay
             
             # Download file
             tg_file_path = self.telegram.get_file_path(file_id)
@@ -661,11 +641,6 @@ def handle_pubsub_message(event, context):
         if HAS_PSUTIL:
             memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
             logging.info(f"Memory usage at end: {memory_mb:.1f} MB")
-        
-        # Clean up after processing
-        del processor
-        del job_data
-        gc.collect()
         
         return 'OK'
     except Exception as e:
