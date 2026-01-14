@@ -1,0 +1,17 @@
+steps:
+  # Build the base image using the specific Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'gcr.io/$PROJECT_ID/audio-processor-base:v1',
+      '-f', 'Dockerfile.base',
+      '.'
+    ]
+    dir: 'audio-processor-deploy'  # Run in this subdirectory
+
+images:
+  - 'gcr.io/$PROJECT_ID/audio-processor-base:v1'
+
+timeout: 3600s  # 60 minutes
+options:
+  machineType: 'E2_HIGHCPU_8'

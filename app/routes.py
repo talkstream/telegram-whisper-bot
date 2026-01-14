@@ -177,7 +177,7 @@ def handle_message(message, services):
 def handle_media_message(message, user_id, chat_id, user_name, user_data, services):
     """Handle audio, voice, video, and document messages"""
     # Import here to avoid circular imports
-    from main import process_audio_file, process_video_file
+    from main import process_audio_file
     
     # Check balance
     balance = user_data.get('balance_minutes', 0)
@@ -195,12 +195,12 @@ def handle_media_message(message, user_id, chat_id, user_name, user_data, servic
         return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'voice')
     elif 'video' in message:
         file_info = message['video']
-        telegram_service.send_message(chat_id, "🎥 Видео получено. Обрабатываю...")
-        return process_video_file(file_info, user_id, chat_id, user_name, user_data)
+        # Hand off video directly to worker
+        return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video')
     elif 'video_note' in message:
         file_info = message['video_note']
-        telegram_service.send_message(chat_id, "🎥 Видео получено. Обрабатываю...")
-        return process_video_file(file_info, user_id, chat_id, user_name, user_data)
+        # Hand off video note directly to worker
+        return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video_note')
     elif 'document' in message:
         file_info = message['document']
         mime_type = file_info.get('mime_type', '')
@@ -210,8 +210,7 @@ def handle_media_message(message, user_id, chat_id, user_name, user_data, servic
             return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document')
         # Check if document is video
         elif mime_type.startswith('video/'):
-            telegram_service.send_message(chat_id, "🎥 Видео получено. Обрабатываю...")
-            return process_video_file(file_info, user_id, chat_id, user_name, user_data)
+            return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document_video')
         else:
             telegram_service.send_message(chat_id, 
                 "❌ Неподдерживаемый формат файла. Отправьте аудио или видео файл.")

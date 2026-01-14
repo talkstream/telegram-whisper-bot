@@ -4,31 +4,49 @@ set -e  # Exit on any error
 
 PROJECT_ID="editorials-robot"
 REGION="europe-west1"
-FUNCTION_NAME="audio-processor"
+SERVICE_NAME="audio-processor"
 TOPIC="audio-processing-jobs"
+IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME:ffmpeg8"
 
-echo "Building Docker image..."
-cd audio-processor-deploy
-docker build -t gcr.io/$PROJECT_ID/$FUNCTION_NAME:ffmpeg8 .
-
-echo "Pushing Docker image to GCR..."
-docker push gcr.io/$PROJECT_ID/$FUNCTION_NAME:ffmpeg8
-
-echo "Deploying Cloud Function (2nd gen) with custom container..."
-gcloud functions deploy $FUNCTION_NAME \
-  --gen2 \
+echo "Deploying to Cloud Run..."
+gcloud run deploy $SERVICE_NAME \
+  --image=$IMAGE \
   --region=$REGION \
-  --entry-point=process_audio \
-  --trigger-topic=$TOPIC \
-  --memory=1GB \
-  --timeout=540s \
+  --platform=managed \
+  --memory=2Gi \
+  --cpu=2 \
+  --timeout=600s \
   --max-instances=10 \
+  --no-allow-unauthenticated \
   --set-env-vars=GCP_PROJECT=$PROJECT_ID,WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.bin \
-  --image=gcr.io/$PROJECT_ID/$FUNCTION_NAME:ffmpeg8 \
+  --project=$PROJECT_ID \
   --quiet
 
-echo "Deployment completed successfully!"
+# Get the service URL
+SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)' --project=$PROJECT_ID)
 
-# Verify deployment
-echo "Verifying FFmpeg version..."
-gcloud functions logs read $FUNCTION_NAME --region=$REGION --limit=10
+echo "Service deployed at: $SERVICE_URL"
+
+# Create or update Pub/Sub subscription to push to Cloud Run
+SUBSCRIPTION_NAME="$SERVICE_NAME-push-sub"
+
+echo "Setting up Pub/Sub push subscription..."
+if gcloud pubsub subscriptions describe $SUBSCRIPTION_NAME --project=$PROJECT_ID >/dev/null 2>&1; then
+  gcloud pubsub subscriptions update $SUBSCRIPTION_NAME \
+    --push-endpoint=$SERVICE_URL \
+    --push-auth-service-account=$PROJECT_NUMBER-compute@developer.gserviceaccount.com \
+    --project=$PROJECT_ID
+else
+  # Get the service account for the subscription
+  # Using the default compute service account or a dedicated one is recommended
+  PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+  SERVICE_ACCOUNT="service-$PROJECT_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com"
+  
+  gcloud pubsub subscriptions create $SUBSCRIPTION_NAME \
+    --topic=$TOPIC \
+    --push-endpoint=$SERVICE_URL \
+    --push-auth-service-account=$PROJECT_NUMBER-compute@developer.gserviceaccount.com \
+    --project=$PROJECT_ID
+fi
+
+echo "Deployment and trigger setup completed successfully!"

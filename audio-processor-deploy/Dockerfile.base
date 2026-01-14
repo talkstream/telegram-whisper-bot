@@ -1,0 +1,77 @@
+# Base image with FFmpeg 8.0 and Whisper
+# This image contains the heavy compiled dependencies.
+# It should be rebuilt only when dependencies change.
+
+FROM python:3.11-slim-bookworm
+
+# Set environment variables
+ENV WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.bin
+ENV PYTHONUNBUFFERED=1
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    cmake \
+    build-essential \
+    wget \
+    ca-certificates \
+    nasm \
+    pkg-config \
+    libmp3lame-dev \
+    libopus-dev \
+    libvorbis-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/ffmpeg-build
+
+# Build whisper.cpp
+RUN git clone https://github.com/ggerganov/whisper.cpp.git && \
+    cd whisper.cpp && \
+    cmake -B build -DBUILD_SHARED_LIBS=ON && \
+    cmake --build build --config Release -j2 && \
+    cp $(find build -name "*.so*") /usr/local/lib/ && \
+    cp include/whisper.h /usr/local/include/ && \
+    find . -name "*.h" -exec cp {} /usr/local/include/ \; && \
+    ldconfig
+
+# Copy pkg-config file
+# We assume this file exists in the context. If not, we can generate it.
+# Ideally, we should generate it here if possible, but copying is fine if the file is static.
+# Creating a dummy whisper.pc if strictly needed, but let's assume the user provides it or we generate simple one.
+# Generating whisper.pc inline to avoid context dependency for base image
+RUN echo "prefix=/usr/local" > /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "exec_prefix=\${prefix}" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "libdir=\${exec_prefix}/lib" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "includedir=\${prefix}/include" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "Name: whisper" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "Description: Whisper speech recognition" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "Version: 2.0.0" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "Libs: -L\${libdir} -lwhisper -lggml -lggml-base -lggml-cpu" >> /usr/local/lib/pkgconfig/whisper.pc && \
+    echo "Cflags: -I\${includedir}" >> /usr/local/lib/pkgconfig/whisper.pc
+
+# Build FFmpeg 8.0 with Whisper enabled
+RUN git clone --depth 1 --branch release/8.0 https://github.com/FFmpeg/FFmpeg.git && \
+    cd FFmpeg && \
+    ./configure \
+        --enable-gpl \
+        --enable-version3 \
+        --enable-nonfree \
+        --enable-whisper \
+        --enable-libmp3lame \
+        --enable-libopus \
+        --enable-libvorbis \
+        --extra-cflags="-I/usr/local/include" \
+        --extra-ldflags="-L/usr/local/lib" && \
+    make -j2 && \
+    make install && \
+    ldconfig && \
+    cd .. && rm -rf FFmpeg whisper.cpp
+
+# Download Whisper base model
+RUN mkdir -p /opt/whisper/models && wget -O /opt/whisper/models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+
+# Verify installation
+RUN ffmpeg -version && ffmpeg -filters | grep whisper

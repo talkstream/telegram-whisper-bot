@@ -1,0 +1,10 @@
+prefix=/usr/local
+exec_prefix=/usr/local
+libdir=/usr/local/lib
+includedir=/usr/local/include
+
+Name: whisper
+Description: Whisper speech recognition library
+Version: 1.7.5
+Libs: -L${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lstdc++ -lm
+Cflags: -I${includedir}

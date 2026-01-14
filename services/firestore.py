@@ -207,24 +207,18 @@ class FirestoreService:
         doc_ref.update(update_data)
         
     def count_pending_jobs(self) -> int:
-        """Count jobs that are pending or processing"""
-        # Count only pending/processing jobs - don't count completed ones
+        """Count jobs that are pending or processing using aggregation queries"""
         try:
-            pending_count = 0
-            
-            # Count pending jobs
-            pending_query = self.db.collection('audio_jobs').where(
+            # Use aggregation queries for efficiency
+            pending_count = self.db.collection('audio_jobs').where(
                 filter=FieldFilter('status', '==', 'pending')
-            )
-            pending_count += len(list(pending_query.stream()))
+            ).count().get()[0][0].value
             
-            # Count processing jobs
-            processing_query = self.db.collection('audio_jobs').where(
+            processing_count = self.db.collection('audio_jobs').where(
                 filter=FieldFilter('status', '==', 'processing')
-            )
-            pending_count += len(list(processing_query.stream()))
+            ).count().get()[0][0].value
             
-            return pending_count
+            return pending_count + processing_count
         except Exception as e:
             logging.error(f"Error counting pending jobs: {e}")
             return 0

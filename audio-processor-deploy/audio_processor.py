@@ -39,10 +39,10 @@ _secret_manager = None
 
 def initialize_services():
     """Initialize services once per Cloud Function instance"""
-    global _services_initialized, _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _secret_manager
+    global _services_initialized, _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _secret_manager, _cache_service
     
     if _services_initialized:
-        return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service
+        return _telegram_service, None, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
     
     logging.info("Initializing services for this instance...")
     
@@ -81,6 +81,8 @@ def initialize_services():
     
     return _telegram_service, None, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
 
+from google.api_core.exceptions import NotFound
+
 class AudioProcessor:
     def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None, metrics_service=None, cache_service=None):
         """Initialize with pre-configured services"""
@@ -105,12 +107,22 @@ class AudioProcessor:
             update_data['result'] = result
             
         if update_firestore:
-            if self.firestore_service:
-                self.firestore_service.update_audio_job(job_id, update_data)
-            else:
-                doc_ref = self.db.collection('audio_jobs').document(job_id)
-                update_data['updated_at'] = firestore.SERVER_TIMESTAMP
-                doc_ref.update(update_data)
+            try:
+                if self.firestore_service:
+                    self.firestore_service.update_audio_job(job_id, update_data)
+                else:
+                    doc_ref = self.db.collection('audio_jobs').document(job_id)
+                    update_data['updated_at'] = firestore.SERVER_TIMESTAMP
+                    doc_ref.update(update_data)
+            except NotFound:
+                # Document deleted (e.g. by cleanup job or manually)
+                # This is an expected edge case for stale jobs.
+                # We log it as a warning and DO NOT raise, to allow the worker to finish successfully
+                # and ack the Pub/Sub message (stopping the retry loop).
+                logging.warning(f"⚠️ Job {job_id} not found in Firestore. Skipping status update to '{status}'.")
+            except Exception as e:
+                # Log other errors but don't crash the worker for status updates
+                logging.error(f"❌ Failed to update job status for {job_id}: {e}")
             
         logging.info(f"Updated job {job_id}: status={status}, progress={progress}, firestore={update_firestore}")
     
@@ -547,6 +559,9 @@ class AudioProcessor:
                 elif "Failed to download" in str(e):
                     error_msg += "Не удалось загрузить файл.\n\n"
                     error_msg += "Попробуйте отправить файл заново."
+                elif "Could not parse transcription" in str(e):
+                    error_msg += "Не удалось извлечь текст из ответа транскрибатора.\n\n"
+                    error_msg += "Возможно, аудиофайл поврежден или содержит нестандартные данные."
                 else:
                     error_msg += "Произошла неожиданная ошибка.\n\n"
                     error_msg += "Попробуйте позже или обратитесь в поддержку."
@@ -695,5 +710,6 @@ def handle_pubsub_message(event, context):
         return 'OK'
     except Exception as e:
         logging.error(f"Error in handle_pubsub_message: {e}")
-        # Raise to trigger retry
-        raise
+        # Return OK to acknowledge message and prevent infinite retries
+        # The job status should have been updated to 'failed' inside process_audio_job
+        return 'OK', 200

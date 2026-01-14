@@ -263,6 +263,8 @@ class AudioService:
             #   queue: 6 (balance between quality and processing frequency)
             ffmpeg_command = [
                 'ffmpeg',
+                '-hide_banner',  # Hide build info
+                '-nostats',      # Hide progress (size=N/A...)
                 '-i', audio_path,
                 '-vn',  # No video
                 '-af', (
@@ -317,56 +319,63 @@ class AudioService:
 
     def _parse_ffmpeg_whisper_output(self, ffmpeg_stderr: str) -> str:
         """
-        Parse transcription text from FFmpeg stderr output.
-
-        FFmpeg Whisper filter outputs transcription segments to stderr.
-        Format: [whisper @ 0x...] segment_text
-
+        Parse transcription text from FFmpeg stderr output using JSON format.
+        
         Args:
-            ffmpeg_stderr: FFmpeg stderr output
-
+            ffmpeg_stderr: FFmpeg stderr output containing mixed logs and JSON objects
+            
         Returns:
             Concatenated transcription text
         """
+        import json
         import re
-
-        # Extract all Whisper segments from stderr
-        # Pattern: [whisper @ 0xaddress] transcribed_text
+        
+        # Strategy: Find all valid JSON objects in the stream
+        # This regex matches balanced braces { ... } non-recursively (usually sufficient for Whisper output)
+        # or we can iterate through the string finding matches.
+        
+        transcribed_segments = []
+        
+        # Simple extraction strategy: find lines or blocks that look like JSON
+        # FFmpeg outputs JSON one object per segment usually
+        
+        # Regex to find potential JSON blocks: starts with { and ends with }
+        # Note: This is a simple parser, might need more robustness for nested structures if Whisper changes
+        json_candidates = re.findall(r'\{.*?\}', ffmpeg_stderr, re.DOTALL)
+        
+        for candidate in json_candidates:
+            try:
+                # Cleanup: sometimes FFmpeg logs interleave, but usually JSON comes clean if buffer is large enough
+                # Try parsing
+                data = json.loads(candidate)
+                
+                # Check if it's a Whisper segment
+                # Structure usually: {"t0":..., "t1":..., "text": "..."}
+                if isinstance(data, dict) and 'text' in data:
+                    transcribed_segments.append(data['text'].strip())
+            except json.JSONDecodeError:
+                # Not a valid JSON block, ignore
+                continue
+                
+        if transcribed_segments:
+            return ' '.join(transcribed_segments).strip()
+            
+        # Fallback: if JSON parsing completely failed, try regex for raw text (legacy format)
+        # Only if we found NO json segments
+        logging.warning("No JSON segments found in Whisper output, attempting legacy parse")
+        
+        # Pattern: [whisper @ 0x...] text
         pattern = r'\[whisper @ 0x[0-9a-f]+\]\s+(.+)'
         matches = re.findall(pattern, ffmpeg_stderr)
-
-        if not matches:
-            # Fallback: look for JSON output
-            try:
-                # Try to parse as JSON (if format=json worked)
-                import json
-                # Extract JSON blocks from stderr
-                json_pattern = r'\{[^}]+\}'
-                json_matches = re.findall(json_pattern, ffmpeg_stderr)
-
-                texts = []
-                for json_str in json_matches:
-                    try:
-                        data = json.loads(json_str)
-                        if 'text' in data:
-                            texts.append(data['text'])
-                    except:
-                        continue
-
-                if texts:
-                    return ' '.join(texts).strip()
-            except:
-                pass
-
-            # Last resort: return cleaned stderr
-            logging.warning("Could not parse structured Whisper output, using raw stderr")
-            # Remove FFmpeg technical lines
-            cleaned = re.sub(r'\[.*?\].*?(?:\n|$)', '', ffmpeg_stderr)
-            return cleaned.strip()
-
-        # Concatenate all segments
-        transcription = ' '.join(matches).strip()
-        return transcription
+        
+        if matches:
+            return ' '.join(matches).strip()
+            
+        # Debug: Log what we got if everything failed
+        logging.warning("Failed to parse Whisper output. First 500 chars of stderr:")
+        logging.warning(ffmpeg_stderr[:500])
+        
+        raise ValueError("Could not parse transcription from audio processor output")
 
     def get_audio_duration(self, audio_path: str) -> float:
         """

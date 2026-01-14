@@ -1,0 +1,42 @@
+steps:
+  # 1. Sync 'services' directory from root to deployment context
+  - name: 'ubuntu'
+    script: |
+      rm -rf audio-processor-deploy/services
+      cp -r services audio-processor-deploy/
+      echo "✅ Services synced to deployment context"
+
+  # 2. Build the application image (using the lightweight Dockerfile)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'gcr.io/$PROJECT_ID/audio-processor:latest',
+      '.'
+    ]
+    dir: 'audio-processor-deploy'
+
+  # 3. Push the image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/audio-processor:latest']
+
+  # 4. Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'audio-processor'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/audio-processor:latest'
+      - '--region'
+      - 'europe-west1'
+      - '--platform'
+      - 'managed'
+      - '--project'
+      - '$PROJECT_ID'
+      - '--quiet'
+
+images:
+  - 'gcr.io/$PROJECT_ID/audio-processor:latest'
+
+timeout: 600s

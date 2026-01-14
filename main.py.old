@@ -1,17 +1,20 @@
 """
 Telegram Whisper Bot - Main Application
-Refactored version: Lightweight Bot, Heavy Worker
+Simplified and refactored version
 """
 
 import os
 import json
 import logging
 import math
+import tempfile
+import subprocess
 import uuid
 from datetime import datetime
 import pytz
 
 from flask import Flask
+import requests
 from google.cloud import pubsub_v1
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -36,10 +39,7 @@ register_routes(app, services)
 # --- AUDIO/VIDEO PROCESSING FUNCTIONS ---
 
 def process_audio_file(file_info, user_id, chat_id, user_name, user_data, file_type):
-    """
-    Process media file (audio, voice, video, video_note, or document)
-    Publishes metadata to Pub/Sub for async processing.
-    """
+    """Process audio file (audio, voice, or document)"""
     file_id = file_info['file_id']
     file_size = file_info.get('file_size', 0)
     duration = file_info.get('duration', 0)
@@ -87,7 +87,7 @@ def process_audio_file(file_info, user_id, chat_id, user_name, user_data, file_t
             })
             services.firestore_service.set_user_state(user_id, user_state)
             
-            # Check if we should process the batch (simple timeout logic)
+            # Check if we should process the batch (simple timeout)
             batch_start = user_state.get('batch_start_time', datetime.now(pytz.utc))
             if isinstance(batch_start, str):
                 batch_start = datetime.fromisoformat(batch_start.replace('Z', '+00:00'))
@@ -100,34 +100,163 @@ def process_audio_file(file_info, user_id, chat_id, user_name, user_data, file_t
             return "OK", 200
     
     # Single file processing
-    # Check balance for async processing
-    balance = user_data.get('balance_minutes', 0)
-    estimated_duration = duration / 60 if duration > 0 else 5.0 # Default 5 mins if unknown
+    if services.USE_ASYNC_PROCESSING:
+        # Check balance for async processing
+        balance = user_data.get('balance_minutes', 0)
+        estimated_duration = duration / 60 if duration > 0 else 5.0
+        
+        if balance < estimated_duration:
+            telegram_service.send_message(chat_id,
+                f"Недостаточно минут. Требуется ~{math.ceil(estimated_duration)} мин, "
+                f"ваш баланс: {math.ceil(balance)} мин.")
+            return "OK", 200
+        
+        # Send initial status message
+        status_msg = telegram_service.send_message(chat_id, "🎵 Аудио получено. Обрабатываю...")
+        status_message_id = status_msg.get('result', {}).get('message_id') if status_msg else None
+        
+        # Publish to Pub/Sub for async processing
+        job_id = publish_audio_job(user_id, chat_id, file_id, file_size, duration, 
+                                 user_name, status_message_id)
+        logging.info(f"Published audio job {job_id} for user {user_id}")
+    else:
+        # Synchronous processing (not implemented in this simplified version)
+        telegram_service.send_message(chat_id, 
+            "Синхронная обработка временно недоступна. Попробуйте позже.")
     
-    if balance < estimated_duration:
+    return "OK", 200
+
+
+def process_video_file(file_info, user_id, chat_id, user_name, user_data):
+    """Process video file by extracting audio"""
+    file_id = file_info['file_id']
+    file_size = file_info.get('file_size', 0)
+    
+    # Validate file size
+    if file_size > services.MAX_TELEGRAM_FILE_SIZE:
+        size_mb = file_size / (1024 * 1024)
+        max_mb = services.MAX_TELEGRAM_FILE_SIZE / (1024 * 1024)
         telegram_service.send_message(chat_id,
-            f"Недостаточно минут. Требуется ~{math.ceil(estimated_duration)} мин, "
-            f"ваш баланс: {math.ceil(balance)} мин.")
+            f"Видео слишком большое ({size_mb:.1f} MB). Максимальный размер: {max_mb} MB.")
         return "OK", 200
     
-    # Send initial status message
-    msg_text = "🎵 Аудио получено. Обрабатываю..."
-    if file_type in ['video', 'video_note']:
-        msg_text = "🎥 Видео получено. Обрабатываю..."
-        
-    status_msg = telegram_service.send_message(chat_id, msg_text)
-    status_message_id = status_msg.get('result', {}).get('message_id') if status_msg else None
+    # Download video file
+    telegram_service.send_message(chat_id, "🎬 Извлекаю аудиодорожку...")
     
-    # Publish to Pub/Sub for async processing
-    job_id = publish_audio_job(user_id, chat_id, file_id, file_size, duration, 
-                             user_name, status_message_id)
-    logging.info(f"Published job {job_id} for user {user_id} (type: {file_type})")
+    try:
+        # Get file path from Telegram
+        file_path_response = requests.get(
+            f"{services.telegram_api_url}/getFile",
+            params={'file_id': file_id}
+        )
+        file_path_data = file_path_response.json()
+        
+        if not file_path_data.get('ok'):
+            raise Exception("Failed to get file path")
+        
+        file_path = file_path_data['result']['file_path']
+        
+        # Download the video file
+        download_url = f"{services.telegram_file_url}/{file_path}"
+        video_response = requests.get(download_url)
+        
+        if video_response.status_code != 200:
+            raise Exception(f"Failed to download video: {video_response.status_code}")
+        
+        # Save video to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as video_file:
+            video_file.write(video_response.content)
+            video_path = video_file.name
+        
+        # Extract audio using FFmpeg
+        audio_path = video_path.replace('.mp4', '_audio.mp3')
+        
+        try:
+            # Use FFmpeg to extract audio
+            cmd = [
+                'ffmpeg', '-i', video_path,
+                '-vn',  # No video
+                '-acodec', 'mp3',
+                '-ab', '128k',
+                '-ar', '44100',
+                '-ac', '1',  # Mono
+                '-y',  # Overwrite output
+                audio_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode != 0:
+                if "Stream map '0:a:0' matches no streams" in result.stderr:
+                    telegram_service.send_message(chat_id,
+                        "В этом видео нет аудиодорожки. Пожалуйста, отправьте видео со звуком.")
+                    return "OK", 200
+                else:
+                    raise Exception(f"FFmpeg error: {result.stderr}")
+            
+            # Get audio duration
+            duration_cmd = [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                audio_path
+            ]
+            duration_result = subprocess.run(duration_cmd, capture_output=True, text=True)
+            duration = float(duration_result.stdout.strip()) if duration_result.returncode == 0 else 0
+            
+            # Upload extracted audio to Telegram and get new file_id
+            with open(audio_path, 'rb') as audio_file:
+                # Send as voice message to get file_id
+                response = requests.post(
+                    f"{services.telegram_api_url}/sendVoice",
+                    data={'chat_id': chat_id},
+                    files={'voice': audio_file}
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('ok'):
+                        # Delete the message we just sent
+                        message_id = result['result']['message_id']
+                        requests.post(
+                            f"{services.telegram_api_url}/deleteMessage",
+                            json={'chat_id': chat_id, 'message_id': message_id}
+                        )
+                        
+                        # Get the audio file_id
+                        audio_file_id = result['result']['voice']['file_id']
+                        audio_file_size = os.path.getsize(audio_path)
+                        
+                        # Process the extracted audio
+                        audio_info = {
+                            'file_id': audio_file_id,
+                            'file_size': audio_file_size,
+                            'duration': int(duration)
+                        }
+                        
+                        # Update status message
+                        telegram_service.send_message(chat_id, "🎵 Аудио извлечено. Обрабатываю...")
+                        
+                        return process_audio_file(audio_info, user_id, chat_id, user_name, 
+                                                user_data, 'extracted_audio')
+        
+        finally:
+            # Clean up temporary files
+            if os.path.exists(video_path):
+                os.remove(video_path)
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+    
+    except Exception as e:
+        logging.error(f"Error processing video: {e}")
+        telegram_service.send_message(chat_id,
+            "Произошла ошибка при обработке видео. Попробуйте другой файл.")
     
     return "OK", 200
 
 
 def process_batch_files(user_id, chat_id, user_name, user_data, batch_state):
-    """Process a batch of audio/video files"""
+    """Process a batch of audio files"""
     batch_files = batch_state.get('batch_files', [])
     
     if not batch_files:
@@ -164,7 +293,7 @@ def process_batch_files(user_id, chat_id, user_name, user_data, batch_state):
                                  user_name, status_message_id if is_last_file else None,
                                  is_batch_confirmation=is_last_file)
         
-        logging.info(f"Published batch job {job_id} ({idx+1}/{len(batch_files)}) for user {user_id}")
+        logging.info(f"Published batch audio job {job_id} ({idx+1}/{len(batch_files)}) for user {user_id}")
     
     # Clear batch state
     services.firestore_service.set_user_state(user_id, None)
