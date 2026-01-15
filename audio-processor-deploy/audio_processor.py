@@ -65,21 +65,23 @@ def initialize_services():
         return response.payload.data.decode("UTF-8").strip()
     
     telegram_bot_token = get_secret("telegram-bot-token")
-    # openai-api-key no longer needed
+    openai_api_key = get_secret("openai-api-key")
     
     # Initialize services
+    from openai import OpenAI
+    
     _telegram_service = TelegramService(telegram_bot_token)
-    # openai_client no longer used
+    _openai_client = OpenAI(api_key=openai_api_key)
     _db_client = fs.Client(project=PROJECT_ID, database=DATABASE_ID)
     _firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
     _metrics_service = MetricsService(_db_client)
-    _audio_service = AudioService(_metrics_service)
+    _audio_service = AudioService(_metrics_service, _openai_client) # Pass OpenAI client
     _cache_service = CacheService()
     
     _services_initialized = True
     logging.info("Services initialized successfully")
     
-    return _telegram_service, None, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
+    return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
 
 from google.api_core.exceptions import NotFound
 
@@ -321,12 +323,12 @@ class AudioProcessor:
             # Start conversion timer
             if self.metrics_service:
                 self.metrics_service.start_timer('conversion', job_id)
-            if status_message_id:
-                progress = self.calculate_progress(stage, 0)
-                self.telegram.send_progress_update(
-                    chat_id, status_message_id, 
-                    "Конвертирую аудио...", progress
-                )
+            # if status_message_id:
+            #     progress = self.calculate_progress(stage, 0)
+            #     self.telegram.send_progress_update(
+            #         chat_id, status_message_id, 
+            #         "Конвертирую аудио...", progress
+            #     )
             
             # Convert to MP3
             converted_mp3_path = None
@@ -388,12 +390,12 @@ class AudioProcessor:
                 # Start transcription timer
                 if self.metrics_service:
                     self.metrics_service.start_timer('transcription', job_id)
-                if status_message_id:
-                    progress = self.calculate_progress(stage, 0)
-                    self.telegram.send_progress_update(
-                        chat_id, status_message_id, 
-                        "Распознаю речь...", progress
-                    )
+                # if status_message_id:
+                #     progress = self.calculate_progress(stage, 0)
+                #     self.telegram.send_progress_update(
+                #         chat_id, status_message_id, 
+                #         "Распознаю речь...", progress
+                #     )
                 
                 # Transcribe
                 try:
@@ -437,12 +439,12 @@ class AudioProcessor:
             # Start formatting timer
             if self.metrics_service:
                 self.metrics_service.start_timer('formatting', job_id)
-            if status_message_id:
-                progress = self.calculate_progress(stage, 0)
-                self.telegram.send_progress_update(
-                    chat_id, status_message_id, 
-                    "Форматирую текст...", progress
-                )
+            # if status_message_id:
+            #     progress = self.calculate_progress(stage, 0)
+            #     self.telegram.send_progress_update(
+            #         chat_id, status_message_id, 
+            #         "Форматирую текст...", progress
+            #     )
             
             # Format text
             formatted_text = self.format_text_with_gemini(transcribed_text)
@@ -452,12 +454,12 @@ class AudioProcessor:
                 self.metrics_service.end_timer('formatting', job_id)
             
             # Update progress after formatting
-            if status_message_id:
-                progress = self.calculate_progress(stage, 0.8)
-                self.telegram.send_progress_update(
-                    chat_id, status_message_id, 
-                    "Подготавливаю результат...", progress
-                )
+            # if status_message_id:
+            #     progress = self.calculate_progress(stage, 0.8)
+            #     self.telegram.send_progress_update(
+            #         chat_id, status_message_id, 
+            #         "Подготавливаю результат...", progress
+            #     )
             
             # Calculate processing time
             processing_time = int(time.time() - self.start_time) if self.start_time else None

@@ -66,12 +66,14 @@ def process_audio_file(file_info, user_id, chat_id, user_name, user_data, file_t
             # First file in the batch
             batch_state = {
                 'current_batch_id': media_group_id,
-                'batch_files': [{
-                    'file_id': file_id,
-                    'file_size': file_size,
-                    'duration': duration,
-                    'file_type': file_type
-                }],
+                'batch_files': [
+                    {
+                        'file_id': file_id,
+                        'file_size': file_size,
+                        'duration': duration,
+                        'file_type': file_type
+                    }
+                ],
                 'batch_start_time': datetime.now(pytz.utc)
             }
             services.firestore_service.set_user_state(user_id, batch_state)
@@ -145,9 +147,12 @@ def process_batch_files(user_id, chat_id, user_name, user_data, batch_state):
         return "OK", 200
     
     # Send batch confirmation message  
-    batch_msg = (f"📦 Получено {UtilityService.pluralize_russian(len(batch_files), 'файл', 'файла', 'файлов')}\n"
-                f"⏱ Общая длительность: ~{math.ceil(total_duration)} мин\n"
-                f"⏳ Начинаю обработку...")
+    batch_msg = (
+        f"📦 Получено {UtilityService.pluralize_russian(len(batch_files), 'файл', 'файла', 'файлов')}
+"
+        f"⏱ Общая длительность: ~{math.ceil(total_duration)} мин
+"
+        f"⏳ Начинаю обработку...")
     
     status_msg = telegram_service.send_message(chat_id, batch_msg)
     status_message_id = status_msg.get('result', {}).get('message_id') if status_msg else None
