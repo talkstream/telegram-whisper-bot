@@ -4,6 +4,25 @@ from unittest.mock import Mock, patch
 
 class TestAudioService:
 
+    def test_ffmpeg_whisper_parsing(self):
+        """Test parsing of FFmpeg Whisper output (Text and JSON)"""
+        service = AudioService()
+        
+        # 1. Test standard log format
+        log_output = """
+        [whisper @ 0x123] This is a test.
+        [whisper @ 0x123] Another line.
+        """
+        assert service._parse_ffmpeg_whisper_output(log_output) == "This is a test. Another line."
+        
+        # 2. Test JSON format (simulated)
+        json_output = """
+        [info] Some log
+        { "text": "Hello world" }
+        { "text": " from JSON" }
+        """
+        assert service._parse_ffmpeg_whisper_output(json_output) == "Hello world from JSON"
+
     def test_ffmpeg_whisper_transcription(self, sample_audio):
         """Test FFmpeg Whisper transcription"""
         # Mocking subprocess run if running in environment without ffmpeg
