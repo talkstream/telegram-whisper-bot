@@ -261,6 +261,7 @@ class AudioProcessor:
         user_id = job_data['user_id']
         chat_id = job_data['chat_id']
         file_id = job_data['file_id']
+        file_unique_id = job_data.get('file_unique_id')
         file_size = job_data['file_size']
         duration = job_data['duration']
         user_name = job_data['user_name']
@@ -275,170 +276,192 @@ class AudioProcessor:
             self.metrics_service.start_timer('total_processing', job_id)
         
         try:
-            # Stage 1: Downloading
-            stage = 1
-            # Update job status and mark processing start time (WRITE 1 - Essential)
-            update_data = {
-                'status': 'processing',
-                'progress': 'downloading',
-                'processing_started_at': firestore.SERVER_TIMESTAMP
-            }
-            if self.firestore_service:
-                self.firestore_service.update_audio_job(job_id, update_data)
-            else:
-                self.update_job_status(job_id, 'processing', 'downloading')
-            
-            # Start download timer
-            if self.metrics_service:
-                self.metrics_service.start_timer('download', job_id)
-            if status_message_id:
-                progress = self.calculate_progress(stage, 0)
-                time_estimate = self.estimate_total_time(duration)
-                # Show time estimate immediately
-                self.telegram.edit_message_text(
-                    chat_id, status_message_id, 
-                    f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}"
-                )
-            
-            # Download file
-            tg_file_path = self.telegram.get_file_path(file_id)
-            if not tg_file_path:
-                raise Exception("Failed to get file path")
-                
-            local_audio_path = self.telegram.download_file(tg_file_path)
-            if not local_audio_path:
-                raise Exception("Failed to download file")
-            
-            # End download timer
-            if self.metrics_service:
-                self.metrics_service.end_timer('download', job_id)
-            
-            # Check audio quality before processing
-            if self.audio_service:
-                is_processable, quality_msg, audio_info = self.audio_service.analyze_audio_quality(local_audio_path)
-                if not is_processable:
-                    raise Exception(f"Audio quality check failed: {quality_msg}")
-                # Don't log quality warnings unless processing fails
-                pass
-                
-            # Stage 2: Converting
-            stage = 2
-            # Skip intermediate Firestore update (Optimization)
-            self.update_job_status(job_id, 'processing', 'converting', update_firestore=False)
-            
-            # UX: Send typing action
-            try:
-                self.telegram.send_chat_action(chat_id, 'record_voice') # or upload_document
-            except: pass
-
-            # Start conversion timer
-            if self.metrics_service:
-                self.metrics_service.start_timer('conversion', job_id)
-            # if status_message_id:
-            #     progress = self.calculate_progress(stage, 0)
-            #     self.telegram.send_progress_update(
-            #         chat_id, status_message_id, 
-            #         "Конвертирую аудио...", progress
-            #     )
-            
-            # Convert to MP3
-            converted_mp3_path = None
-            if self.audio_service:
-                converted_mp3_path = self.audio_service.convert_to_mp3(local_audio_path)
-                # Clean up source file immediately
-                if os.path.exists(local_audio_path):
-                    os.remove(local_audio_path)
-                    gc.collect()
-            else:
-                # Should not happen as audio_service is required now
-                raise Exception("AudioService not initialized")
-            
-            if not converted_mp3_path:
-                raise Exception("Conversion failed")
-
-            # Get actual duration and audio info
+            transcribed_text = None
             actual_duration = None
             audio_format = None
             audio_codec = None
             audio_sample_rate = None
             audio_bitrate = None
-            if self.audio_service and converted_mp3_path:
-                audio_info = self.audio_service.get_audio_info(converted_mp3_path)
-                if audio_info:
-                    actual_duration = audio_info.get('duration', 0)
-                    audio_format = audio_info.get('format', 'unknown')
-                    audio_codec = audio_info.get('codec', 'unknown')
-                    audio_sample_rate = audio_info.get('sample_rate', 0)
-                    audio_bitrate = audio_info.get('bit_rate', 0)
-            
-            # End conversion timer
-            if self.metrics_service:
-                self.metrics_service.end_timer('conversion', job_id)
-            
-            # CACHE CHECK
-            transcribed_text = None
             cache_hit = False
             
-            if self.cache_service and converted_mp3_path:
+            # --- SMART CACHE CHECK (Pre-Download) ---
+            if self.cache_service and file_unique_id:
                 try:
-                    audio_hash = self.cache_service.compute_audio_hash(converted_mp3_path)
-                    cached_text = self.cache_service.get_transcription(audio_hash)
+                    cached_text = self.cache_service.get_transcription(file_unique_id)
                     if cached_text:
-                        logging.info(f"Cache HIT for {audio_hash[:8]}")
+                        logging.info(f"Smart Cache HIT for unique_id {file_unique_id}")
                         transcribed_text = cached_text
                         cache_hit = True
-                    else:
-                        logging.info(f"Cache MISS for {audio_hash[:8]}")
+                        actual_duration = duration  # Fallback duration since we didn't analyze file
                 except Exception as e:
-                    logging.warning(f"Cache check failed: {e}")
+                    logging.warning(f"Smart Cache check failed: {e}")
 
-            # Stage 3: Transcribing
-            stage = 3
-            # Skip intermediate Firestore update (Optimization)
-            self.update_job_status(job_id, 'processing', 'transcribing', update_firestore=False)
-            
             if not cache_hit:
-                # Start transcription timer
+                # Stage 1: Downloading
+                stage = 1
+                # Update job status and mark processing start time (WRITE 1 - Essential)
+                update_data = {
+                    'status': 'processing',
+                    'progress': 'downloading',
+                    'processing_started_at': firestore.SERVER_TIMESTAMP
+                }
+                if self.firestore_service:
+                    self.firestore_service.update_audio_job(job_id, update_data)
+                else:
+                    self.update_job_status(job_id, 'processing', 'downloading')
+                
+                # Start download timer
                 if self.metrics_service:
-                    self.metrics_service.start_timer('transcription', job_id)
+                    self.metrics_service.start_timer('download', job_id)
+                if status_message_id:
+                    progress = self.calculate_progress(stage, 0)
+                    time_estimate = self.estimate_total_time(duration)
+                    # Show time estimate immediately
+                    self.telegram.edit_message_text(
+                        chat_id, status_message_id, 
+                        f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}"
+                    )
+                
+                # Download file
+                tg_file_path = self.telegram.get_file_path(file_id)
+                if not tg_file_path:
+                    raise RetryableError("Failed to get file path from Telegram")
+                    
+                local_audio_path = self.telegram.download_file(tg_file_path)
+                if not local_audio_path:
+                    raise RetryableError("Failed to download file from Telegram")
+                
+                # End download timer
+                if self.metrics_service:
+                    self.metrics_service.end_timer('download', job_id)
+                
+                # Check audio quality before processing
+                if self.audio_service:
+                    is_processable, quality_msg, audio_info = self.audio_service.analyze_audio_quality(local_audio_path)
+                    if not is_processable:
+                        raise Exception(f"Audio quality check failed: {quality_msg}")
+                    # Don't log quality warnings unless processing fails
+                    pass
+                    
+                # Stage 2: Converting
+                stage = 2
+                # Skip intermediate Firestore update (Optimization)
+                self.update_job_status(job_id, 'processing', 'converting', update_firestore=False)
+                
+                # UX: Send typing action
+                try:
+                    self.telegram.send_chat_action(chat_id, 'record_voice') # or upload_document
+                except: pass
+
+                # Start conversion timer
+                if self.metrics_service:
+                    self.metrics_service.start_timer('conversion', job_id)
                 # if status_message_id:
                 #     progress = self.calculate_progress(stage, 0)
                 #     self.telegram.send_progress_update(
                 #         chat_id, status_message_id, 
-                #         "Распознаю речь...", progress
+                #         "Конвертирую аудио...", progress
                 #     )
                 
-                # UX: Send typing action repeatedly for long files?
-                # For now just once at start of stage
-                try:
-                    self.telegram.send_chat_action(chat_id, 'typing') 
-                except: pass
+                # Convert to MP3
+                converted_mp3_path = None
+                if self.audio_service:
+                    converted_mp3_path = self.audio_service.convert_to_mp3(local_audio_path)
+                    # Clean up source file immediately
+                    if os.path.exists(local_audio_path):
+                        os.remove(local_audio_path)
+                        gc.collect()
+                else:
+                    # Should not happen as audio_service is required now
+                    raise Exception("AudioService not initialized")
+                
+                if not converted_mp3_path:
+                    raise Exception("Conversion failed")
 
-                # Transcribe
-                try:
-                    transcribed_text = self.transcribe_audio(converted_mp3_path)
+                # Get actual duration and audio info
+                if self.audio_service and converted_mp3_path:
+                    audio_info = self.audio_service.get_audio_info(converted_mp3_path)
+                    if audio_info:
+                        actual_duration = audio_info.get('duration', 0)
+                        audio_format = audio_info.get('format', 'unknown')
+                        audio_codec = audio_info.get('codec', 'unknown')
+                        audio_sample_rate = audio_info.get('sample_rate', 0)
+                        audio_bitrate = audio_info.get('bit_rate', 0)
+                
+                # End conversion timer
+                if self.metrics_service:
+                    self.metrics_service.end_timer('conversion', job_id)
+                
+                # SECONDARY CACHE CHECK (Content Hash)
+                # If unique_id missed (e.g. forward), check content hash
+                if not cache_hit and self.cache_service and converted_mp3_path:
+                    try:
+                        audio_hash = self.cache_service.compute_audio_hash(converted_mp3_path)
+                        cached_text = self.cache_service.get_transcription(audio_hash)
+                        if cached_text:
+                            logging.info(f"Content Hash Cache HIT for {audio_hash[:8]}")
+                            transcribed_text = cached_text
+                            cache_hit = True
+                            
+                            # Opportunistically cache by unique_id for next time
+                            if file_unique_id:
+                                self.cache_service.set_transcription(file_unique_id, cached_text)
+                    except Exception as e:
+                        logging.warning(f"Cache check failed: {e}")
+
+                # Stage 3: Transcribing
+                stage = 3
+                # Skip intermediate Firestore update (Optimization)
+                self.update_job_status(job_id, 'processing', 'transcribing', update_firestore=False)
+                
+                if not cache_hit:
+                    # Start transcription timer
+                    if self.metrics_service:
+                        self.metrics_service.start_timer('transcription', job_id)
+                    # if status_message_id:
+                    #     progress = self.calculate_progress(stage, 0)
+                    #     self.telegram.send_progress_update(
+                    #         chat_id, status_message_id, 
+                    #         "Распознаю речь...", progress
+                    #     )
                     
-                    # Cache result
-                    if self.cache_service and transcribed_text:
-                        try:
-                            self.cache_service.set_transcription(audio_hash, transcribed_text)
-                        except Exception as e:
-                            logging.warning(f"Cache write failed: {e}")
+                    # UX: Send typing action repeatedly for long files?
+                    # For now just once at start of stage
+                    try:
+                        self.telegram.send_chat_action(chat_id, 'typing') 
+                    except: pass
 
-                finally:
-                    # Clean up converted file immediately
+                    # Transcribe
+                    try:
+                        transcribed_text = self.transcribe_audio(converted_mp3_path)
+                        
+                        # Cache result
+                        if self.cache_service and transcribed_text:
+                            try:
+                                # Cache by unique ID (Fastest)
+                                if file_unique_id:
+                                    self.cache_service.set_transcription(file_unique_id, transcribed_text)
+                                
+                                # Cache by Content Hash (Robust)
+                                if 'audio_hash' in locals():
+                                    self.cache_service.set_transcription(audio_hash, transcribed_text)
+                            except Exception as e:
+                                logging.warning(f"Cache write failed: {e}")
+
+                    finally:
+                        # Clean up converted file immediately
+                        if converted_mp3_path and os.path.exists(converted_mp3_path):
+                            os.remove(converted_mp3_path)
+                            gc.collect()
+                    
+                    # End transcription timer
+                    if self.metrics_service:
+                        self.metrics_service.end_timer('transcription', job_id)
+                else:
+                    # Skip transcription step, cleanup file if it exists
                     if converted_mp3_path and os.path.exists(converted_mp3_path):
                         os.remove(converted_mp3_path)
                         gc.collect()
-                
-                # End transcription timer
-                if self.metrics_service:
-                    self.metrics_service.end_timer('transcription', job_id)
-            else:
-                # Skip transcription step, cleanup file
-                if converted_mp3_path and os.path.exists(converted_mp3_path):
-                    os.remove(converted_mp3_path)
-                    gc.collect()
 
             if not transcribed_text:
                 raise Exception("Failed to transcribe audio")
