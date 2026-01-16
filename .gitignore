@@ -1,3 +1,4 @@
+
 # Python
 __pycache__/
 *.py[cod]
@@ -5,48 +6,6 @@ __pycache__/
 *.so
 .Python
 env/
-venv/
-ENV/
-.venv
-
-# Virtual environments
-bin/
-lib/
-include/
-pip-selfcheck.json
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-
-# Environment variables
-.env
-.env.local
-
-# Google Cloud
-.gcloudignore
-
-# Temporary files
-*.tmp
-*.temp
-/tmp/
-
-# Node modules (if any frontend)
-node_modules/
-
-# Distribution / packaging
-.Python
 build/
 develop-eggs/
 dist/
@@ -63,8 +22,28 @@ wheels/
 .installed.cfg
 *.egg
 
-# Claude AI
-.claude/
+# Virtual Environment
+venv/
+ENV/
 
-# Audio processor services (duplicate)
-audio-processor-deploy/services/
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+.gemini/
+.gemini-clipboard/
+.claude/
+.DS_Store
+tmp/
+temp/
+*~
+
+# Secrets (Double check!)
+secrets.yaml
+.env
+key.json
+*.key
+*.pem
