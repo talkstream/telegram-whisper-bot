@@ -168,10 +168,161 @@ class AudioService:
                 os.remove(output_path)
             return None
             
+    def transcribe_with_ffmpeg_whisper(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Transcribe audio using FFmpeg 8.0 built-in Whisper filter.
+
+        Args:
+            audio_path: Path to audio file (any format supported by FFmpeg)
+            language: Language code (default: 'ru' for Russian)
+
+        Returns:
+            Transcribed text as string
+
+        Raises:
+            subprocess.TimeoutExpired: If transcription takes too long
+            subprocess.CalledProcessError: If FFmpeg fails
+        """
+        import subprocess
+        import json
+        import os
+        import re
+
+        # Get Whisper model path from environment
+        model_path = os.getenv('WHISPER_MODEL_PATH', '/opt/whisper/models/ggml-base.bin')
+
+        # Temporary output file for transcription
+        output_json = f"{audio_path}.transcript.json"
+
+        try:
+            # FFmpeg command with Whisper filter
+            # Parameters:
+            #   model: path to ggml model file
+            #   language: transcription language
+            #   format: json (for structured output)
+            #   use_gpu: true (auto-detect GPU, fallback to CPU)
+            #   queue: 6 (balance between quality and processing frequency)
+            ffmpeg_command = [
+                'ffmpeg',
+                '-i', audio_path,
+                '-vn',  # No video
+                '-af', (
+                    f"whisper="
+                    f"model={model_path}:"
+                    f"language={language}:"
+                    f"format=json:"
+                    f"use_gpu=true:"
+                    f"queue=6"
+                ),
+                '-f', 'null',
+                '-'
+            ]
+
+            # Execute FFmpeg with timeout
+            # Timeout: 3x audio duration (conservative estimate)
+            audio_duration = self.get_audio_duration(audio_path)
+            timeout = max(int(audio_duration * 3), 60)  # Minimum 60s
+
+            logging.info(f"Starting FFmpeg Whisper transcription (timeout: {timeout}s)")
+
+            result = subprocess.run(
+                ffmpeg_command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=True
+            )
+
+            # Parse output from stderr (FFmpeg logs to stderr)
+            transcription_text = self._parse_ffmpeg_whisper_output(result.stderr)
+
+            if not transcription_text or len(transcription_text.strip()) < 5:
+                # Log stderr for debugging if empty
+                logging.warning(f"Whisper returned empty. Stderr: {result.stderr[:500]}")
+                raise ValueError("Whisper returned empty or invalid transcription")
+
+            logging.info(f"FFmpeg Whisper transcription completed: {len(transcription_text)} chars")
+            return transcription_text
+
+        except subprocess.TimeoutExpired:
+            logging.error(f"FFmpeg Whisper transcription timeout after {timeout}s")
+            raise
+        except subprocess.CalledProcessError as e:
+            logging.error(f"FFmpeg Whisper failed: {e.stderr}")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error in FFmpeg Whisper: {str(e)}")
+            raise
+        finally:
+            # Cleanup temporary files if any (though we output to stdout/stderr mostly)
+            if os.path.exists(output_json):
+                os.remove(output_json)
+
+
+    def _parse_ffmpeg_whisper_output(self, ffmpeg_stderr: str) -> str:
+        """
+        Parse transcription text from FFmpeg stderr output.
+
+        FFmpeg Whisper filter outputs transcription segments to stderr.
+        Format: [whisper @ 0x...] segment_text
+
+        Args:
+            ffmpeg_stderr: FFmpeg stderr output
+
+        Returns:
+            Concatenated transcription text
+        """
+        import re
+        import json
+
+        # 1. Try to parse JSON output if present (since we used format=json)
+        # JSON output usually comes in blocks or as a single JSON object depending on version
+        try:
+            # Extract JSON-like blocks. This is tricky because stderr mixes logs.
+            # Look for lines starting with { and ending with }
+            # Or scan for "text": "..." patterns if valid JSON isn't easily extractable
+            
+            # Simple approach: Extract "text" fields if standard JSON structure is found
+            # Note: FFmpeg Whisper JSON format might vary.
+            # Let's try to find valid JSON blocks first.
+            json_pattern = r'\{.*?"text":\s*".*?".*?\}' 
+            json_matches = re.findall(json_pattern, ffmpeg_stderr, re.DOTALL)
+            
+            texts = []
+            for json_str in json_matches:
+                try:
+                    data = json.loads(json_str)
+                    if 'text' in data:
+                        texts.append(data['text'])
+                except:
+                    continue
+            
+            if texts:
+                return ' '.join(texts).strip()
+
+        except Exception as e:
+            pass
+
+        # 2. Fallback: Parse standard log format
+        # Pattern: [whisper @ 0xaddress] transcribed_text
+        pattern = r'\[whisper @ 0x[0-9a-f]+\]\s+(.+)'
+        matches = re.findall(pattern, ffmpeg_stderr)
+
+        if matches:
+             return ' '.join(matches).strip()
+
+        # 3. Last resort: Return cleaned stderr
+        # logging.warning("Could not parse structured Whisper output, using raw stderr cleanup")
+        cleaned = re.sub(r'\[.*?\].*?(?:\n|$)', '', ffmpeg_stderr)
+        return cleaned.strip()
+
+
     def transcribe_audio(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio file using OpenAI Whisper API (primary method).
-        This method uses the official OpenAI client for stable transcription.
+        Transcribe audio file using FFmpeg 8.0 Whisper (primary method).
+
+        This method uses FFmpeg's built-in Whisper filter for local transcription.
+        NO external API calls, NO OpenAI costs.
 
         Args:
             audio_path: Path to audio file
@@ -180,28 +331,22 @@ class AudioService:
         Returns:
             Transcribed text
         """
-        if not self.openai_client:
-            raise ValueError("OpenAI client not initialized")
-
         try:
-            logging.info(f"Sending audio to OpenAI Whisper API (language={language})")
-            
-            with open(audio_path, "rb") as audio_file:
-                transcription = self.openai_client.audio.transcriptions.create(
-                    model="whisper-1", 
-                    file=audio_file,
-                    language=language,
-                    response_format="text"
-                )
+            # Use FFmpeg 8.0 Whisper (local, fast, free)
+            transcription = self.transcribe_with_ffmpeg_whisper(audio_path, language=language)
 
             # Quality check
             if not transcription or len(transcription) < 5:
                 raise ValueError("Transcription too short or empty")
 
+            # Check for common Whisper errors
+            if transcription.strip().lower() in ['продолжение следует...', '[blank_audio]', '...']:
+                raise ValueError("No speech detected in audio")
+
             return transcription
 
         except Exception as e:
-            logging.error(f"OpenAI Whisper API transcription failed: {str(e)}")
+            logging.error(f"FFmpeg Whisper transcription failed: {str(e)}")
             raise
 
     def get_audio_duration(self, audio_path: str) -> float:
@@ -257,10 +402,11 @@ class AudioService:
         api_start_time = time.time()
         try:
             # Initialize the client with Vertex AI configuration
+            # Switch to us-central1 for Gemini 3 availability
             client = genai.Client(
                 vertexai=True,
                 project=os.environ.get('GCP_PROJECT', 'editorials-robot'),
-                location='europe-west1'
+                location='us-central1'
             )
             
             # Prepare user settings for prompt
@@ -291,7 +437,7 @@ class AudioService:
 
 {text}"""
 
-            # Generate with Gemini 3 Flash
+            # Generate with Gemini 3 Flash (Preview)
             response = client.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=prompt,

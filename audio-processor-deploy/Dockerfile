@@ -1,13 +1,15 @@
-FROM python:3.11-slim
+# Use custom base image with FFmpeg 8.0 and Whisper
+FROM gcr.io/editorials-robot/audio-processor-base:v1
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 ENV PORT 8080
 
-# Install system dependencies (FFmpeg required for convert_to_mp3)
+# Install runtime dependencies (if any extra are needed, otherwise base has most)
+# Note: ffmpeg is already in base
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

@@ -81,6 +81,12 @@ def initialize_services():
     _services_initialized = True
     logging.info("Services initialized successfully")
     
+    # Debug: Notify owner
+    try:
+        _telegram_service.send_message(775707, "🚀 Audio Processor Started (OpenAI Version)")
+    except Exception as e:
+        logging.error(f"Failed to send startup msg: {e}")
+    
     return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
 
 from google.api_core.exceptions import NotFound
@@ -543,32 +549,55 @@ class AudioProcessor:
                     "• Проверьте, что файл не поврежден")
                     
         except Exception as e:
-            logging.error(f"Error processing job {job_id}: {e}")
-            self.update_job_status(job_id, 'failed', error=str(e))
+            error_str = str(e)
+            logging.error(f"Error processing job {job_id}: {error_str}")
+            
+            # IDENTIFY RETRYABLE ERRORS
+            # Network issues, API 5xx, Rate Limits
+            is_retryable = False
+            if "429" in error_str or "Resource exhausted" in error_str:
+                is_retryable = True
+            elif "500" in error_str or "502" in error_str or "503" in error_str or "504" in error_str:
+                is_retryable = True
+            elif "Connection" in error_str or "Timeout" in error_str:
+                is_retryable = True
+            elif "ServiceUnavailable" in error_str:
+                is_retryable = True
+                
+            if is_retryable:
+                logging.warning(f"Job {job_id} failed with retryable error: {error_str}")
+                raise RetryableError(error_str) from e
+
+            # NON-RETRYABLE ERRORS (Logic bugs, invalid file, auth, etc.)
+            self.update_job_status(job_id, 'failed', error=error_str)
             self._log_transcription_attempt(user_id, user_name, file_size, duration, 'failure_general')
+            
             if status_message_id:
                 error_msg = "Ошибка обработки\n\n"
                 
-                if "На записи не обнаружено речи" in str(e):
+                if "На записи не обнаружено речи" in error_str:
                     error_msg = "На записи не обнаружено речи или текст не был распознан.\n\n"
                     error_msg += "Попробуйте записать аудио с более четкой речью."
-                elif "Failed to transcribe" in str(e):
+                elif "Failed to transcribe" in error_str:
                     error_msg += "Не удалось распознать речь.\n\n"
                     error_msg += "Рекомендации:\n"
                     error_msg += "• Убедитесь, что файл содержит речь\n"
                     error_msg += "• Проверьте качество записи\n"
                     error_msg += "• Попробуйте улучшить качество аудио"
-                elif "Failed to download" in str(e):
+                elif "Failed to download" in error_str:
                     error_msg += "Не удалось загрузить файл.\n\n"
                     error_msg += "Попробуйте отправить файл заново."
-                elif "Could not parse transcription" in str(e):
+                elif "Could not parse transcription" in error_str:
                     error_msg += "Не удалось извлечь текст из ответа транскрибатора.\n\n"
                     error_msg += "Возможно, аудиофайл поврежден или содержит нестандартные данные."
                 else:
                     error_msg += "Произошла неожиданная ошибка.\n\n"
                     error_msg += "Попробуйте позже или обратитесь в поддержку."
                     
-                self.telegram.edit_message_text(chat_id, status_message_id, error_msg)
+                try:
+                    self.telegram.edit_message_text(chat_id, status_message_id, error_msg)
+                except Exception as msg_e:
+                    logging.error(f"Failed to send error message: {msg_e}")
                     
     def _log_transcription_attempt(self, user_id: int, user_name: str, file_size: int, 
                                   duration: int, status: str, char_count: int = 0,
@@ -683,6 +712,10 @@ class AudioProcessor:
                         self.telegram.send_message(chat_id, formatted_text)
 
 
+class RetryableError(Exception):
+    """Exception raised for transient errors that should trigger a retry."""
+    pass
+
 def handle_pubsub_message(event, context):
     """Cloud Function entry point for Pub/Sub messages"""
     try:
@@ -710,8 +743,25 @@ def handle_pubsub_message(event, context):
             logging.info(f"Memory usage at end: {memory_mb:.1f} MB")
         
         return 'OK'
+
+    except RetryableError as e:
+        logging.warning(f"Transient error: {e}. Returning 500 to trigger retry.")
+        return 'Retry', 500
+
     except Exception as e:
-        logging.error(f"Error in handle_pubsub_message: {e}")
+        logging.error(f"Non-retryable error in handle_pubsub_message: {e}")
+        
+        # Critical Error Notification
+        try:
+            # Re-init telegram service locally just in case global failed
+            if not _telegram_service:
+                from services.telegram import TelegramService, get_telegram_service
+                ts = get_telegram_service() or TelegramService(os.environ.get('TELEGRAM_BOT_TOKEN', ''))
+                if ts: ts.send_message(775707, f"🚨 Worker Critical Error:\n{str(e)}")
+            else:
+                _telegram_service.send_message(775707, f"🚨 Worker Critical Error:\n{str(e)}")
+        except: pass
+        
         # Return OK to acknowledge message and prevent infinite retries
         # The job status should have been updated to 'failed' inside process_audio_job
         return 'OK', 200
