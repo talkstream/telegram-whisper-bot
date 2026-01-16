@@ -17,6 +17,22 @@ class TelegramService:
         self.file_url = f"https://api.telegram.org/file/bot{bot_token}"
         self.session = requests.Session()  # Connection pooling
         
+    def send_chat_action(self, chat_id: int, action: str) -> bool:
+        """
+        Send a chat action (e.g. 'typing', 'upload_photo', 'upload_document').
+        This is fire-and-forget (returns True if request sent, doesn't raise error on failure usually).
+        """
+        url = f"{self.api_url}/sendChatAction"
+        payload = {"chat_id": chat_id, "action": action}
+        
+        try:
+            # Short timeout for chat action as it's not critical
+            self.session.post(url, json=payload, timeout=2)
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send chat action: {e}")
+            return False
+
     def send_message(self, chat_id: int, text: str, parse_mode: str = "", 
                     reply_markup: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """Send a message to a Telegram chat"""

@@ -326,6 +326,11 @@ class AudioProcessor:
             # Skip intermediate Firestore update (Optimization)
             self.update_job_status(job_id, 'processing', 'converting', update_firestore=False)
             
+            # UX: Send typing action
+            try:
+                self.telegram.send_chat_action(chat_id, 'record_voice') # or upload_document
+            except: pass
+
             # Start conversion timer
             if self.metrics_service:
                 self.metrics_service.start_timer('conversion', job_id)
@@ -403,6 +408,12 @@ class AudioProcessor:
                 #         "Распознаю речь...", progress
                 #     )
                 
+                # UX: Send typing action repeatedly for long files?
+                # For now just once at start of stage
+                try:
+                    self.telegram.send_chat_action(chat_id, 'typing') 
+                except: pass
+
                 # Transcribe
                 try:
                     transcribed_text = self.transcribe_audio(converted_mp3_path)
@@ -442,6 +453,11 @@ class AudioProcessor:
             # Skip intermediate Firestore update (Optimization)
             self.update_job_status(job_id, 'processing', 'formatting', update_firestore=False)
             
+            # UX: Send typing action
+            try:
+                self.telegram.send_chat_action(chat_id, 'typing') 
+            except: pass
+
             # Start formatting timer
             if self.metrics_service:
                 self.metrics_service.start_timer('formatting', job_id)
