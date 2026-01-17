@@ -6,18 +6,15 @@ import os
 import json
 import logging
 import math
-import tempfile
-import subprocess
 import uuid
 from datetime import datetime, timedelta
 import pytz
 
 from flask import request, jsonify
 from google.cloud.firestore_v1.base_query import FieldFilter
-import requests
 
-from services import telegram as telegram_service
-from services.utility import UtilityService
+from telegram_bot_shared.services import telegram as telegram_service
+from telegram_bot_shared.services.utility import UtilityService
 from handlers.admin_commands import ReportCommandHandler
 
 
@@ -39,6 +36,14 @@ def register_routes(app, services):
     @app.route('/', methods=['POST'])
     def webhook():
         """Main webhook handler for Telegram updates"""
+        # Security check: Verify Telegram secret token
+        webhook_secret = os.environ.get('TELEGRAM_WEBHOOK_SECRET')
+        if webhook_secret:
+            token_header = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+            if token_header != webhook_secret:
+                logging.warning(f"Unauthorized webhook attempt. Header: {token_header}")
+                return "Unauthorized", 403
+
         if not services.initialized:
             if not services.initialize():
                 return "Service initialization failed", 500
@@ -176,8 +181,6 @@ def handle_message(message, services):
 
 def handle_media_message(message, user_id, chat_id, user_name, user_data, services):
     """Handle audio, voice, video, and document messages"""
-    # Import here to avoid circular imports
-    from main import process_audio_file
     
     # Check balance
     balance = user_data.get('balance_minutes', 0)
@@ -189,28 +192,28 @@ def handle_media_message(message, user_id, chat_id, user_name, user_data, servic
     # Determine file type and process
     if 'audio' in message:
         file_info = message['audio']
-        return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'audio')
+        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'audio')
     elif 'voice' in message:
         file_info = message['voice'] 
-        return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'voice')
+        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'voice')
     elif 'video' in message:
         file_info = message['video']
         # Hand off video directly to worker
-        return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video')
+        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video')
     elif 'video_note' in message:
         file_info = message['video_note']
         # Hand off video note directly to worker
-        return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video_note')
+        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video_note')
     elif 'document' in message:
         file_info = message['document']
         mime_type = file_info.get('mime_type', '')
         
         # Check if document is audio
         if mime_type.startswith('audio/') or mime_type == 'application/ogg':
-            return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document')
+            return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document')
         # Check if document is video
         elif mime_type.startswith('video/'):
-            return process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document_video')
+            return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document_video')
         else:
             telegram_service.send_message(chat_id, 
                 "❌ Неподдерживаемый формат файла. Отправьте аудио или видео файл.")

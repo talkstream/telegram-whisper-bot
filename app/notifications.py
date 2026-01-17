@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 import pytz
 from typing import Dict, List, Optional
 
-from services.firestore import FirestoreService
-from services.telegram import TelegramService
+from telegram_bot_shared.services.firestore import FirestoreService
+from telegram_bot_shared.services.telegram import TelegramService
 
 
 class NotificationService:

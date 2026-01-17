@@ -20,7 +20,8 @@ except ImportError:
     HAS_PSUTIL = False
 
 # Configure logging first
-logging.basicConfig(level=logging.INFO)
+from telegram_bot_shared.services.utility import UtilityService
+UtilityService.setup_logging(component_name="worker")
 
 # Constants
 PROJECT_ID = os.environ.get('GCP_PROJECT', 'editorials-robot')
@@ -49,11 +50,11 @@ def initialize_services():
     # Import heavy libraries only when needed
     from google.cloud import firestore as fs
     from google.cloud import secretmanager
-    from services.telegram import TelegramService
-    from services.firestore import FirestoreService
-    from services.audio import AudioService
-    from services.metrics import MetricsService
-    from services.cache_service import CacheService
+    from telegram_bot_shared.services.telegram import TelegramService
+    from telegram_bot_shared.services.firestore import FirestoreService
+    from telegram_bot_shared.services.audio import AudioService
+    from telegram_bot_shared.services.metrics import MetricsService
+    from telegram_bot_shared.services.cache_service import CacheService
     
     # Initialize secret manager
     _secret_manager = secretmanager.SecretManagerServiceClient()
@@ -90,6 +91,27 @@ def initialize_services():
     return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
 
 from google.api_core.exceptions import NotFound
+
+class DebouncedProgressUpdater:
+    """Helper to update Telegram status messages without hitting rate limits"""
+    def __init__(self, telegram_service, chat_id, message_id, min_interval=15):
+        self.telegram = telegram_service
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.min_interval = min_interval
+        self.last_update_time = 0
+        
+    def update(self, text, force=False):
+        if not self.message_id:
+            return
+            
+        now = time.time()
+        if force or (now - self.last_update_time >= self.min_interval):
+            try:
+                self.telegram.edit_message_text(self.chat_id, self.message_id, text)
+                self.last_update_time = now
+            except Exception as e:
+                logging.warning(f"Failed to update progress: {e}")
 
 class AudioProcessor:
     def __init__(self, telegram_service, openai_client, db_client, firestore_service=None, audio_service=None, metrics_service=None, cache_service=None):
@@ -268,6 +290,9 @@ class AudioProcessor:
         status_message_id = job_data.get('status_message_id')
         is_batch_confirmation = job_data.get('is_batch_confirmation', False)
         
+        # Initialize progress updater
+        updater = DebouncedProgressUpdater(self.telegram, chat_id, status_message_id)
+        
         # Start timing
         self.start_time = time.time()
         
@@ -296,6 +321,9 @@ class AudioProcessor:
                 except Exception as e:
                     logging.warning(f"Smart Cache check failed: {e}")
 
+            # Time estimate for progress messages
+            time_estimate = self.estimate_total_time(duration)
+
             if not cache_hit:
                 # Stage 1: Downloading
                 stage = 1
@@ -313,14 +341,9 @@ class AudioProcessor:
                 # Start download timer
                 if self.metrics_service:
                     self.metrics_service.start_timer('download', job_id)
-                if status_message_id:
-                    progress = self.calculate_progress(stage, 0)
-                    time_estimate = self.estimate_total_time(duration)
-                    # Show time estimate immediately
-                    self.telegram.edit_message_text(
-                        chat_id, status_message_id, 
-                        f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}"
-                    )
+                
+                # Update progress
+                updater.update(f"⏳ Загружаю файл...\nОжидаемое время: {time_estimate}", force=True)
                 
                 # Download file
                 tg_file_path = self.telegram.get_file_path(file_id)
@@ -356,12 +379,9 @@ class AudioProcessor:
                 # Start conversion timer
                 if self.metrics_service:
                     self.metrics_service.start_timer('conversion', job_id)
-                # if status_message_id:
-                #     progress = self.calculate_progress(stage, 0)
-                #     self.telegram.send_progress_update(
-                #         chat_id, status_message_id, 
-                #         "Конвертирую аудио...", progress
-                #     )
+                
+                # Update progress
+                updater.update(f"⏳ Конвертирую аудио...\nОжидаемое время: {time_estimate}")
                 
                 # Convert to MP3
                 converted_mp3_path = None
@@ -418,12 +438,9 @@ class AudioProcessor:
                     # Start transcription timer
                     if self.metrics_service:
                         self.metrics_service.start_timer('transcription', job_id)
-                    # if status_message_id:
-                    #     progress = self.calculate_progress(stage, 0)
-                    #     self.telegram.send_progress_update(
-                    #         chat_id, status_message_id, 
-                    #         "Распознаю речь...", progress
-                    #     )
+                    
+                    # Update progress
+                    updater.update(f"⏳ Распознаю речь...\nОжидаемое время: {time_estimate}")
                     
                     # UX: Send typing action repeatedly for long files?
                     # For now just once at start of stage
@@ -484,12 +501,9 @@ class AudioProcessor:
             # Start formatting timer
             if self.metrics_service:
                 self.metrics_service.start_timer('formatting', job_id)
-            # if status_message_id:
-            #     progress = self.calculate_progress(stage, 0)
-            #     self.telegram.send_progress_update(
-            #         chat_id, status_message_id, 
-            #         "Форматирую текст...", progress
-            #     )
+            
+            # Update progress
+            updater.update(f"⏳ Форматирую текст...\nОжидаемое время: {time_estimate}")
             
             # Format text
             formatted_text = self.format_text_with_gemini(transcribed_text)
@@ -499,12 +513,7 @@ class AudioProcessor:
                 self.metrics_service.end_timer('formatting', job_id)
             
             # Update progress after formatting
-            # if status_message_id:
-            #     progress = self.calculate_progress(stage, 0.8)
-            #     self.telegram.send_progress_update(
-            #         chat_id, status_message_id, 
-            #         "Подготавливаю результат...", progress
-            #     )
+            updater.update(f"⏳ Подготавливаю результат...\nОжидаемое время: {time_estimate}")
             
             # Calculate processing time
             processing_time = int(time.time() - self.start_time) if self.start_time else None
@@ -794,7 +803,7 @@ def handle_pubsub_message(event, context):
         try:
             # Re-init telegram service locally just in case global failed
             if not _telegram_service:
-                from services.telegram import TelegramService, get_telegram_service
+                from telegram_bot_shared.services.telegram import TelegramService, get_telegram_service
                 ts = get_telegram_service() or TelegramService(os.environ.get('TELEGRAM_BOT_TOKEN', ''))
                 if ts: ts.send_message(775707, f"🚨 Worker Critical Error:\n{str(e)}")
             else:

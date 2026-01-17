@@ -15,7 +15,15 @@ class TelegramService:
         self.bot_token = bot_token
         self.api_url = f"https://api.telegram.org/bot{bot_token}"
         self.file_url = f"https://api.telegram.org/file/bot{bot_token}"
-        self.session = requests.Session()  # Connection pooling
+        
+        # Configure connection pooling
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=20,    # cached connections
+            pool_maxsize=20,        # max connections in pool
+            max_retries=3           # retry on connection errors
+        )
+        self.session.mount('https://', adapter)
         
     def send_chat_action(self, chat_id: int, action: str) -> bool:
         """

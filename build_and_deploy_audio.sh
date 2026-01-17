@@ -8,9 +8,10 @@ SERVICE_NAME="audio-processor"
 IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME:latest"
 
 # 1. Sync Services
-echo "🔄 Syncing services..."
+echo "🔄 Syncing shared package..."
 rm -rf audio-processor-deploy/services
-cp -r services audio-processor-deploy/
+rm -rf audio-processor-deploy/shared
+cp -r shared audio-processor-deploy/
 
 # 2. Build App Image (Fast)
 echo "🚀 Building App Image..."

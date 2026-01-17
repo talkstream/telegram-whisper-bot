@@ -11,12 +11,13 @@ from google.cloud import firestore
 from google.cloud import pubsub_v1
 
 # Import services
-from services import telegram as telegram_service
-from services.firestore import FirestoreService
-from services.audio import AudioService
-from services.utility import UtilityService
-from services.stats import StatsService
-from services.metrics import MetricsService
+from telegram_bot_shared.services import telegram as telegram_service
+from telegram_bot_shared.services.firestore import FirestoreService
+from telegram_bot_shared.services.audio import AudioService
+from telegram_bot_shared.services.utility import UtilityService
+from telegram_bot_shared.services.stats import StatsService
+from telegram_bot_shared.services.metrics import MetricsService
+from telegram_bot_shared.services.workflow import WorkflowService
 
 # Import handlers
 from handlers import CommandRouter
@@ -40,6 +41,7 @@ class ServiceContainer:
         self.audio_service: Optional[AudioService] = None
         self.stats_service: Optional[StatsService] = None
         self.metrics_service: Optional[MetricsService] = None
+        self.workflow_service: Optional[WorkflowService] = None
         self.notification_service: Optional[NotificationService] = None
         self.publisher: Optional[pubsub_v1.PublisherClient] = None
         self.command_router: Optional[CommandRouter] = None
@@ -103,6 +105,17 @@ class ServiceContainer:
             self.audio_service = AudioService(self.metrics_service)
             self.stats_service = StatsService(self.db)
             
+            # Initialize workflow service
+            self.workflow_service = WorkflowService(
+                self.firestore_service,
+                telegram_service._telegram_service,
+                self.publisher if self.USE_ASYNC_PROCESSING else None,
+                self.PROJECT_ID,
+                self.AUDIO_PROCESSING_TOPIC,
+                self.db,
+                self.MAX_TELEGRAM_FILE_SIZE
+            )
+            
             # Initialize notification service
             self.notification_service = NotificationService(
                 self.firestore_service, 
@@ -134,6 +147,7 @@ class ServiceContainer:
             'firestore_service': self.firestore_service,
             'stats_service': self.stats_service,
             'metrics_service': self.metrics_service,
+            'workflow_service': self.workflow_service,
             'UtilityService': UtilityService,
             'db': self.db,
             'get_user_data': self.firestore_service.get_user,

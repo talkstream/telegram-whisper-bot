@@ -11,6 +11,46 @@ class UtilityService:
     """Service for general utility functions"""
     
     @staticmethod
+    def setup_logging(component_name="app"):
+        """Configure structured JSON logging for Google Cloud"""
+        import sys
+        import logging
+        from pythonjsonlogger import jsonlogger
+
+        class StackdriverJsonFormatter(jsonlogger.JsonFormatter):
+            def add_fields(self, log_record, record, message_dict):
+                super(StackdriverJsonFormatter, self).add_fields(log_record, record, message_dict)
+                
+                # Map standard python levels to Stackdriver severity
+                if not log_record.get('severity'):
+                    log_record['severity'] = record.levelname
+                
+                # Add timestamp if not present
+                if not log_record.get('timestamp'):
+                    now = datetime.utcnow().replace(tzinfo=pytz.utc)
+                    log_record['timestamp'] = now.isoformat()
+                
+                # Add component
+                if not log_record.get('component'):
+                    log_record['component'] = component_name
+
+        logger = logging.getLogger()
+        
+        # Remove existing handlers
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+
+        handler = logging.StreamHandler(sys.stdout)
+        formatter = StackdriverJsonFormatter('%(timestamp)s %(severity)s %(name)s %(message)s %(component)s %(trace_id)s %(user_id)s')
+        handler.setFormatter(formatter)
+        logger.handlers = [handler]
+        logger.setLevel(logging.INFO)
+        
+        # Quiet down some noisy libraries
+        logging.getLogger('google.cloud').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+    @staticmethod
     def format_duration(seconds):
         """Format seconds into HH:MM:SS format"""
         m, s = divmod(int(seconds), 60)

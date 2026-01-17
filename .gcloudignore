@@ -1,0 +1,36 @@
+# This file specifies files that are *not* uploaded to Google Cloud
+.gcloudignore
+.git
+.gitignore
+
+# Python compilation
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Environment
+.env
+.venv
+env/
+venv/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Temporary
+tmp/
+*.tmp
+*.log
+
+# Audio processor services (duplicate sync managed by scripts)
+# audio-processor-deploy/services/ 
+# ^ We KEEP services in ignore if it's a symlink or duplicate, 
+# BUT for cloud build we need everything sent, or we manage sync inside cloud build.
+# For now, let's include everything except venv.

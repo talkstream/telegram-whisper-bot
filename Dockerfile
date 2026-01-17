@@ -17,8 +17,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy shared package and install it
+COPY shared /app/shared
+RUN pip install --no-cache-dir /app/shared
+
 # Copy project files
 COPY . .
+RUN rm -rf /app/services
 
 # Expose port
 EXPOSE 8080

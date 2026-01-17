@@ -27,13 +27,17 @@ if [ -f "Dockerfile.original" ]; then
     trap - EXIT # Clear trap
 fi
 
+# Generate a random secret token
+WEBHOOK_SECRET=$(openssl rand -hex 32)
+echo "Generated webhook secret."
+
 echo "Deploying to Cloud Run..."
 gcloud run deploy $SERVICE_NAME \
   --image=$IMAGE \
   --region=$REGION \
   --platform=managed \
   --allow-unauthenticated \
-  --set-env-vars=GCP_PROJECT=$PROJECT_ID,USE_ASYNC_PROCESSING=true,AUDIO_PROCESSING_TOPIC=audio-processing-jobs \
+  --set-env-vars=GCP_PROJECT=$PROJECT_ID,USE_ASYNC_PROCESSING=true,AUDIO_PROCESSING_TOPIC=audio-processing-jobs,TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET \
   --project=$PROJECT_ID \
   --quiet
 
@@ -47,7 +51,8 @@ echo "Setting Telegram Webhook..."
 TOKEN=$(gcloud secrets versions access latest --secret="telegram-bot-token" --project=$PROJECT_ID)
 
 curl -X POST "https://api.telegram.org/bot$TOKEN/setWebhook" \
-     -d "url=$SERVICE_URL"
+     -d "url=$SERVICE_URL" \
+     -d "secret_token=$WEBHOOK_SECRET"
 
 echo ""
 echo "Deployment and Webhook setup complete!"

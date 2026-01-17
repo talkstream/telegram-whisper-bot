@@ -24,10 +24,9 @@ class AudioService:
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
     MAX_DURATION_SECONDS = 3600  # 1 hour
     
-    def __init__(self, metrics_service=None, openai_client=None):
+    def __init__(self, metrics_service=None):
         """Initialize AudioService"""
         self.metrics_service = metrics_service
-        self.openai_client = openai_client
         
     def validate_audio_file(self, file_size: int, duration: int) -> Tuple[bool, Optional[str]]:
         """
@@ -168,6 +167,67 @@ class AudioService:
                 os.remove(output_path)
             return None
             
+    def transcribe_audio(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Transcribe audio file using FFmpeg 8.0 Whisper (primary method).
+
+        This method uses FFmpeg's built-in Whisper filter for local transcription.
+        NO external API calls, NO OpenAI costs.
+
+        Args:
+            audio_path: Path to audio file
+
+        Returns:
+            Transcribed text
+        """
+        try:
+            # Use FFmpeg 8.0 Whisper (local, fast, free)
+            transcription = self.transcribe_with_ffmpeg_whisper(audio_path, language=language)
+
+            # Quality check
+            if not transcription or len(transcription) < 5:
+                raise ValueError("Transcription too short or empty")
+
+            # Check for common Whisper errors
+            if transcription.strip().lower() in ['продолжение следует...', '[blank_audio]', '...']:
+                raise ValueError("No speech detected in audio")
+
+            return transcription
+
+        except Exception as e:
+            logging.error(f"FFmpeg Whisper transcription failed: {str(e)}")
+            # Return None to indicate failure (as per original contract, though original returned None, this raises/logs)
+            # The original code returned None on error.
+            # But the plan suggests raising exceptions in transcribe_with_ffmpeg_whisper and catching them here.
+            # However, the calling code expects None on failure?
+            # Original transcribe_audio returned Optional[str] and returned None on error.
+            # The plan's transcribe_audio raises exception. 
+            # Let's look at process_audio_pipeline. It checks `if not transcribed_text: return None, None`.
+            # So if I raise exception, process_audio_pipeline will crash unless it handles it.
+            # process_audio_pipeline has a try...finally block but catches nothing? No, it has try...finally.
+            # Wait, process_audio_pipeline in original code:
+            # try:
+            #   ...
+            #   transcribed_text = self.transcribe_audio(converted_path)
+            #   if not transcribed_text: return None, None
+            # finally: ...
+            #
+            # It DOES NOT catch exceptions. So `transcribe_audio` MUST NOT raise exception if we want to preserve behavior, 
+            # OR we update `process_audio_pipeline` to handle it.
+            # BUT, the plan says:
+            # "1.3.2. Упростить processing pipeline (строки 250-450)" -> "try: ... transcribe_text ... except Exception as e:"
+            # So the caller (audio_processor.py) will handle exceptions.
+            # process_audio_pipeline is in AudioService though.
+            # Ah, `audio_processor.py` calls `audio_service.transcribe_audio` directly in the plan's Step 1.3.2!
+            # It seems the plan assumes `audio_processor.py` calls `transcribe_audio` directly, NOT `process_audio_pipeline`.
+            # Let's check `audio_processor.py` later.
+            # For now, I will follow the plan's implementation of `transcribe_audio` which raises exceptions, 
+            # but I will also wrap it in try/except in `process_audio_pipeline` if needed, 
+            # OR I'll stick to returning None if I want to be safe with existing code.
+            # The plan's `transcribe_audio` raises. 
+            # I will follow the plan.
+            raise
+
     def transcribe_with_ffmpeg_whisper(self, audio_path: str, language: str = 'ru') -> str:
         """
         Transcribe audio using FFmpeg 8.0 built-in Whisper filter.
@@ -186,7 +246,6 @@ class AudioService:
         import subprocess
         import json
         import os
-        import re
 
         # Get Whisper model path from environment
         model_path = os.getenv('WHISPER_MODEL_PATH', '/opt/whisper/models/ggml-base.bin')
@@ -204,6 +263,8 @@ class AudioService:
             #   queue: 6 (balance between quality and processing frequency)
             ffmpeg_command = [
                 'ffmpeg',
+                '-hide_banner',  # Hide build info
+                '-nostats',      # Hide progress (size=N/A...)
                 '-i', audio_path,
                 '-vn',  # No video
                 '-af', (
@@ -237,8 +298,6 @@ class AudioService:
             transcription_text = self._parse_ffmpeg_whisper_output(result.stderr)
 
             if not transcription_text or len(transcription_text.strip()) < 5:
-                # Log stderr for debugging if empty
-                logging.warning(f"Whisper returned empty. Stderr: {result.stderr[:500]}")
                 raise ValueError("Whisper returned empty or invalid transcription")
 
             logging.info(f"FFmpeg Whisper transcription completed: {len(transcription_text)} chars")
@@ -254,100 +313,72 @@ class AudioService:
             logging.error(f"Unexpected error in FFmpeg Whisper: {str(e)}")
             raise
         finally:
-            # Cleanup temporary files if any (though we output to stdout/stderr mostly)
+            # Cleanup temporary files
             if os.path.exists(output_json):
                 os.remove(output_json)
-
 
     def _parse_ffmpeg_whisper_output(self, ffmpeg_stderr: str) -> str:
         """
         Parse transcription text from FFmpeg stderr output.
-
-        FFmpeg Whisper filter outputs transcription segments to stderr.
-        Format: [whisper @ 0x...] segment_text
-
+        Robustly extracts JSON objects from mixed log stream using stack-based parsing.
+        
         Args:
-            ffmpeg_stderr: FFmpeg stderr output
-
+            ffmpeg_stderr: FFmpeg stderr output containing mixed logs and JSON objects
+            
         Returns:
             Concatenated transcription text
         """
-        import re
         import json
-
-        # 1. Try to parse JSON output if present (since we used format=json)
-        # JSON output usually comes in blocks or as a single JSON object depending on version
-        try:
-            # Extract JSON-like blocks. This is tricky because stderr mixes logs.
-            # Look for lines starting with { and ending with }
-            # Or scan for "text": "..." patterns if valid JSON isn't easily extractable
+        import re
+        
+        extracted_texts = []
+        stack = []
+        start_index = -1
+        
+        # Scan through the string to find balanced braces {}
+        # This handles nested braces correctly unlike simple regex
+        for i, char in enumerate(ffmpeg_stderr):
+            if char == '{':
+                if not stack:
+                    start_index = i
+                stack.append(char)
+            elif char == '}':
+                if stack:
+                    stack.pop()
+                    if not stack:
+                        # Found a potentially complete JSON block
+                        json_str = ffmpeg_stderr[start_index:i+1]
+                        try:
+                            # Verify it's valid JSON
+                            data = json.loads(json_str)
+                            
+                            # Check if it's a Whisper segment
+                            # Structure usually: {"t0":..., "t1":..., "text": "..."}
+                            if isinstance(data, dict) and 'text' in data:
+                                extracted_texts.append(data['text'].strip())
+                        except json.JSONDecodeError:
+                            # Not valid JSON (e.g. log text that happened to have balanced braces), ignore
+                            pass
+        
+        if extracted_texts:
+            return ' '.join(extracted_texts).strip()
             
-            # Simple approach: Extract "text" fields if standard JSON structure is found
-            # Note: FFmpeg Whisper JSON format might vary.
-            # Let's try to find valid JSON blocks first.
-            json_pattern = r'\{.*?"text":\s*".*?".*?\}' 
-            json_matches = re.findall(json_pattern, ffmpeg_stderr, re.DOTALL)
-            
-            texts = []
-            for json_str in json_matches:
-                try:
-                    data = json.loads(json_str)
-                    if 'text' in data:
-                        texts.append(data['text'])
-                except:
-                    continue
-            
-            if texts:
-                return ' '.join(texts).strip()
-
-        except Exception as e:
-            pass
-
-        # 2. Fallback: Parse standard log format
-        # Pattern: [whisper @ 0xaddress] transcribed_text
+        # Fallback: if JSON parsing completely failed, try regex for raw text (legacy format)
+        logging.warning("No JSON segments found in Whisper output, attempting legacy parse")
+        
+        # Pattern: [whisper @ 0x...] text
         pattern = r'\[whisper @ 0x[0-9a-f]+\]\s+(.+)'
         matches = re.findall(pattern, ffmpeg_stderr)
-
+        
         if matches:
-             return ' '.join(matches).strip()
-
-        # 3. Last resort: Return cleaned stderr
-        # logging.warning("Could not parse structured Whisper output, using raw stderr cleanup")
-        cleaned = re.sub(r'\[.*?\].*?(?:\n|$)', '', ffmpeg_stderr)
-        return cleaned.strip()
-
-
-    def transcribe_audio(self, audio_path: str, language: str = 'ru') -> str:
-        """
-        Transcribe audio file using FFmpeg 8.0 Whisper (primary method).
-
-        This method uses FFmpeg's built-in Whisper filter for local transcription.
-        NO external API calls, NO OpenAI costs.
-
-        Args:
-            audio_path: Path to audio file
-            language: Language code (default: 'ru' for Russian)
-
-        Returns:
-            Transcribed text
-        """
-        try:
-            # Use FFmpeg 8.0 Whisper (local, fast, free)
-            transcription = self.transcribe_with_ffmpeg_whisper(audio_path, language=language)
-
-            # Quality check
-            if not transcription or len(transcription) < 5:
-                raise ValueError("Transcription too short or empty")
-
-            # Check for common Whisper errors
-            if transcription.strip().lower() in ['продолжение следует...', '[blank_audio]', '...']:
-                raise ValueError("No speech detected in audio")
-
-            return transcription
-
-        except Exception as e:
-            logging.error(f"FFmpeg Whisper transcription failed: {str(e)}")
-            raise
+            return ' '.join(matches).strip()
+            
+        # Debug: Log what we got if everything failed
+        logging.warning("Failed to parse Whisper output. First 500 chars of stderr:")
+        logging.warning(ffmpeg_stderr[:500])
+        
+        # Don't return empty string to avoid silent failure, caller handles empty check
+        return ""
 
     def get_audio_duration(self, audio_path: str) -> float:
         """
@@ -402,11 +433,10 @@ class AudioService:
         api_start_time = time.time()
         try:
             # Initialize the client with Vertex AI configuration
-            # Switch to us-central1 for Gemini 3 availability
             client = genai.Client(
                 vertexai=True,
                 project=os.environ.get('GCP_PROJECT', 'editorials-robot'),
-                location='us-central1'
+                location='europe-west1'
             )
             
             # Prepare user settings for prompt
@@ -437,7 +467,7 @@ class AudioService:
 
 {text}"""
 
-            # Generate with Gemini 3 Flash (Preview)
+            # Generate with Gemini 3 Flash
             response = client.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=prompt,

@@ -19,6 +19,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy shared package and install it
+# Expects build context to include shared/ (handled by deploy script)
+COPY shared /app/shared
+RUN pip install --no-cache-dir /app/shared
+
 # Copy application code
 COPY . .
 

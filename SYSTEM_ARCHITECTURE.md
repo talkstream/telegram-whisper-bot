@@ -1,61 +1,53 @@
-# System Architecture & Context
+# System Architecture & Context (v3.0)
 
 ## Overview
-**Telegram Whisper Bot** is a distributed application on Google Cloud Platform (GCP) that transcribes and formats voice notes, audio files, and video files from Telegram. It uses a split architecture (Bot Interface + Worker) to handle long-running processing tasks asynchronously.
+**Telegram Whisper Bot** is a high-performance, distributed AI transcription service running on Google Cloud Platform. It utilizes a Split-Architecture design to separate high-concurrency user interactions from resource-intensive media processing.
 
-## Architecture Components
+## 🏗 Architecture Components
 
 ### 1. Bot Interface (`whisper-bot`)
+*   **Role:** The "Front Desk". Lightweight, responsive, always available.
 *   **Platform:** Cloud Run (Python 3.11, Flask).
-*   **Entry Point:** `main.py`.
+*   **Configuration:** `min_instances: 1` (Hot start).
 *   **Responsibilities:**
-    *   Handles Telegram Webhooks (`/webhook`).
-    *   Parses user commands (`/start`, `/balance`, etc.) via `handlers/command_router.py`.
-    *   Validates incoming files (size, type).
-    *   **State Management:** Checks user balance and batch state in Firestore.
-    *   **Dispatch:** Publishes job metadata to Pub/Sub topic `audio-processing-jobs`.
-    *   *Legacy/Technical Debt:* Currently handles Video->Audio conversion locally using FFmpeg before dispatching. This is a bottleneck.
+    *   **Secure Webhook:** Receives updates from Telegram (validated via Secret Token).
+    *   **User Management:** Checks/Creates users in Firestore (Cached).
+    *   **Dispatch:** Publishes jobs to `audio-processing-jobs` Pub/Sub.
+    *   **Feedback:** Sends immediate "Typing..." actions and status messages.
 
 ### 2. Audio Processor (`audio-processor`)
-*   **Platform:** Cloud Run (Custom Docker Image with FFmpeg 8.0).
-*   **Entry Point:** `audio-processor-deploy/main.py` (Flask/Gunicorn) listening for Pub/Sub Push events.
-*   **Trigger:** Pub/Sub Push Subscription `audio-processor-push-sub` -> POST `/`.
-*   **Core Logic:** `handle_pubsub_message` in `audio_processor.py`.
+*   **Role:** The "Factory". Heavy processing, auto-scaling.
+*   **Platform:** Cloud Run (Custom Docker Image: Python + FFmpeg 8.0).
+*   **Configuration:** `min_instances: 0` (Scales to zero to save cost).
+*   **Core Technology:**
+    *   **FFmpeg 8.0:** Compiled with `libwhisper` for local, GPU/CPU optimized transcription.
+    *   **Gemini 3 Flash:** Used for intelligent text formatting and punctuation.
 *   **Pipeline:**
-    1.  **Download:** Fetches file from Telegram API using `file_id`.
-    2.  **Convert:** FFmpeg `input -> mp3`.
-    3.  **Transcribe:** FFmpeg 8.0 Native Whisper Filter (`ggml-base.bin`).
-    4.  **Format:** Gemini 3 Flash (Vertex AI) for punctuation/paragraphs.
-    5.  **Deliver:** Sends result back to user via Telegram (`editMessageText` or `sendDocument`).
-    6.  **Billing:** Deducts minutes from User Balance in Firestore.
+    1.  **Smart Cache Check:** Checks `file_unique_id` to skip processing for duplicates.
+    2.  **Download:** Fetches media from Telegram.
+    3.  **Extraction:** Extracts audio from Video/Voice/Audio files.
+    4.  **Transcription:** Local FFmpeg Whisper (no external API cost).
+    5.  **Formatting:** Gemini 3 Flash (Vertex AI, `us-central1`).
+    6.  **Delivery:** Sends results back to user.
 
-### 3. Data Storage (Firestore)
-*   **Collections:**
-    *   `users`: User profiles, balance, settings (`settings.use_code_tags`, etc.).
-    *   `audio_jobs`: State of each processing job (`pending` -> `processing` -> `completed`/`failed`).
-    *   `transcription_logs`: Historical record of attempts for stats.
-    *   `user_states`: Temporary state for batch file uploads.
-    *   `payment_logs`: Transaction records (Telegram Stars).
+### 3. Data & State (Firestore)
+*   `users`: Profiles, balance, settings (`use_code_tags`, `use_yo`).
+*   `audio_jobs`: Lifecycle of a job (`pending` -> `processing` -> `completed`).
+*   `transcription_logs`: Analytics and history.
+*   `payment_logs`: Telegram Stars transaction records.
 
-### 4. Infrastructure
-*   **Pub/Sub:** Topic `audio-processing-jobs`. Decouples ingestion from processing.
-*   **Secret Manager:** Stores `telegram-bot-token`.
-*   **Container Registry:** `gcr.io/editorials-robot/audio-processor`.
+### 4. Reliability Infrastructure
+*   **Pub/Sub:** Decouples Bot from Worker.
+*   **Dead Letter Queue (DLQ):** Captures failed jobs (after 5 retries) for inspection.
+*   **Cloud Build:** Automated CI/CD pipeline building optimized Docker images.
 
-## Key Configuration
-*   **Limits:** Max 20MB file size (Telegram Bot API limit for downloading). Max 60 min duration.
-*   **Models:**
-    *   Whisper: `ggml-base.bin` (local in container).
-    *   LLM: `gemini-3-flash-preview` (Vertex AI).
-*   **Region:** `europe-west1`.
+## 🚀 Key Features (v2.1+)
+*   **Zero-Cost Transcription:** Replaced OpenAI Whisper API with local FFmpeg Whisper.
+*   **Smart Caching:** Instant results for previously processed files.
+*   **Instant UX:** Immediate feedback (<1s) on file upload.
+*   **Format Handling:** Supports Audio, Voice Notes, Video, and Video Notes.
 
-## Known Issues (Post-v2.0 Analysis)
-1.  **DevOps Efficiency:** Audio Processor build takes ~10-15 mins due to compiling FFmpeg from source every deploy.
-2.  **Error Handling:** Worker returns `200 OK` on all errors to prevent infinite loops, masking infrastructure failures.
-3.  **Video Processing:** `main.py` performs local FFmpeg conversion, causing timeouts/memory issues on the Bot service.
-4.  **Code Duplication:** `services/` directory is manually synced between root and `audio-processor-deploy/`.
-5.  **Parsing Fragility:** Regex parsing of FFmpeg stderr is brittle.
-
-## Future Context (Gemini CLI 3.*)
-*   **Goal:** Move to a stable, observable, and cost-efficient architecture.
-*   **Refactoring:** Optimize Docker, centralize FFmpeg in Worker, improve Error Handling (DLQ), and automate code sync.
+## 🛡 Security
+*   **Secrets:** Managed via Google Secret Manager.
+*   **Validation:** File constraints (20MB, 60min).
+*   **Dependencies:** Pinned versions, minimal container footprint.
