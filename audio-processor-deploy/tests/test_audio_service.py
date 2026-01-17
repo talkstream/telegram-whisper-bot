@@ -1,5 +1,5 @@
 import pytest
-from services.audio import AudioService
+from telegram_bot_shared.services.audio import AudioService
 from unittest.mock import Mock, patch
 
 class TestAudioService:

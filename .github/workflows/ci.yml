@@ -24,6 +24,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # Install shared package
+        cp -r ../shared .
+        pip install ./shared
+        # Install other requirements
         pip install -r requirements.txt
         pip install pytest pytest-mock
 

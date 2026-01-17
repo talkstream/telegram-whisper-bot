@@ -1,5 +1,5 @@
 import pytest
-from services.firestore import FirestoreService
+from telegram_bot_shared.services.firestore import FirestoreService
 from unittest.mock import Mock, patch
 
 class TestFirestoreService:
