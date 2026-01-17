@@ -13,7 +13,7 @@ from .base import BaseHandler
 class HelpCommandHandler(BaseHandler):
     """Handler for /help command"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         send_message = self.services['telegram_service'].send_message
@@ -67,16 +67,16 @@ class HelpCommandHandler(BaseHandler):
 • /flush - Очистить застрявшие задачи (>1 часа)
 • /metrics [hours] - Метрики производительности (по умолчанию 24ч)
 """
-            send_message(chat_id, help_text_user + help_text_admin, parse_mode="HTML")
+            await send_message(chat_id, help_text_user + help_text_admin, parse_mode="HTML")
         else:
-            send_message(chat_id, help_text_user, parse_mode="HTML")
+            await send_message(chat_id, help_text_user, parse_mode="HTML")
         return "OK", 200
 
 
 class BalanceCommandHandler(BaseHandler):
     """Handler for /balance command"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         get_user_data = self.services['get_user_data']
@@ -98,9 +98,9 @@ class BalanceCommandHandler(BaseHandler):
             else:
                 balance_message += "\nЗа последний месяц у вас не было успешных распознаваний для расчета средней длины."
             
-            send_message(chat_id, balance_message)
+            await send_message(chat_id, balance_message)
         else:
-            send_message(chat_id, "Вы еще не зарегистрированы. Пожалуйста, отправьте /start или /trial, чтобы запросить доступ.")
+            await send_message(chat_id, "Вы еще не зарегистрированы. Пожалуйста, отправьте /start или /trial, чтобы запросить доступ.")
         
         return "OK", 200
 
@@ -108,7 +108,7 @@ class BalanceCommandHandler(BaseHandler):
 class SettingsCommandHandler(BaseHandler):
     """Handler for /settings command"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         user_data = update_data['user_data']
@@ -118,7 +118,7 @@ class SettingsCommandHandler(BaseHandler):
         logging.info(f"Processing /settings for user {user_id}")
         if not user_data:
             logging.warning(f"No user_data for {user_id}")
-            send_message(chat_id, "Пожалуйста, сначала отправьте /start для регистрации.")
+            await send_message(chat_id, "Пожалуйста, сначала отправьте /start для регистрации.")
             return "OK", 200
         
         # Get current settings
@@ -140,14 +140,14 @@ class SettingsCommandHandler(BaseHandler):
 
 <i>Теги &lt;code&gt; отображают текст моноширинным шрифтом, что удобно для кода и технических текстов.</i>"""
         
-        send_message(chat_id, settings_msg, parse_mode="HTML")
+        await send_message(chat_id, settings_msg, parse_mode="HTML")
         return "OK", 200
 
 
 class CodeCommandHandler(BaseHandler):
     """Handler for /code command - toggles code tags"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         firestore_service = self.services.get('firestore_service')
@@ -164,11 +164,11 @@ class CodeCommandHandler(BaseHandler):
             
             # Send confirmation message
             if new_use_code_tags:
-                send_message(chat_id, "✅ Теги &lt;code&gt; включены. Теперь отформатированный текст будет отправляться с тегами для моноширинного шрифта.", parse_mode="HTML")
+                await send_message(chat_id, "✅ Теги &lt;code&gt; включены. Теперь отформатированный текст будет отправляться с тегами для моноширинного шрифта.", parse_mode="HTML")
             else:
-                send_message(chat_id, "✅ Теги &lt;code&gt; выключены. Теперь отформатированный текст будет отправляться без тегов.", parse_mode="HTML")
+                await send_message(chat_id, "✅ Теги &lt;code&gt; выключены. Теперь отформатированный текст будет отправляться без тегов.", parse_mode="HTML")
         else:
-            send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
+            await send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
         return "OK", 200
 
 
@@ -176,29 +176,29 @@ class CodeCommandHandler(BaseHandler):
 class CodeOnCommandHandler(BaseHandler):
     """Handler for /code_on command - redirects to /code"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         send_message = self.services['telegram_service'].send_message
-        send_message(chat_id, "Команда /code_on устарела. Используйте /code для переключения тегов.")
+        await send_message(chat_id, "Команда /code_on устарела. Используйте /code для переключения тегов.")
         return "OK", 200
 
 
 class CodeOffCommandHandler(BaseHandler):
     """Handler for /code_off command - redirects to /code"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         send_message = self.services['telegram_service'].send_message
-        send_message(chat_id, "Команда /code_off устарела. Используйте /code для переключения тегов.")
+        await send_message(chat_id, "Команда /code_off устарела. Используйте /code для переключения тегов.")
         return "OK", 200
 
 
 class TrialCommandHandler(BaseHandler):
     """Handler for /trial command"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         user_name = update_data.get('user_name', f'User_{user_id}')
@@ -207,20 +207,20 @@ class TrialCommandHandler(BaseHandler):
         
         status = create_trial_request(user_id, user_name)
         if status == True:
-            send_message(chat_id, "✅ Ваша заявка на пробный доступ отправлена! Обычно мы рассматриваем заявки в течение 24 часов.")
+            await send_message(chat_id, "✅ Ваша заявка на пробный доступ отправлена! Обычно мы рассматриваем заявки в течение 24 часов.")
         elif status == "already_pending":
-            send_message(chat_id, "Вы уже подали заявку. Ожидайте рассмотрения.")
+            await send_message(chat_id, "Вы уже подали заявку. Ожидайте рассмотрения.")
         elif status == "already_approved":
-            send_message(chat_id, "Вам уже одобрен пробный доступ.")
+            await send_message(chat_id, "Вам уже одобрен пробный доступ.")
         else:
-            send_message(chat_id, "Ошибка при подаче заявки. Попробуйте позже.")
+            await send_message(chat_id, "Ошибка при подаче заявки. Попробуйте позже.")
         return "OK", 200
 
 
 class BuyMinutesCommandHandler(BaseHandler):
     """Handler for /buy_minutes and /top_up commands"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         user_name = update_data.get('user_name', f'User_{user_id}')
@@ -278,7 +278,7 @@ class BuyMinutesCommandHandler(BaseHandler):
         
         msg += "💡 <i>Выберите пакет и используйте соответствующую команду для покупки</i>"
         
-        send_message(chat_id, msg, parse_mode="HTML")
+        await send_message(chat_id, msg, parse_mode="HTML")
         
         return "OK", 200
 
@@ -286,7 +286,7 @@ class BuyMinutesCommandHandler(BaseHandler):
 class QueueCommandHandler(BaseHandler):
     """Handler for /batch and /queue commands"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         firestore_service = self.services.get('firestore_service')
@@ -306,7 +306,7 @@ class QueueCommandHandler(BaseHandler):
             
             jobs_list = list(user_jobs)
             if not jobs_list:
-                send_message(chat_id, "У вас нет файлов в очереди обработки.")
+                await send_message(chat_id, "У вас нет файлов в очереди обработки.")
                 # Clear old batch state
                 set_user_state(user_id, None)
             else:
@@ -319,9 +319,9 @@ class QueueCommandHandler(BaseHandler):
                     queue_msg += f"{idx}. {status_emoji} {UtilityService.format_duration(duration)} - {status}\n"
                 
                 queue_msg += f"\n<b>Всего:</b> {UtilityService.pluralize_russian(len(jobs_list), 'файл', 'файла', 'файлов')} в очереди"
-                send_message(chat_id, queue_msg, parse_mode="HTML")
+                await send_message(chat_id, queue_msg, parse_mode="HTML")
         else:
-            send_message(chat_id, "Информация о очереди недоступна.")
+            await send_message(chat_id, "Информация о очереди недоступна.")
         
         return "OK", 200
 
@@ -329,7 +329,7 @@ class QueueCommandHandler(BaseHandler):
 class YoCommandHandler(BaseHandler):
     """Handler for /yo command - toggles use of letter ё"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         firestore_service = self.services.get('firestore_service')
@@ -346,10 +346,10 @@ class YoCommandHandler(BaseHandler):
             
             # Send confirmation message
             if new_use_yo:
-                send_message(chat_id, "Использование буквы ё: включено")
+                await send_message(chat_id, "Использование буквы ё: включено")
             else:
-                send_message(chat_id, "Использование буквы ё: замена на е")
+                await send_message(chat_id, "Использование буквы ё: замена на е")
         else:
-            send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
+            await send_message(chat_id, "Ошибка при сохранении настроек. Попробуйте позже.")
         
         return "OK", 200

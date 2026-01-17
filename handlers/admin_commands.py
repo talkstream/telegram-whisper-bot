@@ -17,7 +17,7 @@ from .base import BaseHandler
 class StatusCommandHandler(BaseHandler):
     """Handler for /status command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         firestore_service = self.services.get('firestore_service')
@@ -48,16 +48,16 @@ class StatusCommandHandler(BaseHandler):
                     job_data = doc.to_dict()
                     status_msg += f"• {job_data.get('user_name', 'Unknown')} - {job_data.get('status', 'unknown')}\n"
             
-            send_message(chat_id, status_msg, parse_mode="HTML")
+            await send_message(chat_id, status_msg, parse_mode="HTML")
         else:
-            send_message(chat_id, "Информация о очереди недоступна.")
+            await send_message(chat_id, "Информация о очереди недоступна.")
         return "OK", 200
 
 
 class ReviewTrialsCommandHandler(BaseHandler):
     """Handler for /review_trials command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         get_pending_trial_requests = self.services['get_pending_trial_requests']
@@ -68,7 +68,7 @@ class ReviewTrialsCommandHandler(BaseHandler):
             
         requests = get_pending_trial_requests()
         if not requests:
-            send_message(chat_id, "Нет ожидающих заявок на пробный доступ.")
+            await send_message(chat_id, "Нет ожидающих заявок на пробный доступ.")
         else:
             # Send each request as a separate message with inline keyboard
             for req in requests:
@@ -87,14 +87,14 @@ class ReviewTrialsCommandHandler(BaseHandler):
                     ]]
                 }
                 
-                send_message(chat_id, msg, parse_mode="HTML", reply_markup=keyboard)
+                await send_message(chat_id, msg, parse_mode="HTML", reply_markup=keyboard)
         return "OK", 200
 
 
 class RemoveUserCommandHandler(BaseHandler):
     """Handler for /remove_user command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         get_all_users_for_admin = self.services['get_all_users_for_admin']
@@ -106,7 +106,7 @@ class RemoveUserCommandHandler(BaseHandler):
             
         users = get_all_users_for_admin()
         if not users:
-            send_message(chat_id, "Нет пользователей в системе.")
+            await send_message(chat_id, "Нет пользователей в системе.")
         else:
             # Save user list in state for selection
             set_user_state(user_id, {'action': 'selecting_user_to_remove', 'users': users})
@@ -115,14 +115,14 @@ class RemoveUserCommandHandler(BaseHandler):
             for idx, user in enumerate(users[:20], 1):  # Limit to 20 users
                 msg += f"{idx}. {user['name']} (ID: {user['id']}) - {user['balance']} мин.\n"
             msg += "\nОтправьте номер пользователя или отмените командой /cancel"
-            send_message(chat_id, msg)
+            await send_message(chat_id, msg)
         return "OK", 200
 
 
 class CostCommandHandler(BaseHandler):
     """Handler for /cost command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         send_message = self.services['telegram_service'].send_message
@@ -132,7 +132,7 @@ class CostCommandHandler(BaseHandler):
             return None
             
         if not db:
-            send_message(chat_id, "База данных недоступна.")
+            await send_message(chat_id, "База данных недоступна.")
             return "OK", 200
             
         from google.cloud.firestore_v1.base_query import FieldFilter
@@ -218,13 +218,13 @@ class CostCommandHandler(BaseHandler):
 
 💡 <i>Для точных затрат GCP см. https://console.cloud.google.com/billing проект editorials-robot</i>"""
                 
-                send_message(chat_id, cost_msg, parse_mode="HTML")
+                await send_message(chat_id, cost_msg, parse_mode="HTML")
             else:
-                send_message(chat_id, "Нет данных за последние 30 дней.")
+                await send_message(chat_id, "Нет данных за последние 30 дней.")
                 
         except Exception as e:
             logging.error(f"Error calculating costs: {e}")
-            send_message(chat_id, f"Ошибка при расчете: {str(e)}")
+            await send_message(chat_id, f"Ошибка при расчете: {str(e)}")
         
         return "OK", 200
 
@@ -232,7 +232,7 @@ class CostCommandHandler(BaseHandler):
 class FlushCommandHandler(BaseHandler):
     """Handler for /flush command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         firestore_service = self.services.get('firestore_service')
@@ -244,7 +244,7 @@ class FlushCommandHandler(BaseHandler):
             return None
             
         if not firestore_service or not db:
-            send_message(chat_id, "Сервисы недоступны.")
+            await send_message(chat_id, "Сервисы недоступны.")
             return "OK", 200
             
         try:
@@ -261,7 +261,7 @@ class FlushCommandHandler(BaseHandler):
             stuck_list = list(stuck_jobs)
             
             if not stuck_list:
-                send_message(chat_id, "✅ Нет застрявших задач в очереди.")
+                await send_message(chat_id, "✅ Нет застрявших задач в очереди.")
                 return "OK", 200
             
             # Log details before deletion
@@ -287,7 +287,7 @@ class FlushCommandHandler(BaseHandler):
                 total_duration += duration
             
             # Send details first
-            send_message(chat_id, details_msg[:4000], parse_mode="HTML")  # Truncate if too long
+            await send_message(chat_id, details_msg[:4000], parse_mode="HTML")  # Truncate if too long
             
             # Delete stuck jobs and refund minutes
             deleted_count = 0
@@ -321,13 +321,13 @@ class FlushCommandHandler(BaseHandler):
             if total_duration > 0:
                 cleanup_msg += f"⏱ Общая длительность: {UtilityService.format_duration(total_duration)}\n"
             
-            send_message(chat_id, cleanup_msg, parse_mode="HTML")
+            await send_message(chat_id, cleanup_msg, parse_mode="HTML")
             
             logging.info(f"Flush command: Deleted {deleted_count} stuck jobs, refunded {len(refunded_users)} users")
             
         except Exception as e:
             logging.error(f"Error in flush command: {e}")
-            send_message(chat_id, f"❌ Ошибка при очистке: {str(e)}")
+            await send_message(chat_id, f"❌ Ошибка при очистке: {str(e)}")
         
         return "OK", 200
 
@@ -335,7 +335,7 @@ class FlushCommandHandler(BaseHandler):
 class StatCommandHandler(BaseHandler):
     """Handler for /stat command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         stats_service = self.services.get('stats_service')
@@ -346,7 +346,7 @@ class StatCommandHandler(BaseHandler):
             return None
             
         if not stats_service:
-            send_message(chat_id, "Сервис статистики недоступен.")
+            await send_message(chat_id, "Сервис статистики недоступен.")
             return "OK", 200
             
         ranges = UtilityService.get_moscow_time_ranges()
@@ -372,14 +372,14 @@ class StatCommandHandler(BaseHandler):
                     full_report += f"     - Символов: {data_stat['chars']:,}\n"
                 full_report += "\n"
         
-        send_message(chat_id, full_report[:4000], parse_mode="HTML")  # Telegram message limit
+        await send_message(chat_id, full_report[:4000], parse_mode="HTML")  # Telegram message limit
         return "OK", 200
 
 
 class CreditCommandHandler(BaseHandler):
     """Handler for /credit command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         text = update_data['text']
@@ -393,7 +393,7 @@ class CreditCommandHandler(BaseHandler):
         # Parse command: /credit user_id minutes
         parts = text.split()
         if len(parts) != 3:
-            send_message(chat_id, "Использование: /credit USER_ID MINUTES")
+            await send_message(chat_id, "Использование: /credit USER_ID MINUTES")
             return "OK", 200
             
         try:
@@ -416,10 +416,10 @@ class CreditCommandHandler(BaseHandler):
                             update_trial_request_status(target_user_id, 'approved', admin_comment='Approved via /credit command')
                         # Delete the trial request to clean up
                         firestore_service.db.collection('trial_requests').document(str(target_user_id)).delete()
-                        send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}\n✅ Заявка на триал удалена из списка ожидающих")
+                        await send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}\n✅ Заявка на триал удалена из списка ожидающих")
                         return "OK", 200
                 
-                send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}")
+                await send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}")
                 
                 # Notify the user
                 try:
@@ -427,16 +427,16 @@ class CreditCommandHandler(BaseHandler):
                         user_msg = f"🎉 Поздравляем! Ваша заявка на пробный доступ одобрена. Вам начислено {int(minutes_to_add)} минут."
                     else:
                         user_msg = f"💰 Вам начислено {int(minutes_to_add)} минут администратором."
-                    send_message(target_user_id, user_msg)
+                    await send_message(target_user_id, user_msg)
                 except Exception as e:
                     logging.error(f"Failed to notify user {target_user_id}: {e}")
             else:
-                send_message(chat_id, "Сервис базы данных недоступен.")
+                await send_message(chat_id, "Сервис базы данных недоступен.")
                 
         except ValueError:
-            send_message(chat_id, "Ошибка: USER_ID должен быть числом, MINUTES - числом.")
+            await send_message(chat_id, "Ошибка: USER_ID должен быть числом, MINUTES - числом.")
         except Exception as e:
-            send_message(chat_id, f"Ошибка: {str(e)}")
+            await send_message(chat_id, f"Ошибка: {str(e)}")
             
         return "OK", 200
 
@@ -444,7 +444,7 @@ class CreditCommandHandler(BaseHandler):
 class UserSearchCommandHandler(BaseHandler):
     """Handler for /user command (admin only) - search and manage users"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         text = update_data['text']
@@ -456,7 +456,7 @@ class UserSearchCommandHandler(BaseHandler):
             return None
             
         if not firestore_service:
-            send_message(chat_id, "База данных недоступна.")
+            await send_message(chat_id, "База данных недоступна.")
             return "OK", 200
             
         # Parse command arguments
@@ -468,7 +468,7 @@ class UserSearchCommandHandler(BaseHandler):
                 # Search for users
                 users = firestore_service.search_users(search_query)
                 if not users:
-                    send_message(chat_id, f"❌ Пользователи по запросу '{search_query}' не найдены.")
+                    await send_message(chat_id, f"❌ Пользователи по запросу '{search_query}' не найдены.")
                     return "OK", 200
                     
                 title = f"🔍 <b>Результаты поиска '{search_query}':</b>\n\n"
@@ -538,7 +538,7 @@ class UserSearchCommandHandler(BaseHandler):
             
             # Send message without inline keyboards for now (due to compatibility issues)
             # Just show the info
-            send_message(chat_id, msg, parse_mode="HTML")
+            await send_message(chat_id, msg, parse_mode="HTML")
             
             # If single user found, show detailed info
             if len(users) == 1:
@@ -558,17 +558,17 @@ class UserSearchCommandHandler(BaseHandler):
                     if user_details.get('micro_package_purchases', 0) > 0:
                         details_msg += f"🛍 Промо-покупок: {user_details['micro_package_purchases']}\n"
                     
-                    send_message(chat_id, details_msg, parse_mode="HTML")
+                    await send_message(chat_id, details_msg, parse_mode="HTML")
                     
                     # Suggest quick actions
                     actions_msg = "\n<b>Быстрые действия:</b>\n"
                     actions_msg += f"• Добавить минуты: /credit {users[0]['id']} [МИНУТЫ]\n"
                     actions_msg += f"• Удалить пользователя: используйте /remove_user"
-                    send_message(chat_id, actions_msg, parse_mode="HTML")
+                    await send_message(chat_id, actions_msg, parse_mode="HTML")
             
         except Exception as e:
             logging.error(f"Error in user search command: {e}")
-            send_message(chat_id, f"❌ Ошибка при поиске: {str(e)}")
+            await send_message(chat_id, f"❌ Ошибка при поиске: {str(e)}")
         
         return "OK", 200
 
@@ -576,7 +576,7 @@ class UserSearchCommandHandler(BaseHandler):
 class ExportCommandHandler(BaseHandler):
     """Handler for /export command (admin only) - export usage data to CSV"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         text = update_data['text']
@@ -589,7 +589,7 @@ class ExportCommandHandler(BaseHandler):
             return None
             
         if not firestore_service:
-            send_message(chat_id, "База данных недоступна.")
+            await send_message(chat_id, "База данных недоступна.")
             return "OK", 200
             
         # Parse command arguments
@@ -697,18 +697,18 @@ class ExportCommandHandler(BaseHandler):
             else:
                 temp_file.close()
                 os.unlink(temp_file.name)
-                send_message(chat_id, "❌ Неверный тип экспорта. Используйте: /export [users|logs|payments] [дней]")
+                await send_message(chat_id, "❌ Неверный тип экспорта. Используйте: /export [users|logs|payments] [дней]")
                 return "OK", 200
             
             # Send CSV file
-            send_document(chat_id, temp_file.name, caption=caption)
+            await send_document(chat_id, temp_file.name, caption=caption)
             
             # Clean up
             os.unlink(temp_file.name)
             
         except Exception as e:
             logging.error(f"Error in export command: {e}")
-            send_message(chat_id, f"❌ Ошибка при экспорте: {str(e)}")
+            await send_message(chat_id, f"❌ Ошибка при экспорте: {str(e)}")
         
         return "OK", 200
 
@@ -716,7 +716,7 @@ class ExportCommandHandler(BaseHandler):
 class ReportCommandHandler(BaseHandler):
     """Handler for /report command (admin only) - manually trigger scheduled reports"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         text = update_data['text']
@@ -730,7 +730,7 @@ class ReportCommandHandler(BaseHandler):
         report_type = parts[1] if len(parts) > 1 else 'daily'
         
         if report_type not in ['daily', 'weekly']:
-            send_message(chat_id, "❌ Неверный тип отчета. Используйте: /report [daily|weekly]")
+            await send_message(chat_id, "❌ Неверный тип отчета. Используйте: /report [daily|weekly]")
             return "OK", 200
             
         try:
@@ -742,7 +742,7 @@ class ReportCommandHandler(BaseHandler):
             stats_service = self.services.get('stats_service')
             
             if not firestore_service or not stats_service:
-                send_message(chat_id, "❌ Сервисы не инициализированы")
+                await send_message(chat_id, "❌ Сервисы не инициализированы")
                 return "OK", 200
             
             moscow_tz = pytz.timezone('Europe/Moscow')
@@ -795,12 +795,12 @@ class ReportCommandHandler(BaseHandler):
                     report += f"  {i}. {user_name}: {minutes:.1f} мин\n"
             
             # Send the report
-            send_message(chat_id, report, parse_mode="HTML")
+            await send_message(chat_id, report, parse_mode="HTML")
             logging.info(f"Manual {report_type} report sent to {chat_id}")
                 
         except Exception as e:
             logging.error(f"Error generating manual report: {e}", exc_info=True)
-            send_message(chat_id, f"❌ Ошибка генерации отчета: {str(e)}")
+            await send_message(chat_id, f"❌ Ошибка генерации отчета: {str(e)}")
         
         return "OK", 200
 

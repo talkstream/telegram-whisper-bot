@@ -6,19 +6,20 @@ Separated from Flask routes for reusability with FastAPI
 import logging
 import json
 import math
+import asyncio
 from datetime import datetime, timedelta
 import pytz
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from telegram_bot_shared.services import telegram as telegram_service
 from telegram_bot_shared.services.utility import UtilityService
 
-def handle_message(message, services):
+async def handle_message(message, services):
     """Handle incoming message"""
     user_id = message['from']['id']
     chat_id = message['chat']['id']
     user_name = message['from'].get('first_name', f'User_{user_id}')
+    telegram = services.async_telegram_service
     
     # Get or create user
     user_data = services.firestore_service.get_user(user_id)
@@ -26,7 +27,7 @@ def handle_message(message, services):
         user_data = create_new_user(user_id, user_name, message['from'], services)
     
     # Check for stuck job cleanup
-    check_and_cleanup_stuck_jobs(services)
+    await check_and_cleanup_stuck_jobs(services)
     
     # Route to appropriate handler
     if 'text' in message:
@@ -35,7 +36,7 @@ def handle_message(message, services):
         
         # Special handling for /start command
         if text == '/start':
-            return handle_start_command(user_id, chat_id, user_name, user_data, services)
+            return await handle_start_command(user_id, chat_id, user_name, user_data, services)
         
         # Route to command handler
         update_data = {
@@ -47,90 +48,93 @@ def handle_message(message, services):
             'message': message
         }
         
-        result = services.command_router.route(update_data)
+        result = await services.command_router.route(update_data)
         if result:
             return result
         
         # If not a command and user exists, might be audio
         if user_data and not text.startswith('/'):
-            telegram_service.send_message(chat_id, 
+            await telegram.send_message(chat_id, 
                 f"Пожалуйста, отправьте аудиофайл. Ваш баланс: {math.floor(user_data.get('balance_minutes', 0))} мин.")
     
     # Handle audio/video files
     elif any(key in message for key in ['audio', 'voice', 'video', 'video_note', 'document']):
         if not user_data:
-            telegram_service.send_message(chat_id, 
+            await telegram.send_message(chat_id, 
                 "Вы еще не зарегистрированы. Пожалуйста, отправьте /start для начала работы.")
             return "OK", 200
         
-        return handle_media_message(message, user_id, chat_id, user_name, user_data, services)
+        return await handle_media_message(message, user_id, chat_id, user_name, user_data, services)
     
     return "OK", 200
 
 
-def handle_media_message(message, user_id, chat_id, user_name, user_data, services):
+async def handle_media_message(message, user_id, chat_id, user_name, user_data, services):
     """Handle audio, voice, video, and document messages"""
+    telegram = services.async_telegram_service
     
     # Check balance
     balance = user_data.get('balance_minutes', 0)
     if balance < 0.5:
-        telegram_service.send_message(chat_id, 
+        await telegram.send_message(chat_id, 
             "❌ Недостаточно минут на балансе. Используйте /buy_minutes для пополнения.")
         return "OK", 200
     
     # Determine file type and process
     if 'audio' in message:
         file_info = message['audio']
-        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'audio')
+        return await services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'audio')
     elif 'voice' in message:
         file_info = message['voice'] 
-        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'voice')
+        return await services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'voice')
     elif 'video' in message:
         file_info = message['video']
         # Hand off video directly to worker
-        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video')
+        return await services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video')
     elif 'video_note' in message:
         file_info = message['video_note']
         # Hand off video note directly to worker
-        return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video_note')
+        return await services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'video_note')
     elif 'document' in message:
         file_info = message['document']
         mime_type = file_info.get('mime_type', '')
         
         # Check if document is audio
         if mime_type.startswith('audio/') or mime_type == 'application/ogg':
-            return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document')
+            return await services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document')
         # Check if document is video
         elif mime_type.startswith('video/'):
-            return services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document_video')
+            return await services.workflow_service.process_audio_file(file_info, user_id, chat_id, user_name, user_data, 'document_video')
         else:
-            telegram_service.send_message(chat_id, 
+            await telegram.send_message(chat_id, 
                 "❌ Неподдерживаемый формат файла. Отправьте аудио или видео файл.")
     
     return "OK", 200
 
 
-def handle_pre_checkout_query(query, services):
+async def handle_pre_checkout_query(query, services):
     """Handle Telegram Stars pre-checkout query"""
     query_id = query['id']
     payload = query['invoice_payload']
+    telegram = services.async_telegram_service
     
     # Validate the purchase
     if payload in services.PRODUCT_PACKAGES:
-        telegram_service._telegram_service.answer_pre_checkout_query(query_id, True)
+        await telegram.answer_pre_checkout_query(query_id, True)
     else:
-        telegram_service._telegram_service.answer_pre_checkout_query(query_id, False,
+        await telegram.answer_pre_checkout_query(query_id, False,
             error_message="Invalid product")
     
     return "OK", 200
 
 
-def handle_successful_payment(message, services):
+async def handle_successful_payment(message, services):
     """Handle successful Telegram Stars payment"""
     user_id = message['from']['id']
     chat_id = message['chat']['id']
     user_name = message['from'].get('first_name', f'User_{user_id}')
     payment = message['successful_payment']
+    telegram = services.async_telegram_service
     
     # Extract payment details
     stars_amount = payment['total_amount']
@@ -177,7 +181,7 @@ def handle_successful_payment(message, services):
     confirm_msg += f"⏱ Начислено: {int(minutes_to_add)} минут\n"
     confirm_msg += f"💰 Ваш баланс: {math.ceil(new_balance)} минут"
     
-    telegram_service.send_message(chat_id, confirm_msg)
+    await telegram.send_message(chat_id, confirm_msg)
     
     # Queue notification for owner
     services.notification_service.queue_payment_notification(
@@ -187,7 +191,7 @@ def handle_successful_payment(message, services):
     return "OK", 200
 
 
-def handle_callback_query(callback_query, services):
+async def handle_callback_query(callback_query, services):
     """Handle inline keyboard callbacks"""
     callback_data = callback_query.get('data', '')
     user_id = callback_query['from']['id']
@@ -207,24 +211,25 @@ def handle_callback_query(callback_query, services):
         
         # Process the action
         if action == 'approve':
-            handle_trial_approval(target_user_id, callback_query, services)
+            await handle_trial_approval(target_user_id, callback_query, services)
         else:
-            handle_trial_denial(target_user_id, callback_query, services)
+            await handle_trial_denial(target_user_id, callback_query, services)
     
     return "OK", 200
 
 
-def handle_start_command(user_id, chat_id, user_name, user_data, services):
+async def handle_start_command(user_id, chat_id, user_name, user_data, services):
     """Handle /start command"""
+    telegram = services.async_telegram_service
     if user_data:
         balance = user_data.get('balance_minutes', 0)
         welcome_back_msg = f"С возвращением, {user_name}! Ваш текущий баланс: {math.floor(balance)} минут."
-        telegram_service.send_message(chat_id, welcome_back_msg)
+        await telegram.send_message(chat_id, welcome_back_msg)
     else:
         welcome_msg = (f"Добро пожаловать, {user_name}! Я помогу транскрибировать ваши аудио в текст.\n\n"
                       "Для начала работы вам нужны минуты на балансе.\n"
                       "Используйте /trial для получения 15 бесплатных минут или /buy_minutes для покупки.")
-        telegram_service.send_message(chat_id, welcome_msg)
+        await telegram.send_message(chat_id, welcome_msg)
     
     # Notify owner about trial requests if needed
     if user_id == services.OWNER_ID:
@@ -255,8 +260,9 @@ def create_new_user(user_id, user_name, from_data, services):
     return user_data
 
 
-def handle_trial_approval(target_user_id, callback_query, services):
+async def handle_trial_approval(target_user_id, callback_query, services):
     """Handle trial request approval"""
+    telegram = services.async_telegram_service
     # Update trial status
     services.firestore_service.update_user_trial_status(target_user_id, 'approved')
     
@@ -271,11 +277,11 @@ def handle_trial_approval(target_user_id, callback_query, services):
     })
     
     # Notify the user
-    telegram_service.send_message(target_user_id,
+    await telegram.send_message(target_user_id,
         f"✅ Ваша заявка на пробный доступ одобрена! На ваш баланс начислено {int(services.TRIAL_MINUTES)} минут.")
     
     # Update the admin message
-    telegram_service._telegram_service.edit_message_text(
+    await telegram.edit_message_text(
         callback_query['message']['chat']['id'],
         callback_query['message']['message_id'],
         f"✅ Заявка пользователя {target_user_id} одобрена и {int(services.TRIAL_MINUTES)} минут начислено."
@@ -286,8 +292,9 @@ def handle_trial_approval(target_user_id, callback_query, services):
     logging.info(f"Trial request for user {target_user_id} approved")
 
 
-def handle_trial_denial(target_user_id, callback_query, services):
+async def handle_trial_denial(target_user_id, callback_query, services):
     """Handle trial request denial"""
+    telegram = services.async_telegram_service
     # Update the request
     services.firestore_service.db.collection('trial_requests').document(str(target_user_id)).update({
         'status': 'denied',
@@ -296,7 +303,7 @@ def handle_trial_denial(target_user_id, callback_query, services):
     })
     
     # Update the admin message
-    telegram_service._telegram_service.edit_message_text(
+    await telegram.edit_message_text(
         callback_query['message']['chat']['id'],
         callback_query['message']['message_id'],
         f"❌ Заявка пользователя {target_user_id} отклонена."
@@ -305,7 +312,7 @@ def handle_trial_denial(target_user_id, callback_query, services):
     logging.info(f"Trial request for user {target_user_id} denied")
 
 
-def check_and_cleanup_stuck_jobs(services):
+async def check_and_cleanup_stuck_jobs(services):
     """Check and cleanup stuck jobs periodically"""
     # Only run cleanup every 30 minutes
     last_check_key = 'last_stuck_job_check'
@@ -320,11 +327,12 @@ def check_and_cleanup_stuck_jobs(services):
     setattr(services, last_check_key, now)
     
     # Run cleanup
-    cleanup_stuck_audio_jobs(services)
+    await cleanup_stuck_audio_jobs(services)
 
 
-def cleanup_stuck_audio_jobs(services):
+async def cleanup_stuck_audio_jobs(services):
     """Clean up audio jobs stuck in pending/processing state"""
+    telegram = services.async_telegram_service
     one_hour_ago = datetime.now(pytz.utc) - timedelta(hours=1)
     
     stuck_jobs = services.db.collection('audio_jobs').where(
@@ -354,9 +362,10 @@ def cleanup_stuck_audio_jobs(services):
             
             # Notify user
             chat_id = job_data.get('chat_id', user_id)
-            telegram_service.send_message(int(chat_id),
-                f"⚠️ Обработка вашего аудио не завершилась. "
-                f"Возвращено {math.ceil(refund_amount)} минут на баланс.")
+            if chat_id:
+                await telegram.send_message(int(chat_id),
+                    f"⚠️ Обработка вашего аудио не завершилась. "
+                    f"Возвращено {math.ceil(refund_amount)} минут на баланс.")
         
         cleaned_count += 1
         logging.info(f"Cleaned up stuck job: {job_id}")
@@ -364,9 +373,9 @@ def cleanup_stuck_audio_jobs(services):
     if cleaned_count > 0:
         logging.info(f"Cleaned up {cleaned_count} stuck jobs")
         # Notify admin
-        telegram_service.send_message(services.OWNER_ID,
+        await telegram.send_message(services.OWNER_ID,
             f"🧹 Автоматическая очистка: {cleaned_count} застрявших задач")
     else:
         logging.info("No stuck jobs found during automatic cleanup")
     
-    return f"Cleaned up {cleaned_count} stuck jobs", 200
+    return f"Cleaned up {cleaned_count} stuck jobs"

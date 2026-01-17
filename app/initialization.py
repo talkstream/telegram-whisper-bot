@@ -12,6 +12,7 @@ from google.cloud import pubsub_v1
 
 # Import services
 from telegram_bot_shared.services import telegram as telegram_service
+from telegram_bot_shared.services.telegram_async import AsyncTelegramService
 from telegram_bot_shared.services.firestore import FirestoreService
 from telegram_bot_shared.services.audio import AudioService
 from telegram_bot_shared.services.utility import UtilityService
@@ -31,11 +32,9 @@ class ServiceContainer:
     
     def __init__(self):
         self.telegram_bot_token: Optional[str] = None
-        # openai_api_key removed
         self.telegram_api_url: Optional[str] = None
         self.telegram_file_url: Optional[str] = None
         
-        # openai_client removed
         self.db: Optional[firestore.Client] = None
         self.firestore_service: Optional[FirestoreService] = None
         self.audio_service: Optional[AudioService] = None
@@ -45,6 +44,7 @@ class ServiceContainer:
         self.notification_service: Optional[NotificationService] = None
         self.publisher: Optional[pubsub_v1.PublisherClient] = None
         self.command_router: Optional[CommandRouter] = None
+        self.async_telegram_service: Optional[AsyncTelegramService] = None
         
         self.initialized = False
         
@@ -92,13 +92,13 @@ class ServiceContainer:
                 return response.payload.data.decode("UTF-8").strip()
             
             self.telegram_bot_token = get_secret("telegram-bot-token")
-            # openai_api_key no longer needed
             self.telegram_api_url = f"https://api.telegram.org/bot{self.telegram_bot_token}"
             self.telegram_file_url = f"https://api.telegram.org/file/bot{self.telegram_bot_token}"
             
             # Initialize services
-            telegram_service.init_telegram_service(self.telegram_bot_token)
-            # openai_client removed
+            telegram_service.init_telegram_service(self.telegram_bot_token) # Legacy Sync
+            self.async_telegram_service = AsyncTelegramService(self.telegram_bot_token) # Async
+            
             self.db = firestore.Client(project=self.PROJECT_ID, database=self.DATABASE_ID)
             self.firestore_service = FirestoreService(self.PROJECT_ID, self.DATABASE_ID)
             self.metrics_service = MetricsService(self.db)
@@ -108,7 +108,7 @@ class ServiceContainer:
             # Initialize workflow service
             self.workflow_service = WorkflowService(
                 self.firestore_service,
-                telegram_service._telegram_service,
+                self.async_telegram_service, # Using Async Service
                 self.publisher if self.USE_ASYNC_PROCESSING else None,
                 self.PROJECT_ID,
                 self.AUDIO_PROCESSING_TOPIC,
@@ -116,7 +116,7 @@ class ServiceContainer:
                 self.MAX_TELEGRAM_FILE_SIZE
             )
             
-            # Initialize notification service
+            # Initialize notification service (Sync)
             self.notification_service = NotificationService(
                 self.firestore_service, 
                 telegram_service._telegram_service,
@@ -143,7 +143,8 @@ class ServiceContainer:
     def _create_services_dict(self) -> Dict[str, Any]:
         """Create services dictionary for command handlers"""
         return {
-            'telegram_service': telegram_service._telegram_service,
+            'telegram_service': self.async_telegram_service, # Replaced with Async Service
+            'async_telegram_service': self.async_telegram_service,
             'firestore_service': self.firestore_service,
             'stats_service': self.stats_service,
             'metrics_service': self.metrics_service,
@@ -153,7 +154,7 @@ class ServiceContainer:
             'get_user_data': self.firestore_service.get_user,
             'set_user_state': self.firestore_service.set_user_state,
             'create_trial_request': self._create_trial_request_wrapper(),
-            'send_document': telegram_service.send_document,
+            'send_document': self.async_telegram_service.send_document, # Replaced with Async
             'get_pending_trial_requests': self.firestore_service.get_pending_trial_requests,
             'get_all_users_for_admin': self.firestore_service.get_all_users,
         }

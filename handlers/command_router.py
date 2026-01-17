@@ -90,7 +90,7 @@ class CommandRouter:
             '/report': ReportCommandHandler(services, constants),
         }
     
-    def route(self, update_data):
+    async def route(self, update_data):
         """
         Route command to appropriate handler
         
@@ -115,10 +115,10 @@ class CommandRouter:
         
         if handler:
             logging.info(f"Routing command {command} to {handler.__class__.__name__}")
-            return handler.handle(update_data)
+            return await handler.handle(update_data)
         
         # Check if it's a command with parameters that needs special handling
         if command == '/credit' and update_data.get('user_id') == self.constants['OWNER_ID']:
-            return self.handlers['/credit'].handle(update_data)
+            return await self.handlers['/credit'].handle(update_data)
         
         return None

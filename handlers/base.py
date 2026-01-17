@@ -16,7 +16,7 @@ class BaseHandler:
         self.services = services
         self.constants = constants
         
-    def handle(self, update_data):
+    async def handle(self, update_data):
         """
         Handle the command
         

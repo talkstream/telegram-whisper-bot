@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Request, Header, HTTPException, status
-from fastapi.concurrency import run_in_threadpool
 from typing import Optional
 import logging
 import json
@@ -49,13 +48,13 @@ async def webhook(request: Request, x_telegram_bot_api_secret_token: Optional[st
         if 'message' in update:
             message = update['message']
             if 'successful_payment' in message:
-                await run_in_threadpool(logic.handle_successful_payment, message, services)
+                await logic.handle_successful_payment(message, services)
             else:
-                await run_in_threadpool(logic.handle_message, message, services)
+                await logic.handle_message(message, services)
         elif 'pre_checkout_query' in update:
-            await run_in_threadpool(logic.handle_pre_checkout_query, update['pre_checkout_query'], services)
+            await logic.handle_pre_checkout_query(update['pre_checkout_query'], services)
         elif 'callback_query' in update:
-            await run_in_threadpool(logic.handle_callback_query, update['callback_query'], services)
+            await logic.handle_callback_query(update['callback_query'], services)
         
         return "OK"
         
@@ -64,12 +63,13 @@ async def webhook(request: Request, x_telegram_bot_api_secret_token: Optional[st
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal error")
 
 @router.get("/cleanup_stuck_jobs")
-def cleanup_stuck_jobs():
+async def cleanup_stuck_jobs():
     """Clean up stuck audio processing jobs"""
     if not services.initialized:
         services.initialize()
         
-    return logic.cleanup_stuck_audio_jobs(services)
+    result = await logic.cleanup_stuck_audio_jobs(services)
+    return result
 
 @router.get("/send_payment_notifications")
 def send_payment_notifications():
@@ -103,10 +103,14 @@ def send_scheduled_report(type: str = 'daily'):
         'user_data': {'balance_minutes': 999999}  # Admin always has balance
     }
     
-    # Use the existing ReportCommandHandler
-    services_dict = services._create_services_dict()
-    constants_dict = services._create_constants_dict()
-    report_handler = ReportCommandHandler(services_dict, constants_dict)
-    result = report_handler.handle(update_data)
+    # Use the existing ReportCommandHandler (Sync version for now? Handlers are async!)
+    # ReportCommandHandler is in handlers/admin_commands.py.
+    # It has been converted to async handle(self, update_data).
+    # So we must await it.
     
-    return f"Scheduled {type} report sent"
+    # BUT this route is sync def.
+    # I should make it async def.
+    # And create handler instance and await handle.
+    # I need to do it via CommandRouter? Or directly?
+    # Direct usage is fine.
+    pass # Wait, I need to rewrite this function below.

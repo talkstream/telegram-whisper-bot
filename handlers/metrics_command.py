@@ -11,7 +11,7 @@ from .base import BaseHandler
 class MetricsCommandHandler(BaseHandler):
     """Handler for /metrics command (admin only)"""
     
-    def handle(self, update_data):
+    async def handle(self, update_data):
         user_id = update_data['user_id']
         chat_id = update_data['chat_id']
         text = update_data.get('text', '')
@@ -23,7 +23,7 @@ class MetricsCommandHandler(BaseHandler):
             return None  # Not authorized
             
         if not metrics_service:
-            send_message(chat_id, "Сервис метрик недоступен.")
+            await send_message(chat_id, "Сервис метрик недоступен.")
             return "OK", 200
             
         try:
@@ -88,11 +88,11 @@ class MetricsCommandHandler(BaseHandler):
             if len(msg) > 4000:
                 msg = msg[:3900] + "\n\n<i>... сообщение обрезано ...</i>"
             
-            send_message(chat_id, msg, parse_mode="HTML")
+            await send_message(chat_id, msg, parse_mode="HTML")
             
         except Exception as e:
             logging.error(f"Error in metrics command: {e}")
-            send_message(chat_id, f"Ошибка при получении метрик: {str(e)}")
+            await send_message(chat_id, f"Ошибка при получении метрик: {str(e)}")
             
         return "OK", 200
     
