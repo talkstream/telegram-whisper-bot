@@ -29,5 +29,5 @@ RUN rm -rf /app/services
 EXPOSE 8080
 
 # Start application
-CMD ["gunicorn", "-b", ":8080", "main:app", "--workers", "2", "--threads", "4", "--worker-class", "sync", "--timeout", "120"]
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-b", ":8080", "main_fastapi:app", "--workers", "2", "--timeout", "120"]
 
