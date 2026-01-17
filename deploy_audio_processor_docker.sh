@@ -27,6 +27,10 @@ SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --form
 
 echo "Service deployed at: $SERVICE_URL"
 
+# Get Project Number
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+SERVICE_ACCOUNT="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+
 # Create or update Pub/Sub subscription to push to Cloud Run
 SUBSCRIPTION_NAME="$SERVICE_NAME-push-sub"
 
@@ -34,18 +38,13 @@ echo "Setting up Pub/Sub push subscription..."
 if gcloud pubsub subscriptions describe $SUBSCRIPTION_NAME --project=$PROJECT_ID >/dev/null 2>&1; then
   gcloud pubsub subscriptions update $SUBSCRIPTION_NAME \
     --push-endpoint=$SERVICE_URL \
-    --push-auth-service-account=$PROJECT_NUMBER-compute@developer.gserviceaccount.com \
+    --push-auth-service-account=$SERVICE_ACCOUNT \
     --project=$PROJECT_ID
 else
-  # Get the service account for the subscription
-  # Using the default compute service account or a dedicated one is recommended
-  PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
-  SERVICE_ACCOUNT="service-$PROJECT_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com"
-  
   gcloud pubsub subscriptions create $SUBSCRIPTION_NAME \
     --topic=$TOPIC \
     --push-endpoint=$SERVICE_URL \
-    --push-auth-service-account=$PROJECT_NUMBER-compute@developer.gserviceaccount.com \
+    --push-auth-service-account=$SERVICE_ACCOUNT \
     --project=$PROJECT_ID
 fi
 

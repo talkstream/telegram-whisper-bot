@@ -6,7 +6,6 @@ ENV PYTHONUNBUFFERED 1
 ENV PORT 8080
 
 # Install system dependencies (No FFmpeg needed anymore!)
-# curl might be needed for healthchecks or debugging, but minimal is better
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -18,12 +17,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy shared package and install it
+COPY shared /app/shared
+RUN pip install --no-cache-dir /app/shared
+
 # Copy project files
 COPY . .
+RUN rm -rf /app/services
 
 # Expose port
 EXPOSE 8080
 
-# Start application
-CMD ["gunicorn", "-b", ":8080", "main:app", "--workers", "2", "--threads", "4", "--worker-class", "sync", "--timeout", "120"]
-
+# Start application (FastAPI + Uvicorn)
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-b", ":8080", "main_fastapi:app", "--workers", "2", "--timeout", "120"]
