@@ -7,3 +7,4 @@ google-cloud-pubsub==2.26.0
 functions-framework==3.8.2
 redis==5.2.0
 python-json-logger==2.0.7
+openai>=1.0.0

@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+from cachetools import TTLCache, cached
 
 
 class FirestoreService:
@@ -16,6 +17,8 @@ class FirestoreService:
         self.project_id = project_id
         self.database_id = database_id
         self.db = firestore.Client(project=project_id, database=database_id)
+        # Cache for user data: 1000 users, TTL 5 minutes
+        self.user_cache = TTLCache(maxsize=1000, ttl=300)
         
     def create_batch(self):
         """Create a Firestore batch object"""
@@ -24,13 +27,29 @@ class FirestoreService:
     # --- User Management ---
     
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get user data by ID"""
+        """Get user data by ID with caching"""
+        # Check cache first
+        if user_id in self.user_cache:
+            return self.user_cache[user_id]
+            
         doc_ref = self.db.collection('users').document(str(user_id))
         doc = doc_ref.get()
-        return doc.to_dict() if doc.exists else None
+        data = doc.to_dict() if doc.exists else None
         
+        # Update cache
+        if data:
+            self.user_cache[user_id] = data
+            
+        return data
+        
+    def _invalidate_user_cache(self, user_id: int):
+        """Invalidate user cache entry"""
+        if user_id in self.user_cache:
+            del self.user_cache[user_id]
+
     def create_or_update_user(self, user_id: int, user_data: Dict[str, Any], merge: bool = False) -> None:
         """Create or update user data"""
+        self._invalidate_user_cache(user_id)
         doc_ref = self.db.collection('users').document(str(user_id))
         if merge:
             doc_ref.update(user_data)
@@ -39,6 +58,7 @@ class FirestoreService:
             
     def update_user_balance(self, user_id: int, minutes_to_add: float) -> Optional[Dict[str, Any]]:
         """Update user balance by adding minutes and return updated user data"""
+        self._invalidate_user_cache(user_id)
         doc_ref = self.db.collection('users').document(str(user_id))
         doc = doc_ref.get()
         
@@ -64,6 +84,7 @@ class FirestoreService:
         
     def delete_user(self, user_id: int) -> None:
         """Delete user and all associated data"""
+        self._invalidate_user_cache(user_id)
         # Delete user document
         self.db.collection('users').document(str(user_id)).delete()
         # Delete user state
@@ -207,24 +228,18 @@ class FirestoreService:
         doc_ref.update(update_data)
         
     def count_pending_jobs(self) -> int:
-        """Count jobs that are pending or processing"""
-        # Count only pending/processing jobs - don't count completed ones
+        """Count jobs that are pending or processing using aggregation queries"""
         try:
-            pending_count = 0
-            
-            # Count pending jobs
-            pending_query = self.db.collection('audio_jobs').where(
+            # Use aggregation queries for efficiency
+            pending_count = self.db.collection('audio_jobs').where(
                 filter=FieldFilter('status', '==', 'pending')
-            )
-            pending_count += len(list(pending_query.stream()))
+            ).count().get()[0][0].value
             
-            # Count processing jobs
-            processing_query = self.db.collection('audio_jobs').where(
+            processing_count = self.db.collection('audio_jobs').where(
                 filter=FieldFilter('status', '==', 'processing')
-            )
-            pending_count += len(list(processing_query.stream()))
+            ).count().get()[0][0].value
             
-            return pending_count
+            return pending_count + processing_count
         except Exception as e:
             logging.error(f"Error counting pending jobs: {e}")
             return 0
@@ -452,6 +467,7 @@ class FirestoreService:
     
     def increment_micro_package_purchases(self, user_id: int, current_count: int) -> None:
         """Increment micro package purchase count"""
+        self._invalidate_user_cache(user_id)
         doc_ref = self.db.collection('users').document(str(user_id))
         doc_ref.update({'micro_package_purchases': current_count + 1})
         
@@ -474,6 +490,7 @@ class FirestoreService:
         
     def update_user_setting(self, user_id: int, setting_name: str, value: Any) -> None:
         """Update a specific user setting"""
+        self._invalidate_user_cache(user_id)
         doc_ref = self.db.collection('users').document(str(user_id))
         doc = doc_ref.get()
         
@@ -490,6 +507,7 @@ class FirestoreService:
     
     def update_user_trial_status(self, user_id: int, status: str) -> None:
         """Update user trial status"""
+        self._invalidate_user_cache(user_id)
         doc_ref = self.db.collection('users').document(str(user_id))
         doc_ref.update({'trial_status': status})
     

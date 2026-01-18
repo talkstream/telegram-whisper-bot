@@ -25,6 +25,7 @@
 ## 🚀 Phase 4: Refactoring & Unification (Current Focus)
 
 ### 4.1 Code Base Unification
+- **Status:** **DONE** (2026-01-17)
 - **Goal:** Eliminate code duplication between Bot and Worker.
 - **Action:**
     1.  Create a `shared` python package containing `services`, `config`, and `models`.
@@ -32,6 +33,7 @@
     3.  Remove `audio-processor-deploy/services`.
 
 ### 4.2 FastAPI & Aiogram Migration (The "Async Leap")
+- **Status:** **DONE** (2026-01-17)
 - **Goal:** Non-blocking I/O for high scalability.
 - **Action:**
     1.  Replace **Flask** with **FastAPI**.

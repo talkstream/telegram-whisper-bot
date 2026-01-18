@@ -105,6 +105,10 @@ class ServiceContainer:
             self.audio_service = AudioService(self.metrics_service)
             self.stats_service = StatsService(self.db)
             
+            # Initialize Pub/Sub if async processing is enabled
+            if self.USE_ASYNC_PROCESSING:
+                self.publisher = pubsub_v1.PublisherClient()
+
             # Initialize workflow service
             self.workflow_service = WorkflowService(
                 self.firestore_service,
@@ -115,17 +119,7 @@ class ServiceContainer:
                 self.db,
                 self.MAX_TELEGRAM_FILE_SIZE
             )
-            
-            # Initialize notification service (Sync)
-            self.notification_service = NotificationService(
-                self.firestore_service, 
-                telegram_service._telegram_service,
-                self.OWNER_ID
-            )
-            
-            # Initialize Pub/Sub if async processing is enabled
-            if self.USE_ASYNC_PROCESSING:
-                self.publisher = pubsub_v1.PublisherClient()
+
             
             # Initialize command router with all services
             services_dict = self._create_services_dict()

@@ -30,7 +30,7 @@ async def webhook(request: Request, x_telegram_bot_api_secret_token: Optional[st
     webhook_secret = os.environ.get('TELEGRAM_WEBHOOK_SECRET')
     if webhook_secret:
         if x_telegram_bot_api_secret_token != webhook_secret:
-            logging.warning(f"Unauthorized webhook attempt. Header: {x_telegram_bot_api_secret_token}")
+            logging.warning(f"Unauthorized webhook attempt. Header: {x_telegram_bot_api_secret_token}, Expected: {webhook_secret[:5]}...")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized")
 
     if not services.initialized:

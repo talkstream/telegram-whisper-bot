@@ -27,9 +27,9 @@ if [ -f "Dockerfile.original" ]; then
     trap - EXIT # Clear trap
 fi
 
-# Generate a random secret token
-WEBHOOK_SECRET=$(openssl rand -hex 32)
-echo "Generated webhook secret."
+# Get stable secret token from Secret Manager
+WEBHOOK_SECRET=$(gcloud secrets versions access latest --secret="telegram-webhook-secret" --project=$PROJECT_ID)
+echo "Using stable webhook secret."
 
 echo "Deploying to Cloud Run..."
 gcloud run deploy $SERVICE_NAME \

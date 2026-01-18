@@ -436,7 +436,7 @@ class AudioService:
             client = genai.Client(
                 vertexai=True,
                 project=os.environ.get('GCP_PROJECT', 'editorials-robot'),
-                location='europe-west1'
+                location='us-central1'
             )
             
             # Prepare user settings for prompt

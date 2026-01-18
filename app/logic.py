@@ -22,9 +22,9 @@ async def handle_message(message, services):
     telegram = services.async_telegram_service
     
     # Get or create user
-    user_data = services.firestore_service.get_user(user_id)
+    user_data = await asyncio.to_thread(services.firestore_service.get_user, user_id)
     if not user_data and 'text' in message and message['text'] == '/start':
-        user_data = create_new_user(user_id, user_name, message['from'], services)
+        user_data = await asyncio.to_thread(create_new_user, user_id, user_name, message['from'], services)
     
     # Check for stuck job cleanup
     await check_and_cleanup_stuck_jobs(services)
@@ -155,15 +155,15 @@ async def handle_successful_payment(message, services):
     # Update user balance
     if is_micro:
         # For micro package, also update purchase count
-        user_data = services.firestore_service.get_user(user_id)
+        user_data = await asyncio.to_thread(services.firestore_service.get_user, user_id)
         current_count = user_data.get('micro_package_purchases', 0) if user_data else 0
-        services.firestore_service.increment_micro_package_purchases(user_id, current_count)
+        await asyncio.to_thread(services.firestore_service.increment_micro_package_purchases, user_id, current_count)
     
-    updated_user = services.firestore_service.update_user_balance(user_id, minutes_to_add)
+    updated_user = await asyncio.to_thread(services.firestore_service.update_user_balance, user_id, minutes_to_add)
     new_balance = updated_user.get('balance_minutes', 0) if updated_user else 0
     
     # Log the payment
-    services.firestore_service.log_payment({
+    await asyncio.to_thread(services.firestore_service.log_payment, {
         'user_id': str(user_id),
         'user_name': user_name,
         'stars_amount': stars_amount,
@@ -184,7 +184,7 @@ async def handle_successful_payment(message, services):
     await telegram.send_message(chat_id, confirm_msg)
     
     # Queue notification for owner
-    services.notification_service.queue_payment_notification(
+    await asyncio.to_thread(services.notification_service.queue_payment_notification,
         user_id, user_name, stars_amount, minutes_to_add, package_name
     )
     
@@ -201,9 +201,6 @@ async def handle_callback_query(callback_query, services):
     
     # Handle trial request callbacks
     if callback_data.startswith('approve_trial_') or callback_data.startswith('deny_trial_'):
-        # Import here to avoid circular imports
-        from handlers.admin_commands import ReviewTrialsCommandHandler
-        
         # Parse the callback
         parts = callback_data.split('_')
         action = parts[0]
@@ -233,7 +230,7 @@ async def handle_start_command(user_id, chat_id, user_name, user_data, services)
     
     # Notify owner about trial requests if needed
     if user_id == services.OWNER_ID:
-        services.notification_service.check_and_notify_trial_requests()
+        await asyncio.to_thread(services.notification_service.check_and_notify_trial_requests)
     
     return "OK", 200
 
@@ -264,13 +261,13 @@ async def handle_trial_approval(target_user_id, callback_query, services):
     """Handle trial request approval"""
     telegram = services.async_telegram_service
     # Update trial status
-    services.firestore_service.update_user_trial_status(target_user_id, 'approved')
+    await asyncio.to_thread(services.firestore_service.update_user_trial_status, target_user_id, 'approved')
     
     # Add trial minutes
-    services.firestore_service.credit_user(target_user_id, services.TRIAL_MINUTES)
+    await asyncio.to_thread(services.firestore_service.credit_user, target_user_id, services.TRIAL_MINUTES)
     
     # Update the request
-    services.firestore_service.db.collection('trial_requests').document(str(target_user_id)).update({
+    await asyncio.to_thread(services.firestore_service.db.collection('trial_requests').document(str(target_user_id)).update, {
         'status': 'approved',
          'processed_at': datetime.now(pytz.utc),
         'processed_by': callback_query['from']['id']
@@ -296,7 +293,7 @@ async def handle_trial_denial(target_user_id, callback_query, services):
     """Handle trial request denial"""
     telegram = services.async_telegram_service
     # Update the request
-    services.firestore_service.db.collection('trial_requests').document(str(target_user_id)).update({
+    await asyncio.to_thread(services.firestore_service.db.collection('trial_requests').document(str(target_user_id)).update, {
         'status': 'denied',
         'processed_at': datetime.now(pytz.utc),
         'processed_by': callback_query['from']['id']
@@ -335,18 +332,22 @@ async def cleanup_stuck_audio_jobs(services):
     telegram = services.async_telegram_service
     one_hour_ago = datetime.now(pytz.utc) - timedelta(hours=1)
     
-    stuck_jobs = services.db.collection('audio_jobs').where(
-        filter=FieldFilter('status', 'in', ['pending', 'processing'])
-    ).where(
-        filter=FieldFilter('created_at', '<', one_hour_ago)
-    ).stream()
+    # Use to_thread for blocking Firestore stream
+    def get_stuck():
+        return list(services.db.collection('audio_jobs').where(
+            filter=FieldFilter('status', 'in', ['pending', 'processing'])
+        ).where(
+            filter=FieldFilter('created_at', '<', one_hour_ago)
+        ).stream())
+    
+    stuck_jobs = await asyncio.to_thread(get_stuck)
     
     cleaned_count = 0
     for job_doc in stuck_jobs:
         job_id = job_doc.id
         job_data = job_doc.to_dict()
         
-        # Update job as failed
+        # Update job as failed (Sync call)
         services.db.collection('audio_jobs').document(job_id).update({
             'status': 'failed',
             'error': 'Job timed out after 1 hour',
@@ -363,9 +364,11 @@ async def cleanup_stuck_audio_jobs(services):
             # Notify user
             chat_id = job_data.get('chat_id', user_id)
             if chat_id:
-                await telegram.send_message(int(chat_id),
-                    f"⚠️ Обработка вашего аудио не завершилась. "
-                    f"Возвращено {math.ceil(refund_amount)} минут на баланс.")
+                try:
+                    await telegram.send_message(int(chat_id),
+                        f"⚠️ Обработка вашего аудио не завершилась. "
+                        f"Возвращено {math.ceil(refund_amount)} минут на баланс.")
+                except: pass
         
         cleaned_count += 1
         logging.info(f"Cleaned up stuck job: {job_id}")
@@ -373,8 +376,10 @@ async def cleanup_stuck_audio_jobs(services):
     if cleaned_count > 0:
         logging.info(f"Cleaned up {cleaned_count} stuck jobs")
         # Notify admin
-        await telegram.send_message(services.OWNER_ID,
-            f"🧹 Автоматическая очистка: {cleaned_count} застрявших задач")
+        try:
+            await telegram.send_message(services.OWNER_ID,
+                f"🧹 Автоматическая очистка: {cleaned_count} застрявших задач")
+        except: pass
     else:
         logging.info("No stuck jobs found during automatic cleanup")
     
