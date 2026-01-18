@@ -1,7 +1,7 @@
 import pytest
 import os
 import subprocess
-from services.audio import AudioService
+from telegram_bot_shared.services.audio import AudioService
 
 def test_ffmpeg_whisper_available():
     """Test that FFmpeg 8.0 with Whisper filter is installed"""

@@ -40,8 +40,8 @@ class WorkflowService:
                 f"Файл слишком большой ({size_mb:.1f} MB). Максимальный размер: {max_mb} MB.")
             return "OK", 200
         
-        # Handle batch processing
-        user_state = self.firestore_service.get_user_state(user_id) if self.firestore_service else None
+        # Handle batch processing (Async-safe Firestore)
+        user_state = await asyncio.to_thread(self.firestore_service.get_user_state, user_id) if self.firestore_service else None
         media_group_id = None
         
         # Check for media group (batch)
@@ -64,7 +64,7 @@ class WorkflowService:
                     ],
                     'batch_start_time': datetime.now(pytz.utc)
                 }
-                self.firestore_service.set_user_state(user_id, batch_state)
+                await asyncio.to_thread(self.firestore_service.set_user_state, user_id, batch_state)
                 await self.telegram_service.send_message(chat_id, "📦 Получена группа файлов. Обрабатываю...")
                 return "OK", 200
             else:
@@ -75,7 +75,7 @@ class WorkflowService:
                     'duration': duration,
                     'file_type': file_type
                 })
-                self.firestore_service.set_user_state(user_id, user_state)
+                await asyncio.to_thread(self.firestore_service.set_user_state, user_id, user_state)
                 
                 # Check if we should process the batch (simple timeout logic)
                 batch_start = user_state.get('batch_start_time', datetime.now(pytz.utc))
@@ -130,7 +130,7 @@ class WorkflowService:
             await self.telegram_service.send_message(chat_id,
                 f"Недостаточно минут для обработки {len(batch_files)} файлов. "
                 f"Требуется ~{math.ceil(total_duration)} мин, ваш баланс: {math.ceil(balance)} мин.")
-            self.firestore_service.set_user_state(user_id, None)
+            await asyncio.to_thread(self.firestore_service.set_user_state, user_id, None)
             return "OK", 200
         
         # Send batch confirmation message  
@@ -158,7 +158,7 @@ class WorkflowService:
             logging.info(f"Published batch job {job_id} ({idx+1}/{len(batch_files)}) for user {user_id}")
         
         # Clear batch state
-        self.firestore_service.set_user_state(user_id, None)
+        await asyncio.to_thread(self.firestore_service.set_user_state, user_id, None)
         
         return "OK", 200
 
@@ -182,8 +182,8 @@ class WorkflowService:
             'is_batch_confirmation': is_batch_confirmation
         }
         
-        # Save to Firestore (Sync call)
-        self.db.collection('audio_jobs').document(job_id).set(job_data)
+        # Save to Firestore (Sync call wrapped in thread)
+        await asyncio.to_thread(self.db.collection('audio_jobs').document(job_id).set, job_data)
         
         # Publish to Pub/Sub (convert datetime to ISO format for JSON serialization)
         pubsub_data = job_data.copy()
@@ -204,7 +204,7 @@ class WorkflowService:
         except Exception as e:
             logging.error(f"Failed to publish job {job_id}: {e}")
             # Update job status to failed
-            self.db.collection('audio_jobs').document(job_id).update({
+            await asyncio.to_thread(self.db.collection('audio_jobs').document(job_id).update, {
                 'status': 'failed',
                 'error': str(e)
             })

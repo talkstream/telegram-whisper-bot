@@ -22,12 +22,14 @@ class AsyncTelegramService:
         """Send a message to a Telegram chat"""
         try:
             # Aiogram handles serialization of markup
-            return await self.bot.send_message(
+            res = await self.bot.send_message(
                 chat_id=chat_id, 
                 text=text, 
                 parse_mode=parse_mode, 
                 reply_markup=reply_markup
             )
+            logger.info(f"Successfully sent message to {chat_id}")
+            return res
         except Exception as e:
             logger.error(f"Error sending message to {chat_id}: {e}")
             return None
@@ -36,13 +38,15 @@ class AsyncTelegramService:
                          parse_mode: str = "HTML", reply_markup: Optional[Union[InlineKeyboardMarkup, ReplyKeyboardMarkup, Dict]] = None) -> Any:
         """Edit an existing message"""
         try:
-            return await self.bot.edit_message_text(
+            res = await self.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup
             )
+            logger.info(f"Successfully edited message {message_id} in {chat_id}")
+            return res
         except Exception as e:
             logger.error(f"Error editing message {message_id} in {chat_id}: {e}")
             return None
