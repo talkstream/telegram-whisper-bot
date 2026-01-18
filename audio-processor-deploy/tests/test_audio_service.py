@@ -52,7 +52,7 @@ class TestAudioService:
             mock_response.text = "Formatted text."
             MockClient.return_value.models.generate_content.return_value = mock_response
 
-            input_text = "test text"
+            input_text = "This is a long enough text to ensure that the formatting function does not skip the API call due to the short length check."
             result = service.format_text_with_gemini(input_text)
 
             assert result == "Formatted text."
@@ -71,7 +71,7 @@ class TestAudioService:
             mock_response.text = "<code>test text</code>"
             MockClient.return_value.models.generate_content.return_value = mock_response
             
-            text = "test text"
+            text = "This is a long enough text to ensure that the formatting function does not skip the API call due to the short length check."
             result = service.format_text_with_gemini(text, use_code_tags=True)
 
             assert '<code>' in result
@@ -90,7 +90,7 @@ class TestAudioService:
             mock_response.text = "елка"
             MockClient.return_value.models.generate_content.return_value = mock_response
 
-            text = "ёлка"
+            text = "В лесу родилась ёлочка, в лесу она росла, зимой и летом стройная, зелёная была. Метель ей пела песенку: спи, ёлочка, бай-бай!"
             result = service.format_text_with_gemini(text, use_yo=False)
 
             # Verify prompt contains instruction
