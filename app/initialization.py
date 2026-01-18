@@ -52,7 +52,7 @@ class ServiceContainer:
         self.PROJECT_ID = os.environ.get('GCP_PROJECT', 'editorials-robot')
         self.DATABASE_ID = 'editorials-robot'
         self.LOCATION = 'europe-west1'
-        self.OWNER_ID = 775707
+        self.OWNER_ID = int(os.environ.get('TELEGRAM_OWNER_ID', 775707))
         self.TRIAL_MINUTES = 15
         self.MAX_MESSAGE_LENGTH = 4000
         self.MAX_TELEGRAM_FILE_SIZE = 20 * 1024 * 1024  # 20 MB

@@ -84,7 +84,7 @@ def initialize_services():
     
     # Debug: Notify owner
     try:
-        _telegram_service.send_message(775707, "🚀 Audio Processor Started (OpenAI Version)")
+        _telegram_service.send_message(OWNER_ID, "🚀 Audio Processor Started (OpenAI Version)")
     except Exception as e:
         logging.error(f"Failed to send startup msg: {e}")
     
@@ -805,9 +805,9 @@ def handle_pubsub_message(event, context):
             if not _telegram_service:
                 from telegram_bot_shared.services.telegram import TelegramService, get_telegram_service
                 ts = get_telegram_service() or TelegramService(os.environ.get('TELEGRAM_BOT_TOKEN', ''))
-                if ts: ts.send_message(775707, f"🚨 Worker Critical Error:\n{str(e)}")
+                if ts: ts.send_message(OWNER_ID, f"🚨 Worker Critical Error:\n{str(e)}")
             else:
-                _telegram_service.send_message(775707, f"🚨 Worker Critical Error:\n{str(e)}")
+                _telegram_service.send_message(OWNER_ID, f"🚨 Worker Critical Error:\n{str(e)}")
         except: pass
         
         # Return OK to acknowledge message and prevent infinite retries

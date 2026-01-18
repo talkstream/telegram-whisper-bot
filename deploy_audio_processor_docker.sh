@@ -18,7 +18,7 @@ gcloud run deploy $SERVICE_NAME \
   --timeout=600s \
   --max-instances=10 \
   --no-allow-unauthenticated \
-  --set-env-vars=GCP_PROJECT=$PROJECT_ID,WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.bin \
+  --set-env-vars=GCP_PROJECT=$PROJECT_ID,WHISPER_MODEL_PATH=/opt/whisper/models/ggml-base.bin,TELEGRAM_OWNER_ID=775707 \
   --project=$PROJECT_ID \
   --quiet
 

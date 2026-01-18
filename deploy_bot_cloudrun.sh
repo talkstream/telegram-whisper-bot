@@ -37,7 +37,7 @@ gcloud run deploy $SERVICE_NAME \
   --region=$REGION \
   --platform=managed \
   --allow-unauthenticated \
-  --set-env-vars=GCP_PROJECT=$PROJECT_ID,USE_ASYNC_PROCESSING=true,AUDIO_PROCESSING_TOPIC=audio-processing-jobs,TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET \
+  --set-env-vars=GCP_PROJECT=$PROJECT_ID,USE_ASYNC_PROCESSING=true,AUDIO_PROCESSING_TOPIC=audio-processing-jobs,TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET,TELEGRAM_OWNER_ID=775707 \
   --project=$PROJECT_ID \
   --quiet
 
