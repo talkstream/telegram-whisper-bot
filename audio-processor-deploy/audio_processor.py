@@ -301,6 +301,23 @@ class AudioProcessor:
             self.metrics_service.start_timer('total_processing', job_id)
         
         try:
+            # --- IDEMPOTENCY CHECK ---
+            # Check if job is already completed to avoid duplicate processing (race conditions)
+            # This prevents overwriting a successful result with an error from a retried/phantom execution.
+            current_job = None
+            if self.firestore_service:
+                # Assuming get_audio_job exists or using direct DB access
+                job_ref = self.db.collection('audio_jobs').document(job_id)
+                current_job = job_ref.get()
+            else:
+                current_job = self.db.collection('audio_jobs').document(job_id).get()
+                
+            if current_job and current_job.exists:
+                job_status = current_job.to_dict().get('status')
+                if job_status == 'completed':
+                    logging.warning(f"Job {job_id} is already COMPLETED. Skipping duplicate execution.")
+                    return
+            # -------------------------
             transcribed_text = None
             actual_duration = None
             audio_format = None

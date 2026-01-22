@@ -6,7 +6,7 @@ PROJECT_ID="editorials-robot"
 REGION="europe-west1"
 SERVICE_NAME="audio-processor"
 TOPIC="audio-processing-jobs"
-IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME:ffmpeg8"
+IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME:latest"
 
 echo "Deploying to Cloud Run..."
 gcloud run deploy $SERVICE_NAME \
