@@ -559,10 +559,13 @@ class AudioProcessor:
                 billing_duration = int(actual_duration) if actual_duration else duration
                 duration_minutes = max(1, (billing_duration + 59) // 60)
                 user_ref = self.db.collection('users').document(str(user_id))
-                batch.update(user_ref, {
+                
+                # Use set(merge=True) instead of update to handle missing user documents gracefully
+                batch.set(user_ref, {
                     'balance_minutes': firestore.Increment(-duration_minutes),
-                    'last_seen': firestore.SERVER_TIMESTAMP
-                })
+                    'last_seen': firestore.SERVER_TIMESTAMP,
+                    'first_name': user_name # Ensure at least basic info exists
+                }, merge=True)
                 
                 batch.commit()
                 logging.info(f"Batched update committed for job {job_id}")
@@ -621,6 +624,16 @@ class AudioProcessor:
             self._log_transcription_attempt(user_id, user_name, file_size, duration, 'failure_general')
             
             if status_message_id:
+                # CRITICAL FIX: If we already have the transcribed text, DO NOT overwrite it with an error message
+                # This happens if Firestore update fails AFTER successful transcription and delivery
+                if 'transcribed_text' in locals() and transcribed_text:
+                    logging.warning(f"Job {job_id} failed during DB update, but transcription was already delivered. NOT overwriting UI.")
+                    # Optionally notify owner about sync failure
+                    try:
+                        self.telegram.send_message(OWNER_ID, f"⚠️ Sync Error (Job {job_id}): {error_str[:100]}")
+                    except: pass
+                    return
+
                 error_msg = "Ошибка обработки\n\n"
                 
                 if "На записи не обнаружено речи" in error_str:

@@ -272,7 +272,7 @@ class AudioService:
                     f"model={model_path}:"
                     f"language={language}:"
                     f"format=json:"
-                    f"use_gpu=true:"
+                    f"use_gpu=false:" # Explicitly disabled for Cloud Run stability
                     f"queue=6"
                 ),
                 '-f', 'null',
@@ -374,10 +374,18 @@ class AudioService:
             return ' '.join(matches).strip()
             
         # Debug: Log what we got if everything failed
-        logging.warning("Failed to parse Whisper output. First 500 chars of stderr:")
-        logging.warning(ffmpeg_stderr[:500])
+        logging.error("Failed to parse Whisper output from FFmpeg.")
+        # Log the last part of stderr which is more likely to contain errors
+        logging.error(f"Last 1000 chars of stderr: {ffmpeg_stderr[-1000:]}")
         
-        # Don't return empty string to avoid silent failure, caller handles empty check
+        # Check for specific FFmpeg/Whisper error patterns in the whole stderr
+        if "out of memory" in ffmpeg_stderr.lower():
+            raise MemoryError("FFmpeg ran out of memory during transcription")
+        if "segmentation fault" in ffmpeg_stderr.lower():
+            raise RuntimeError("FFmpeg crashed (Segmentation Fault)")
+        if "blank audio" in ffmpeg_stderr.lower() or "continuation follows" in ffmpeg_stderr.lower():
+            return "Продолжение следует..." # Signal for blank audio
+            
         return ""
 
     def get_audio_duration(self, audio_path: str) -> float:

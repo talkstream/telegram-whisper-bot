@@ -23,7 +23,10 @@ class CacheService:
             self.client.ping()
             logging.info("Redis connection successful")
         except Exception as e:
-            logging.warning(f"Redis unavailable: {e}")
+            if redis_host == 'localhost':
+                logging.info("Redis not configured (using local environment), caching disabled")
+            else:
+                logging.warning(f"Redis unavailable at {redis_host}: {e}")
             self.client = None
 
     def get_transcription(self, audio_hash: str) -> str | None:
