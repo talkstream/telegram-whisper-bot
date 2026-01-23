@@ -8,6 +8,11 @@ SERVICE_NAME="audio-processor"
 TOPIC="audio-processing-jobs"
 IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME:latest"
 
+# Ensure gcloud is in PATH (using local installation if available)
+if [ -f "./google-cloud-sdk/bin/gcloud" ]; then
+    export PATH="$(pwd)/google-cloud-sdk/bin:$PATH"
+fi
+
 echo "Deploying to Cloud Run..."
 gcloud run deploy $SERVICE_NAME \
   --image=$IMAGE \

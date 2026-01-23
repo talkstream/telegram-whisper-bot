@@ -19,6 +19,11 @@ async def handle_message(message, services):
     user_id = message['from']['id']
     chat_id = message['chat']['id']
     user_name = message['from'].get('first_name', f'User_{user_id}')
+    message_id = message.get('message_id')
+    update_id = message.get('update_id', 'unknown') # update_id usually comes from wrapper
+    
+    logging.debug(f"DEBUG: Received message {message_id} from user {user_id}. Content keys: {list(message.keys())}")
+    
     telegram = services.async_telegram_service
     
     # Get or create user

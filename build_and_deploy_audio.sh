@@ -17,7 +17,7 @@ cp -r shared audio-processor-deploy/
 echo "🚀 Building App Image..."
 cd audio-processor-deploy
 # Using standard gcloud build
-gcloud builds submit --tag $IMAGE . --project=$PROJECT_ID
+../google-cloud-sdk/bin/gcloud builds submit --tag $IMAGE . --project=$PROJECT_ID
 cd ..
 
 # 3. Deploy

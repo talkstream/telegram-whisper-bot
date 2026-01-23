@@ -21,12 +21,15 @@ except ImportError:
 
 # Configure logging first
 from telegram_bot_shared.services.utility import UtilityService
+# Configure logging first
+from telegram_bot_shared.services.utility import UtilityService
 UtilityService.setup_logging(component_name="worker")
 
 # Constants
 PROJECT_ID = os.environ.get('GCP_PROJECT', 'editorials-robot')
 DATABASE_ID = 'editorials-robot'
 LOCATION = 'europe-west1'
+OWNER_ID = int(os.environ.get('TELEGRAM_OWNER_ID', '775707'))
 
 # Global services - initialized once per instance
 _services_initialized = False
@@ -82,11 +85,11 @@ def initialize_services():
     _services_initialized = True
     logging.info("Services initialized successfully")
     
-    # Debug: Notify owner
-    try:
-        _telegram_service.send_message(OWNER_ID, "🚀 Audio Processor Started (OpenAI Version)")
-    except Exception as e:
-        logging.error(f"Failed to send startup msg: {e}")
+    # Debug: Notify owner (DISABLED for production stability)
+    # try:
+    #     _telegram_service.send_message(OWNER_ID, "🚀 Audio Processor Started (OpenAI Version)")
+    # except Exception as e:
+    #     logging.error(f"Failed to send startup msg: {e}")
     
     return _telegram_service, _openai_client, _db_client, _firestore_service, _audio_service, _metrics_service, _cache_service
 
@@ -231,11 +234,18 @@ class AudioProcessor:
             {text}
             ---
             """
+            model_name = "gemini-2.5-flash"
+            logging.info(f"Fallback: Starting Gemini request. Model: {model_name}, Input chars: {len(text)}")
+            gemini_start_time = time.time()
+            
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model_name,
                 contents=prompt
             )
+            
+            gemini_duration = time.time() - gemini_start_time
             result = response.text
+            logging.info(f"Fallback: Gemini request finished. Duration: {gemini_duration:.2f}s, Output chars: {len(result)}")
             
             return result
         except Exception as e:
@@ -249,12 +259,19 @@ class AudioProcessor:
                 
                 # Try once more with a simpler prompt
                 try:
-                    simple_prompt = f"Отформатируй этот текст, разбив на абзацы:\n{text[:3000]}"  # Limit text length
+                    model_name = "gemini-2.5-flash"
+                    simple_prompt = f"Отформатируй этот текст, разбив на абзацы:\n{text[:3000]}"
+                    logging.info(f"Retry: Starting Gemini request. Model: {model_name}")
+                    gemini_start_time = time.time()
+                    
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model=model_name,
                         contents=simple_prompt
                     )
+                    
+                    gemini_duration = time.time() - gemini_start_time
                     result = response.text
+                    logging.info(f"Retry: Gemini request finished. Duration: {gemini_duration:.2f}s")
                     return result
                 except Exception as retry_e:
                     logging.error(f"Gemini retry also failed: {retry_e}")
