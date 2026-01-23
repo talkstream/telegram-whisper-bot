@@ -2679,7 +2679,7 @@ TOTAL COST:            $0.040 / минута
 
 ### Phase 2: Gemini 3 Flash (1 week)
 - [ ] Update google-genai to latest version
-- [ ] Change model to gemini-3-flash-preview
+- [x] Change model to gemini-2.5-flash (Gemini 3 is not available in us-central1 for this project yet)
 - [ ] Add thinking_level parameter
 - [ ] Update prompt for Gemini 3
 - [ ] A/B test quality vs Gemini 2.5

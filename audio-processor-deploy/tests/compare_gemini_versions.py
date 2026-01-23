@@ -45,13 +45,13 @@ def compare_models(test_text: str):
         result_25 = ""
     print("\n" + "="*80 + "\n")
 
-    # Gemini 3
-    print("Gemini 3-flash-preview:")
+    # Gemini 2.0
+    print("Gemini 2.0-flash-exp:")
     try:
-        result_3 = format_with_gemini(test_text, "gemini-3-flash-preview")
+        result_3 = format_with_gemini(test_text, "gemini-2.0-flash-exp")
         print(result_3)
     except Exception as e:
-        print(f"Error with Gemini 3: {e}")
+        print(f"Error with Gemini 2.0: {e}")
         result_3 = ""
     print("\n" + "="*80 + "\n")
 

@@ -43,7 +43,7 @@ class TestAudioService:
                 assert result == "Hello world"
 
     def test_gemini_formatting(self):
-        """Test Gemini 3 formatting"""
+        """Test Gemini 2.5 formatting"""
         service = AudioService()
         
         # Mock genai client
@@ -59,7 +59,7 @@ class TestAudioService:
             
             # Verify parameters
             call_args = MockClient.return_value.models.generate_content.call_args
-            assert call_args[1]['model'] == "gemini-3-flash-preview"
+            assert call_args[1]['model'] == "gemini-2.5-flash"
 
     def test_code_tags_setting(self):
         """Test code tags are applied correctly"""

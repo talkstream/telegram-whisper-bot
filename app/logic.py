@@ -22,7 +22,7 @@ async def handle_message(message, services):
     message_id = message.get('message_id')
     update_id = message.get('update_id', 'unknown') # update_id usually comes from wrapper
     
-    logging.debug(f"DEBUG: Received message {message_id} from user {user_id}. Content keys: {list(message.keys())}")
+
     
     telegram = services.async_telegram_service
     

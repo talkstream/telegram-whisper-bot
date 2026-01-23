@@ -24,9 +24,10 @@ class AudioService:
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
     MAX_DURATION_SECONDS = 3600  # 1 hour
     
-    def __init__(self, metrics_service=None):
+    def __init__(self, metrics_service=None, openai_client=None):
         """Initialize AudioService"""
         self.metrics_service = metrics_service
+        self.openai_client = openai_client
         
     def validate_audio_file(self, file_size: int, duration: int) -> Tuple[bool, Optional[str]]:
         """
@@ -169,10 +170,7 @@ class AudioService:
             
     def transcribe_audio(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio file using FFmpeg 8.0 Whisper (primary method).
-
-        This method uses FFmpeg's built-in Whisper filter for local transcription.
-        NO external API calls, NO OpenAI costs.
+        Transcribe audio file using OpenAI Whisper API (primary) or FFmpeg Whisper (fallback).
 
         Args:
             audio_path: Path to audio file
@@ -180,6 +178,20 @@ class AudioService:
         Returns:
             Transcribed text
         """
+        # Try OpenAI Whisper API first if client is available
+        if self.openai_client:
+            try:
+                logging.info("Starting OpenAI Whisper transcription...")
+                return self.transcribe_with_openai(audio_path, language)
+            except Exception as e:
+                logging.error(f"OpenAI Whisper API failed: {e}")
+                # Fallback to local if API fails? 
+                # For now, let's stick to API reliability as requested. 
+                # If API fails, it's better to fail the job than produce bad local result.
+                raise
+
+        # Fallback to local FFmpeg Whisper (only if no OpenAI client)
+        logging.info("OpenAI client not available, falling back to local FFmpeg Whisper...")
         try:
             # Use FFmpeg 8.0 Whisper (local, fast, free)
             transcription = self.transcribe_with_ffmpeg_whisper(audio_path, language=language)
@@ -196,7 +208,6 @@ class AudioService:
 
         except Exception as e:
             logging.error(f"FFmpeg Whisper transcription failed: {str(e)}")
-            # Return None to indicate failure (as per original contract, though original returned None, this raises/logs)
             # The original code returned None on error.
             # But the plan suggests raising exceptions in transcribe_with_ffmpeg_whisper and catching them here.
             # However, the calling code expects None on failure?
@@ -255,24 +266,18 @@ class AudioService:
 
         try:
             # FFmpeg command with Whisper filter
-            # Parameters:
-            #   model: path to ggml model file
-            #   language: transcription language
-            #   format: json (for structured output)
-            #   use_gpu: true (auto-detect GPU, fallback to CPU)
-            #   queue: 6 (balance between quality and processing frequency)
             ffmpeg_command = [
                 'ffmpeg',
-                '-hide_banner',  # Hide build info
-                '-nostats',      # Hide progress (size=N/A...)
+                '-hide_banner',
+                '-nostats',
                 '-i', audio_path,
-                '-vn',  # No video
+                '-vn',
                 '-af', (
                     f"whisper="
                     f"model={model_path}:"
                     f"language={language}:"
                     f"format=json:"
-                    f"use_gpu=false:" # Explicitly disabled for Cloud Run stability
+                    f"use_gpu=false:"
                     f"queue=6"
                 ),
                 '-f', 'null',
@@ -280,9 +285,8 @@ class AudioService:
             ]
 
             # Execute FFmpeg with timeout
-            # Timeout: 3x audio duration (conservative estimate)
             audio_duration = self.get_audio_duration(audio_path)
-            timeout = max(int(audio_duration * 3), 60)  # Minimum 60s
+            timeout = max(int(audio_duration * 3), 60)
 
             logging.info(f"Starting FFmpeg Whisper transcription (timeout: {timeout}s)")
 
@@ -294,7 +298,7 @@ class AudioService:
                 check=True
             )
 
-            # Parse output from stderr (FFmpeg logs to stderr)
+            # Parse output from stderr
             transcription_text = self._parse_ffmpeg_whisper_output(result.stderr)
 
             if not transcription_text or len(transcription_text.strip()) < 5:
@@ -316,6 +320,22 @@ class AudioService:
             # Cleanup temporary files
             if os.path.exists(output_json):
                 os.remove(output_json)
+
+    def transcribe_with_openai(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Transcribe audio using OpenAI Whisper API.
+        """
+        if not self.openai_client:
+            raise ValueError("OpenAI client not initialized")
+            
+        with open(audio_path, "rb") as audio_file:
+            transcript = self.openai_client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file,
+                language=language
+            )
+            
+        return transcript.text
 
     def _parse_ffmpeg_whisper_output(self, ffmpeg_stderr: str) -> str:
         """
@@ -366,12 +386,16 @@ class AudioService:
         # Fallback: if JSON parsing completely failed, try regex for raw text (legacy format)
         logging.warning("No JSON segments found in Whisper output, attempting legacy parse")
         
-        # Pattern: [whisper @ 0x...] text
-        pattern = r'\[whisper @ 0x[0-9a-f]+\]\s+(.+)'
+        # Pattern: [whisper @ 0x...] text OR [Parsed_whisper_X @ 0x...] text
+        # We need to be careful NOT to match the "run transcription at..." logs
+        pattern = r'\[(?:Parsed_)?whisper(?:_\d+)? @ 0x[0-9a-f]+\]\s+(?!run transcription|audio:)(.+)'
         matches = re.findall(pattern, ffmpeg_stderr)
         
         if matches:
-            return ' '.join(matches).strip()
+            # Filter out empty or too short matches that might be noise
+            valid_matches = [m.strip() for m in matches if len(m.strip()) > 1]
+            if valid_matches:
+                return ' '.join(valid_matches).strip()
             
         # Debug: Log what we got if everything failed
         logging.error("Failed to parse Whisper output from FFmpeg.")
@@ -475,19 +499,24 @@ class AudioService:
 
 {text}"""
 
-            # Generate with Gemini 3 Flash
+            # Generate with Gemini 2.5 Flash (with detailed logging)
+            model_name = "gemini-2.5-flash"
+            logging.info(f"Starting Gemini request. Model: {model_name}, Input chars: {len(text)}")
+            gemini_start_time = time.time()
+            
             response = client.models.generate_content(
-                model="gemini-3-flash-preview",
+                model=model_name,
                 contents=prompt,
                 config={
-                    'temperature': 0.3,  # Low temperature for consistency
+                    'temperature': 0.3,
                     'top_p': 0.95,
                     'max_output_tokens': 8192,
-                    # 'thinking_level': 1,  # Control reasoning depth (0-3) - Uncomment if supported
                 }
             )
-
+            
+            gemini_duration = time.time() - gemini_start_time
             formatted_text = response.text.strip()
+            logging.info(f"Gemini request finished. Duration: {gemini_duration:.2f}s, Output chars: {len(formatted_text)}")
 
             # Remove code tags if present but not wanted
             if not use_code_tags and formatted_text.startswith('<code>'):
