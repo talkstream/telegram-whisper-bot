@@ -70,16 +70,32 @@ def initialize_services():
     
     telegram_bot_token = get_secret("telegram-bot-token")
     openai_api_key = get_secret("openai-api-key")
-    
+
+    # Try to load Alibaba credentials (optional, for qwen-asr backend)
+    alibaba_api_key = None
+    oss_config = None
+    try:
+        alibaba_api_key = get_secret("alibaba-api-key")
+        # Load OSS config
+        oss_config = {
+            'bucket': get_secret("alibaba-oss-bucket"),
+            'endpoint': get_secret("alibaba-oss-endpoint"),
+            'access_key_id': get_secret("alibaba-access-key-id"),
+            'access_key_secret': get_secret("alibaba-access-key-secret"),
+        }
+        logging.info("Alibaba OSS configuration loaded successfully")
+    except Exception as e:
+        logging.warning(f"Alibaba credentials not found: {e}. Qwen-ASR backend will not be available.")
+
     # Initialize services
     from openai import OpenAI
-    
+
     _telegram_service = TelegramService(telegram_bot_token)
     _openai_client = OpenAI(api_key=openai_api_key)
     _db_client = fs.Client(project=PROJECT_ID, database=DATABASE_ID)
     _firestore_service = FirestoreService(PROJECT_ID, DATABASE_ID)
     _metrics_service = MetricsService(_db_client)
-    _audio_service = AudioService(_metrics_service, _openai_client) # Pass OpenAI client
+    _audio_service = AudioService(_metrics_service, _openai_client, alibaba_api_key=alibaba_api_key, oss_config=oss_config)
     _cache_service = CacheService()
     
     _services_initialized = True

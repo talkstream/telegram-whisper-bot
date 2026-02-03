@@ -1,6 +1,7 @@
 """
 Audio Service - Centralized audio processing operations for the Telegram Whisper Bot
 
+v2.1.0: Added Alibaba ASR backend option (requires OSS for local files)
 v2.0.0: Added faster-whisper GPU support as alternative backend
 """
 import os
@@ -19,7 +20,7 @@ class AudioService:
     AUDIO_BITRATE = '128k'
     AUDIO_SAMPLE_RATE = '44100'
     AUDIO_CHANNELS = '1'  # Mono for memory efficiency
-    FFMPEG_THREADS = '1'  # Single thread for memory efficiency
+    FFMPEG_THREADS = '4'  # Optimized for speed (was 1)
     FFMPEG_TIMEOUT = 60  # seconds
 
     # File size limits
@@ -29,22 +30,37 @@ class AudioService:
     # Whisper backend options
     BACKEND_OPENAI = 'openai'
     BACKEND_FASTER_WHISPER = 'faster-whisper'
+    BACKEND_QWEN_ASR = 'qwen-asr'  # Alibaba Qwen3-ASR (fastest: 92ms TTFT)
 
-    def __init__(self, metrics_service=None, openai_client=None, whisper_backend: str = None):
+    def __init__(self, metrics_service=None, openai_client=None, whisper_backend: str = None,
+                 alibaba_api_key: str = None, oss_config: dict = None):
         """
         Initialize AudioService
 
         Args:
             metrics_service: Optional metrics tracking service
             openai_client: OpenAI client instance (for openai backend)
-            whisper_backend: Whisper backend to use ('openai', 'faster-whisper')
+            whisper_backend: Whisper backend to use ('openai', 'faster-whisper', 'qwen-asr')
                             If None, auto-detected from environment or defaults to 'openai'
+            alibaba_api_key: Alibaba DashScope API key (for qwen-asr backend)
+            oss_config: Alibaba OSS configuration dict with keys:
+                        - bucket: OSS bucket name
+                        - endpoint: OSS endpoint (e.g., oss-eu-central-1.aliyuncs.com)
+                        - access_key_id: Alibaba AccessKey ID
+                        - access_key_secret: Alibaba AccessKey Secret
         """
         self.metrics_service = metrics_service
         self.openai_client = openai_client
 
         # Determine whisper backend
         self.whisper_backend = whisper_backend or os.environ.get('WHISPER_BACKEND', self.BACKEND_OPENAI)
+
+        # Alibaba API key for Qwen3-ASR
+        self.alibaba_api_key = alibaba_api_key or os.environ.get('ALIBABA_API_KEY')
+
+        # Alibaba OSS configuration
+        self.oss_config = oss_config or {}
+        self._oss_bucket = None  # Lazy-loaded OSS bucket
 
         # Faster-whisper model (lazy-loaded)
         self._faster_whisper_model = None
@@ -204,13 +220,16 @@ class AudioService:
             Transcribed text
 
         Backends:
+            - 'qwen-asr': Alibaba Qwen3-ASR (92ms TTFT, fastest)
             - 'openai': OpenAI Whisper API ($0.006/min)
             - 'faster-whisper': Local GPU inference ($0.24/hour on Spot T4)
         """
         logging.info(f"Transcription backend: {self.whisper_backend}")
 
         # Route to appropriate backend
-        if self.whisper_backend == self.BACKEND_FASTER_WHISPER:
+        if self.whisper_backend == self.BACKEND_QWEN_ASR:
+            return self.transcribe_with_qwen_asr(audio_path, language)
+        elif self.whisper_backend == self.BACKEND_FASTER_WHISPER:
             return self.transcribe_with_faster_whisper(audio_path, language)
         elif self.whisper_backend == self.BACKEND_OPENAI and self.openai_client:
             return self.transcribe_with_openai(audio_path, language)
@@ -323,6 +342,210 @@ class AudioService:
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize faster-whisper: {e}")
+
+    def _get_oss_bucket(self):
+        """Get or create OSS bucket connection (lazy loading)"""
+        if self._oss_bucket is not None:
+            return self._oss_bucket
+
+        if not self.oss_config:
+            return None
+
+        try:
+            import oss2
+
+            bucket_name = self.oss_config.get('bucket')
+            endpoint = self.oss_config.get('endpoint')
+            access_key_id = self.oss_config.get('access_key_id')
+            access_key_secret = self.oss_config.get('access_key_secret')
+
+            if not all([bucket_name, endpoint, access_key_id, access_key_secret]):
+                logging.warning("Incomplete OSS configuration")
+                return None
+
+            auth = oss2.Auth(access_key_id, access_key_secret)
+            self._oss_bucket = oss2.Bucket(auth, endpoint, bucket_name)
+            logging.info(f"OSS bucket initialized: {bucket_name}")
+            return self._oss_bucket
+
+        except ImportError:
+            logging.warning("oss2 not installed")
+            return None
+        except Exception as e:
+            logging.error(f"Failed to initialize OSS bucket: {e}")
+            return None
+
+    def _upload_to_oss(self, local_path: str) -> Optional[str]:
+        """
+        Upload file to Alibaba OSS and return the OSS URL.
+
+        Args:
+            local_path: Path to local file
+
+        Returns:
+            OSS URL (oss://bucket/key) or None on failure
+        """
+        bucket = self._get_oss_bucket()
+        if not bucket:
+            return None
+
+        try:
+            import os
+            import uuid
+
+            # Generate unique key
+            file_ext = os.path.splitext(local_path)[1] or '.mp3'
+            oss_key = f"audio/{uuid.uuid4().hex}{file_ext}"
+
+            # Upload file
+            logging.info(f"Uploading to OSS: {local_path} -> {oss_key}")
+            bucket.put_object_from_file(oss_key, local_path)
+
+            # Return OSS URL
+            bucket_name = self.oss_config.get('bucket')
+            oss_url = f"oss://{bucket_name}/{oss_key}"
+            logging.info(f"Uploaded to OSS: {oss_url}")
+
+            return oss_url
+
+        except Exception as e:
+            logging.error(f"OSS upload failed: {e}")
+            return None
+
+    def _delete_from_oss(self, oss_url: str):
+        """Delete file from OSS after transcription"""
+        bucket = self._get_oss_bucket()
+        if not bucket or not oss_url:
+            return
+
+        try:
+            # Extract key from oss://bucket/key
+            parts = oss_url.replace('oss://', '').split('/', 1)
+            if len(parts) == 2:
+                oss_key = parts[1]
+                bucket.delete_object(oss_key)
+                logging.info(f"Deleted from OSS: {oss_key}")
+        except Exception as e:
+            logging.warning(f"Failed to delete from OSS: {e}")
+
+    def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Transcribe audio using Alibaba Paraformer via DashScope SDK.
+
+        For local files, uploads to OSS first, then uses Transcription API.
+
+        Latency: Very fast (non-autoregressive architecture)
+        Quality: Excellent for Chinese/CJK, good for Russian
+        Cost: Pay-per-use via Alibaba DashScope + OSS storage
+
+        Args:
+            audio_path: Path to audio file or URL
+            language: Language code (default: 'ru' for Russian)
+
+        Returns:
+            Transcribed text
+
+        Raises:
+            RuntimeError: If API key not configured or API fails
+            ValueError: If transcription is empty
+        """
+        if not self.alibaba_api_key:
+            logging.warning("Alibaba API key not configured, falling back to OpenAI")
+            return self._transcribe_with_fallback(audio_path, language)
+
+        logging.info(f"Starting Alibaba ASR transcription: {audio_path}")
+        start_time = time.time()
+        oss_url = None  # Track for cleanup
+
+        try:
+            import dashscope
+            from dashscope.audio.asr import Transcription
+
+            # Set API key
+            dashscope.api_key = self.alibaba_api_key
+
+            # Determine file URL
+            if audio_path.startswith(('http://', 'https://', 'oss://')):
+                file_url = audio_path
+            else:
+                # Upload local file to OSS
+                oss_url = self._upload_to_oss(audio_path)
+                if not oss_url:
+                    logging.warning("OSS upload failed, falling back to OpenAI")
+                    return self._transcribe_with_fallback(audio_path, language)
+                file_url = oss_url
+
+            # Use Transcription API
+            logging.info(f"Calling DashScope Transcription with: {file_url}")
+            task = Transcription.async_call(
+                model='paraformer-v1',  # Multilingual model
+                file_urls=[file_url],
+                disfluency_removal_enabled=True
+            )
+
+            # Wait for completion
+            result = Transcription.wait(task=task.output.task_id)
+
+            # Extract text from result
+            full_text = ""
+            if result.output and result.output.results:
+                for res in result.output.results:
+                    if hasattr(res, 'transcription_url') and res.transcription_url:
+                        import urllib.request
+                        import json
+                        with urllib.request.urlopen(res.transcription_url) as response:
+                            data = json.loads(response.read().decode('utf-8'))
+                            if 'transcripts' in data:
+                                for t in data['transcripts']:
+                                    if 'text' in t:
+                                        full_text += t['text'] + " "
+
+            full_text = full_text.strip()
+
+            # Cleanup OSS file
+            if oss_url:
+                self._delete_from_oss(oss_url)
+
+            duration = time.time() - start_time
+            logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
+
+            if self.metrics_service:
+                self.metrics_service.log_api_call('alibaba-asr', duration, True)
+
+            # Quality check
+            if not full_text or len(full_text.strip()) < 5:
+                logging.warning("Alibaba ASR returned empty result, falling back to OpenAI")
+                return self._transcribe_with_fallback(audio_path, language)
+
+            return full_text
+
+        except ImportError:
+            logging.warning("dashscope not installed, falling back to OpenAI")
+            return self._transcribe_with_fallback(audio_path, language)
+
+        except Exception as e:
+            duration = time.time() - start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('alibaba-asr', duration, False, str(e))
+            logging.error(f"Alibaba ASR error: {e}, falling back to OpenAI")
+            return self._transcribe_with_fallback(audio_path, language)
+
+    def _transcribe_with_fallback(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Fallback transcription method using OpenAI if primary backend fails.
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code
+
+        Returns:
+            Transcribed text
+        """
+        if self.openai_client:
+            logging.info("Falling back to OpenAI Whisper...")
+            return self.transcribe_with_openai(audio_path, language)
+        else:
+            raise RuntimeError("No fallback transcription method available (OpenAI client not initialized)")
 
     def transcribe_with_ffmpeg_whisper(self, audio_path: str, language: str = 'ru') -> str:
         """

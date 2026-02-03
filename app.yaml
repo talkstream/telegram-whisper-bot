@@ -41,6 +41,7 @@ env_variables:
   USE_ASYNC_PROCESSING: "true"
   AUDIO_PROCESSING_TOPIC: "audio-processing-jobs"
   LOG_LEVEL: "WARNING"  # Reduce Cloud Logging costs (INFO/DEBUG filtered)
+  WHISPER_BACKEND: "qwen-asr"  # Alibaba Paraformer - 10-20x faster than OpenAI
 
 # Request handling
 handlers:

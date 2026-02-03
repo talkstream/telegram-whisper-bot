@@ -94,15 +94,40 @@ class ServiceContainer:
             self.telegram_bot_token = get_secret("telegram-bot-token")
             self.telegram_api_url = f"https://api.telegram.org/bot{self.telegram_bot_token}"
             self.telegram_file_url = f"https://api.telegram.org/file/bot{self.telegram_bot_token}"
-            
+
+            # Load OpenAI API key for sync processing
+            openai_api_key = get_secret("openai-api-key")
+            from openai import OpenAI
+            openai_client = OpenAI(api_key=openai_api_key)
+
+            # Load Alibaba credentials (optional, for qwen-asr backend)
+            alibaba_api_key = None
+            oss_config = None
+            try:
+                alibaba_api_key = get_secret("alibaba-api-key")
+                oss_config = {
+                    'bucket': get_secret("alibaba-oss-bucket"),
+                    'endpoint': get_secret("alibaba-oss-endpoint"),
+                    'access_key_id': get_secret("alibaba-access-key-id"),
+                    'access_key_secret': get_secret("alibaba-access-key-secret"),
+                }
+                logging.info("Alibaba OSS configuration loaded for sync processing")
+            except Exception as e:
+                logging.info(f"Alibaba credentials not available: {e}")
+
             # Initialize services
             telegram_service.init_telegram_service(self.telegram_bot_token) # Legacy Sync
             self.async_telegram_service = AsyncTelegramService(self.telegram_bot_token) # Async
-            
+
             self.db = firestore.Client(project=self.PROJECT_ID, database=self.DATABASE_ID)
             self.firestore_service = FirestoreService(self.PROJECT_ID, self.DATABASE_ID)
             self.metrics_service = MetricsService(self.db)
-            self.audio_service = AudioService(self.metrics_service)
+            self.audio_service = AudioService(
+                self.metrics_service,
+                openai_client,
+                alibaba_api_key=alibaba_api_key,
+                oss_config=oss_config
+            )
             self.stats_service = StatsService(self.db)
             
             # Initialize Pub/Sub if async processing is enabled
@@ -117,7 +142,8 @@ class ServiceContainer:
                 self.PROJECT_ID,
                 self.AUDIO_PROCESSING_TOPIC,
                 self.db,
-                self.MAX_TELEGRAM_FILE_SIZE
+                self.MAX_TELEGRAM_FILE_SIZE,
+                self.audio_service  # For sync processing
             )
 
             

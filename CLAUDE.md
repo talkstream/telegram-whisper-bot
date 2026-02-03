@@ -68,7 +68,7 @@ Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request m
 - **Remote URL**: https://github.com/talkstream/telegram-whisper-bot.git
 - **Visibility**: Private
 - **Main Branch**: main
-- **Latest Tag**: v2.0.0
+- **Latest Tag**: v2.1.0
 
 ### Git Commands
 ```bash
@@ -98,7 +98,25 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v2.0.0
+### Current Version: v2.1.0
+Speed optimization release with multi-backend ASR support.
+
+**Speed Optimization (v2.1.0):**
+- **Multi-Backend ASR Support**:
+  - Added `WHISPER_BACKEND` environment variable
+  - Options: `openai` (default), `faster-whisper`, `qwen-asr`
+  - Automatic fallback to OpenAI on errors
+- **Alibaba DashScope Integration (qwen-asr)**:
+  - Added DashScope SDK for Paraformer ASR
+  - Requires OSS for local file transcription (URL-based API)
+  - Automatic fallback to OpenAI for local files
+  - Secret: `alibaba-api-key` in GCP Secret Manager
+- **FFmpeg Optimization**:
+  - Changed `FFMPEG_THREADS` from 1 to 4 for 3-4x faster conversion
+- **Dependencies**:
+  - Added `dashscope>=1.20.0` to requirements.txt
+
+### Previous Version: v2.0.0
 Infrastructure cost optimization with GPU Whisper option.
 
 **Infrastructure Optimization (v2.0.0):**
@@ -312,6 +330,7 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.8.2** - Fixed fractional minute display issues - all minutes now show as whole numbers (July 5, 2025)
 - **v1.9.0** - Cost optimization: Smart Cold Start UX, Cloud Logging optimization, warmup interval 10 min (February 4, 2026)
 - **v2.0.0** - Infrastructure optimization: Cloud Logging exclusion filter, GPU Whisper support with faster-whisper (February 4, 2026)
+- **v2.1.0** - Speed optimization: Multi-backend ASR support (openai, faster-whisper, qwen-asr), FFmpeg multithreading (February 4, 2026)
 
 ## Summary of June 25, 2025 Work
 

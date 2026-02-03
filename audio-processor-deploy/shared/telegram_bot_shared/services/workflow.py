@@ -12,9 +12,17 @@ class WorkflowService:
     """
     Service for managing audio processing workflows and batch operations.
     Async version using Aiogram.
+
+    Supports both sync and async processing:
+    - Sync: For short audio (<30 sec) - faster response
+    - Async: For longer audio - via Pub/Sub
     """
-    
-    def __init__(self, firestore_service, telegram_service, publisher, project_id, audio_processing_topic, db, max_file_size):
+
+    # Threshold for sync processing (seconds)
+    SYNC_PROCESSING_THRESHOLD = 30
+
+    def __init__(self, firestore_service, telegram_service, publisher, project_id,
+                 audio_processing_topic, db, max_file_size, audio_service=None):
         self.firestore_service = firestore_service
         self.telegram_service = telegram_service  # Expecting AsyncTelegramService
         self.publisher = publisher
@@ -22,6 +30,7 @@ class WorkflowService:
         self.audio_processing_topic = audio_processing_topic
         self.db = db
         self.max_file_size = max_file_size
+        self.audio_service = audio_service  # For sync processing
 
     async def process_audio_file(self, file_info, user_id, chat_id, user_name, user_data, file_type):
         """
@@ -104,16 +113,185 @@ class WorkflowService:
         msg_text = "🎵 Аудио получено. Обрабатываю..."
         if file_type in ['video', 'video_note']:
             msg_text = "🎥 Видео получено. Обрабатываю..."
-            
+
         status_msg = await self.telegram_service.send_message(chat_id, msg_text)
         status_message_id = status_msg.message_id if status_msg else None
-        
+
+        # Choose between sync and async processing
+        # Sync is faster for short audio (<30 sec) - avoids Pub/Sub latency
+        use_sync = (
+            self.audio_service is not None and
+            duration > 0 and
+            duration <= self.SYNC_PROCESSING_THRESHOLD and
+            file_type in ['audio', 'voice']  # Only for audio, not video
+        )
+
+        if use_sync:
+            logging.info(f"Using SYNC processing for short audio ({duration}s) user {user_id}")
+            return await self.process_audio_sync(
+                file_id, file_size, duration, user_id, chat_id,
+                user_name, user_data, status_message_id
+            )
+
         # Publish to Pub/Sub for async processing
-        job_id = await self.publish_audio_job(user_id, chat_id, file_id, file_size, duration, 
+        job_id = await self.publish_audio_job(user_id, chat_id, file_id, file_size, duration,
                                  user_name, status_message_id)
         logging.info(f"Published job {job_id} for user {user_id} (type: {file_type})")
-        
+
         return "OK", 200
+
+    async def process_audio_sync(self, file_id, file_size, duration, user_id, chat_id,
+                                  user_name, user_data, status_message_id):
+        """
+        Process audio synchronously (for short audio <30 sec).
+        Faster than async because it avoids Pub/Sub latency.
+        """
+        import tempfile
+        import os
+        from google.cloud import firestore as fs
+
+        try:
+            # Update status
+            await self.telegram_service.edit_message_text(
+                chat_id, status_message_id, "⏳ Распознаю речь..."
+            )
+
+            # Download file from Telegram
+            tg_file_path = await self.telegram_service.get_file_path(file_id)
+            if not tg_file_path:
+                raise Exception("Failed to get file path from Telegram")
+
+            # Create temp file for download
+            local_audio_path = os.path.join(tempfile.gettempdir(), f"audio_{file_id}.oga")
+            downloaded_path = await self.telegram_service.download_file(tg_file_path, local_audio_path)
+            if not downloaded_path:
+                raise Exception("Failed to download file from Telegram")
+
+            # Convert to MP3
+            converted_path = await asyncio.to_thread(
+                self.audio_service.convert_to_mp3, downloaded_path
+            )
+
+            # Clean up original file
+            if os.path.exists(downloaded_path):
+                os.remove(downloaded_path)
+
+            if not converted_path:
+                raise Exception("Conversion failed")
+
+            # Get actual duration
+            audio_info = await asyncio.to_thread(
+                self.audio_service.get_audio_info, converted_path
+            )
+            actual_duration = audio_info.get('duration', duration) if audio_info else duration
+
+            # Transcribe
+            transcribed_text = await asyncio.to_thread(
+                self.audio_service.transcribe_audio, converted_path
+            )
+
+            # Clean up converted file
+            if converted_path and os.path.exists(converted_path):
+                os.remove(converted_path)
+
+            if not transcribed_text:
+                raise Exception("Failed to transcribe audio")
+
+            # Check for "Продолжение следует..." (no speech detected)
+            if transcribed_text.strip() == "Продолжение следует...":
+                await self.telegram_service.edit_message_text(
+                    chat_id, status_message_id,
+                    "На записи не обнаружено речи или текст не был распознан."
+                )
+                return "OK", 200
+
+            # Get user settings
+            settings = await asyncio.to_thread(
+                self.firestore_service.get_user_settings, user_id
+            )
+            use_code_tags = settings.get('use_code_tags', False) if settings else False
+            use_yo = settings.get('use_yo', True) if settings else True
+
+            # Format text
+            formatted_text = await asyncio.to_thread(
+                self.audio_service.format_text_with_gemini, transcribed_text, use_code_tags, use_yo
+            )
+
+            # Replace ё with е if use_yo is False
+            if not use_yo:
+                formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
+
+            # Send result
+            MAX_MESSAGE_LENGTH = 4000
+            if len(formatted_text) > MAX_MESSAGE_LENGTH:
+                # Send as file
+                moscow_tz = pytz.timezone("Europe/Moscow")
+                now_moscow = datetime.now(moscow_tz)
+                file_name = now_moscow.strftime("%Y-%m-%d_%H-%M-%S") + ".txt"
+                temp_txt_path = os.path.join(tempfile.gettempdir(), file_name)
+
+                with open(temp_txt_path, 'w', encoding='utf-8') as f:
+                    f.write(formatted_text)
+
+                # Get first sentence for caption
+                import re
+                match = re.search(r'^.*?[.!?](?=\s|$)', formatted_text, re.DOTALL)
+                caption = match.group(0) if match else formatted_text.split('\n')[0]
+                if len(caption) > 1024:
+                    caption = caption[:1021] + "..."
+
+                await self.telegram_service.send_document(chat_id, temp_txt_path, caption=caption)
+                os.remove(temp_txt_path)
+
+                # Delete status message
+                await self.telegram_service.delete_message(chat_id, status_message_id)
+            else:
+                # Send as message
+                if use_code_tags:
+                    escaped_text = formatted_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    await self.telegram_service.edit_message_text(
+                        chat_id, status_message_id, f"<code>{escaped_text}</code>", parse_mode="HTML"
+                    )
+                else:
+                    await self.telegram_service.edit_message_text(
+                        chat_id, status_message_id, formatted_text
+                    )
+
+            # Update user balance
+            billing_duration = int(actual_duration) if actual_duration else duration
+            duration_minutes = max(1, (billing_duration + 59) // 60)
+            await asyncio.to_thread(
+                self.firestore_service.update_user_balance, user_id, -duration_minutes
+            )
+
+            # Log transcription
+            log_data = {
+                'user_id': str(user_id),
+                'editor_name': user_name,
+                'timestamp': fs.SERVER_TIMESTAMP,
+                'file_size': file_size,
+                'duration': duration,
+                'status': 'success',
+                'char_count': len(formatted_text),
+                'sync_processing': True
+            }
+            await asyncio.to_thread(
+                self.db.collection('transcription_logs').document().set, log_data
+            )
+
+            logging.info(f"SYNC processing completed for user {user_id}")
+            return "OK", 200
+
+        except Exception as e:
+            logging.error(f"SYNC processing error: {e}")
+            try:
+                await self.telegram_service.edit_message_text(
+                    chat_id, status_message_id,
+                    "Ошибка обработки. Попробуйте позже."
+                )
+            except:
+                pass
+            return "OK", 200
 
     async def process_batch_files(self, user_id, chat_id, user_name, user_data, batch_state):
         """Process a batch of audio/video files"""
