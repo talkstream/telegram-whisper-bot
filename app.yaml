@@ -51,5 +51,5 @@ handlers:
   script: auto
   secure: always
 
-# Entry point
-entrypoint: gunicorn -b :$PORT main:app --workers 2 --threads 4 --worker-class sync --timeout 120
+# Entry point (uvicorn worker for FastAPI ASGI support)
+entrypoint: gunicorn -b :$PORT main:app -k uvicorn.workers.UvicornWorker --workers 2 --timeout 120
