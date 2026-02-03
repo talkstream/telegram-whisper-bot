@@ -1,5 +1,7 @@
 """
 Audio Service - Centralized audio processing operations for the Telegram Whisper Bot
+
+v2.0.0: Added faster-whisper GPU support as alternative backend
 """
 import os
 import logging
@@ -12,22 +14,44 @@ import google.genai as genai
 
 class AudioService:
     """Service for all audio processing operations"""
-    
+
     # Audio processing constants
     AUDIO_BITRATE = '128k'
     AUDIO_SAMPLE_RATE = '44100'
     AUDIO_CHANNELS = '1'  # Mono for memory efficiency
     FFMPEG_THREADS = '1'  # Single thread for memory efficiency
     FFMPEG_TIMEOUT = 60  # seconds
-    
+
     # File size limits
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
     MAX_DURATION_SECONDS = 3600  # 1 hour
-    
-    def __init__(self, metrics_service=None, openai_client=None):
-        """Initialize AudioService"""
+
+    # Whisper backend options
+    BACKEND_OPENAI = 'openai'
+    BACKEND_FASTER_WHISPER = 'faster-whisper'
+
+    def __init__(self, metrics_service=None, openai_client=None, whisper_backend: str = None):
+        """
+        Initialize AudioService
+
+        Args:
+            metrics_service: Optional metrics tracking service
+            openai_client: OpenAI client instance (for openai backend)
+            whisper_backend: Whisper backend to use ('openai', 'faster-whisper')
+                            If None, auto-detected from environment or defaults to 'openai'
+        """
         self.metrics_service = metrics_service
         self.openai_client = openai_client
+
+        # Determine whisper backend
+        self.whisper_backend = whisper_backend or os.environ.get('WHISPER_BACKEND', self.BACKEND_OPENAI)
+
+        # Faster-whisper model (lazy-loaded)
+        self._faster_whisper_model = None
+        self._faster_whisper_model_name = os.environ.get(
+            'WHISPER_MODEL',
+            'dvislobokov/faster-whisper-large-v3-turbo-russian'
+        )
         
     def validate_audio_file(self, file_size: int, duration: int) -> Tuple[bool, Optional[str]]:
         """
@@ -170,37 +194,39 @@ class AudioService:
             
     def transcribe_audio(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio file using OpenAI Whisper API (primary) or FFmpeg Whisper (fallback).
+        Transcribe audio file using configured backend.
 
         Args:
             audio_path: Path to audio file
+            language: Language code (default: 'ru' for Russian)
 
         Returns:
             Transcribed text
-        """
-        # Try OpenAI Whisper API first if client is available
-        if self.openai_client:
-            try:
-                logging.info("Starting OpenAI Whisper transcription...")
-                return self.transcribe_with_openai(audio_path, language)
-            except Exception as e:
-                logging.error(f"OpenAI Whisper API failed: {e}")
-                # Fallback to local if API fails? 
-                # For now, let's stick to API reliability as requested. 
-                # If API fails, it's better to fail the job than produce bad local result.
-                raise
 
-        # Fallback to local FFmpeg Whisper (only if no OpenAI client)
-        logging.info("OpenAI client not available, falling back to local FFmpeg Whisper...")
+        Backends:
+            - 'openai': OpenAI Whisper API ($0.006/min)
+            - 'faster-whisper': Local GPU inference ($0.24/hour on Spot T4)
+        """
+        logging.info(f"Transcription backend: {self.whisper_backend}")
+
+        # Route to appropriate backend
+        if self.whisper_backend == self.BACKEND_FASTER_WHISPER:
+            return self.transcribe_with_faster_whisper(audio_path, language)
+        elif self.whisper_backend == self.BACKEND_OPENAI and self.openai_client:
+            return self.transcribe_with_openai(audio_path, language)
+        elif self.openai_client:
+            # Default to OpenAI if client is available
+            logging.info("Starting OpenAI Whisper transcription...")
+            return self.transcribe_with_openai(audio_path, language)
+
+        # Fallback to local FFmpeg Whisper (legacy, only if nothing else available)
+        logging.warning("No OpenAI client and faster-whisper not configured, falling back to FFmpeg Whisper...")
         try:
-            # Use FFmpeg 8.0 Whisper (local, fast, free)
             transcription = self.transcribe_with_ffmpeg_whisper(audio_path, language=language)
 
-            # Quality check
             if not transcription or len(transcription) < 5:
                 raise ValueError("Transcription too short or empty")
 
-            # Check for common Whisper errors
             if transcription.strip().lower() in ['продолжение следует...', '[blank_audio]', '...']:
                 raise ValueError("No speech detected in audio")
 
@@ -208,36 +234,95 @@ class AudioService:
 
         except Exception as e:
             logging.error(f"FFmpeg Whisper transcription failed: {str(e)}")
-            # The original code returned None on error.
-            # But the plan suggests raising exceptions in transcribe_with_ffmpeg_whisper and catching them here.
-            # However, the calling code expects None on failure?
-            # Original transcribe_audio returned Optional[str] and returned None on error.
-            # The plan's transcribe_audio raises exception. 
-            # Let's look at process_audio_pipeline. It checks `if not transcribed_text: return None, None`.
-            # So if I raise exception, process_audio_pipeline will crash unless it handles it.
-            # process_audio_pipeline has a try...finally block but catches nothing? No, it has try...finally.
-            # Wait, process_audio_pipeline in original code:
-            # try:
-            #   ...
-            #   transcribed_text = self.transcribe_audio(converted_path)
-            #   if not transcribed_text: return None, None
-            # finally: ...
-            #
-            # It DOES NOT catch exceptions. So `transcribe_audio` MUST NOT raise exception if we want to preserve behavior, 
-            # OR we update `process_audio_pipeline` to handle it.
-            # BUT, the plan says:
-            # "1.3.2. Упростить processing pipeline (строки 250-450)" -> "try: ... transcribe_text ... except Exception as e:"
-            # So the caller (audio_processor.py) will handle exceptions.
-            # process_audio_pipeline is in AudioService though.
-            # Ah, `audio_processor.py` calls `audio_service.transcribe_audio` directly in the plan's Step 1.3.2!
-            # It seems the plan assumes `audio_processor.py` calls `transcribe_audio` directly, NOT `process_audio_pipeline`.
-            # Let's check `audio_processor.py` later.
-            # For now, I will follow the plan's implementation of `transcribe_audio` which raises exceptions, 
-            # but I will also wrap it in try/except in `process_audio_pipeline` if needed, 
-            # OR I'll stick to returning None if I want to be safe with existing code.
-            # The plan's `transcribe_audio` raises. 
-            # I will follow the plan.
             raise
+
+    def transcribe_with_faster_whisper(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Transcribe audio using faster-whisper with GPU acceleration.
+
+        Cost: ~$0.24/hour on GCP Spot T4 (33% cheaper than OpenAI API)
+        Model: dvislobokov/faster-whisper-large-v3-turbo-russian
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code
+
+        Returns:
+            Transcribed text
+        """
+        # Lazy load faster-whisper model
+        if self._faster_whisper_model is None:
+            self._initialize_faster_whisper()
+
+        logging.info(f"Starting faster-whisper transcription: {audio_path}")
+        start_time = time.time()
+
+        try:
+            segments, info = self._faster_whisper_model.transcribe(
+                audio_path,
+                language=language,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,
+                    speech_pad_ms=400
+                )
+            )
+
+            # Collect all segments
+            text_parts = []
+            for segment in segments:
+                text_parts.append(segment.text.strip())
+
+            full_text = " ".join(text_parts)
+
+            duration = time.time() - start_time
+            logging.info(f"Faster-whisper completed in {duration:.2f}s, {len(full_text)} chars")
+
+            # Log API call metrics
+            if self.metrics_service:
+                self.metrics_service.log_api_call('faster-whisper', duration, True)
+
+            # Quality check
+            if not full_text or len(full_text.strip()) < 5:
+                raise ValueError("Transcription too short or empty")
+
+            return full_text
+
+        except Exception as e:
+            duration = time.time() - start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('faster-whisper', duration, False, str(e))
+            logging.error(f"Faster-whisper error: {e}")
+            raise
+
+    def _initialize_faster_whisper(self):
+        """Initialize faster-whisper model (lazy loading)"""
+        try:
+            from faster_whisper import WhisperModel
+            import torch
+
+            # Detect GPU availability
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "float16" if device == "cuda" else "int8"
+
+            logging.info(f"Initializing faster-whisper: model={self._faster_whisper_model_name}, "
+                        f"device={device}, compute_type={compute_type}")
+
+            self._faster_whisper_model = WhisperModel(
+                self._faster_whisper_model_name,
+                device=device,
+                compute_type=compute_type
+            )
+
+            logging.info("Faster-whisper model loaded successfully")
+
+        except ImportError:
+            raise RuntimeError(
+                "faster-whisper not installed. Install with: pip install faster-whisper torch"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize faster-whisper: {e}")
 
     def transcribe_with_ffmpeg_whisper(self, audio_path: str, language: str = 'ru') -> str:
         """

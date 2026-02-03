@@ -68,7 +68,7 @@ Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request m
 - **Remote URL**: https://github.com/talkstream/telegram-whisper-bot.git
 - **Visibility**: Private
 - **Main Branch**: main
-- **Latest Tag**: v1.9.0
+- **Latest Tag**: v2.0.0
 
 ### Git Commands
 ```bash
@@ -98,7 +98,30 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.9.0
+### Current Version: v2.0.0
+Infrastructure cost optimization with GPU Whisper option.
+
+**Infrastructure Optimization (v2.0.0):**
+- **Cloud Logging Optimization**:
+  - Added exclusion filter for INFO/DEBUG logs (severity<WARNING)
+  - Reduced retention from 30 to 7 days
+  - Expected savings: $45/month
+- **GPU Whisper Support (faster-whisper)**:
+  - Added support for local GPU inference as alternative to OpenAI API
+  - GCP Spot T4 GPU: $0.24/hour (33% cheaper than OpenAI API)
+  - Model: `dvislobokov/faster-whisper-large-v3-turbo-russian`
+  - Comparable quality (WER ~10%) with native Russian support
+  - Configurable via `WHISPER_BACKEND` environment variable
+- **New Infrastructure**:
+  - Terraform configuration for GCP Spot T4 VM
+  - Dedicated GPU audio processor with preemption handling
+  - Pub/Sub retry logic for GPU instance interruptions
+- **AudioService Enhancements**:
+  - Multi-backend support: 'openai', 'faster-whisper'
+  - Lazy model loading for GPU inference
+  - Automatic device detection (CUDA/CPU)
+
+**Previous Version: v1.9.0**
 Cost optimization and UX improvements release.
 
 **Optimization Release (v1.9.0):**
@@ -288,6 +311,7 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.8.1** - Fixed Vertex AI deprecation warning - completed SDK migration (July 4, 2025)
 - **v1.8.2** - Fixed fractional minute display issues - all minutes now show as whole numbers (July 5, 2025)
 - **v1.9.0** - Cost optimization: Smart Cold Start UX, Cloud Logging optimization, warmup interval 10 min (February 4, 2026)
+- **v2.0.0** - Infrastructure optimization: Cloud Logging exclusion filter, GPU Whisper support with faster-whisper (February 4, 2026)
 
 ## Summary of June 25, 2025 Work
 
