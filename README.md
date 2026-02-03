@@ -1,89 +1,103 @@
 # Telegram Whisper Bot
 
-🤖 **Professional AI Transcription Bot for Telegram**
+**Professional AI Transcription Bot for Telegram**
 
-A highly optimized, cost-effective, and scalable bot that converts Voice, Audio, and Video messages into perfectly formatted text using local FFmpeg Whisper technology and Google Gemini 3 Flash.
+A production-ready bot that converts Voice, Audio, and Video messages into perfectly formatted Russian text using OpenAI Whisper API and Google Gemini 2.5 Flash.
 
-## 🌟 Key Features
+## Key Features
 
-*   **🎙 Universal Transcription:** Handles Voice Notes, Audio files (MP3/WAV/etc), and **Video** files.
-*   **⚡ High Performance:**
-    *   **Local Processing:** Uses FFmpeg 8.0 with embedded Whisper for fast, free transcription.
-    *   **Smart Caching:** Instant responses for duplicate files.
-    *   **Hot-Start UI:** Immediate feedback (<1s) upon file receipt.
-*   **🧠 AI Formatting:** Uses **Gemini 3 Flash** to add punctuation, fix grammar, and format paragraphs.
-*   **💰 Cost Efficient:**
-    *   **$0 Transcription Costs** (Removed OpenAI API).
-    *   **Serverless:** Scales to zero when not in use.
-*   **🔒 Secure:** Privacy-first design, secure webhook handling.
+- **Universal Transcription:** Handles Voice Notes, Audio files (MP3/WAV/OGG/etc), and Video files (MP4/MOV/etc)
+- **High Performance:**
+  - Async processing via Google Cloud Pub/Sub
+  - Smart Cold Start UX - instant feedback even during service warmup
+  - Sub-second response times with warm instances
+- **AI Formatting:** Uses Gemini 2.5-flash to add punctuation, fix grammar, and format paragraphs
+- **User Settings:**
+  - `/code` - Toggle monospace font output
+  - `/yo` - Toggle letter "ё" usage
+- **Payment System:** Telegram Stars integration with progressive pricing
+- **Admin Tools:** User management, metrics, CSV export, automated reports
 
-## 🛠 Tech Stack
+## Tech Stack
 
-*   **Language:** Python 3.11
-*   **Cloud:** Google Cloud Platform (Cloud Run, Firestore, Pub/Sub, Build)
-*   **Core Libs:** `flask`, `google-cloud-*`, `ffmpeg` (8.0 custom build)
-*   **AI Models:**
-    *   Transcription: `whisper-1` (via FFmpeg/whisper.cpp)
-    *   Formatting: `gemini-3-flash-preview` (Vertex AI)
+- **Language:** Python 3.11
+- **Cloud:** Google Cloud Platform (App Engine, Cloud Functions, Firestore, Pub/Sub)
+- **Framework:** FastAPI + Gunicorn
+- **AI Models:**
+  - Transcription: OpenAI `whisper-1` API ($0.006/min)
+  - Formatting: Google `gemini-2.5-flash` (Vertex AI)
 
-## 🚀 Deployment
+## Architecture
+
+```
+Telegram API
+    │ Webhook
+    ▼
+App Engine (F2, FastAPI)
+  ├─ min_instances: 0 (scale to zero)
+  ├─ Smart Cold Start UX
+  └─ Warmup: every 10 min
+    │ Pub/Sub
+    ▼
+Cloud Function (Audio Processor)
+  ├─ OpenAI Whisper API
+  ├─ Gemini 2.5-flash
+  └─ Memory: 1GB, Timeout: 9 min
+    │
+    ▼
+Firestore + Secret Manager
+```
+
+## Deployment
 
 ### Prerequisites
-*   Google Cloud Project with Billing enabled.
-*   `gcloud` CLI installed.
-*   Telegram Bot Token.
+- Google Cloud Project with billing enabled
+- `gcloud` CLI installed and authenticated
+- Telegram Bot Token from @BotFather
 
-### 1. Setup Environment
+### Deploy
+
 ```bash
-# Set project ID
-export PROJECT_ID="your-project-id"
-gcloud config set project $PROJECT_ID
+# Main bot (App Engine)
+gcloud app deploy --project=editorials-robot
 
-# Enable APIs
-gcloud services enable run.googleapis.com pubsub.googleapis.com firestore.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com aiplatform.googleapis.com
+# Audio processor (Cloud Function)
+cd audio-processor-deploy
+gcloud functions deploy audio-processor \
+  --runtime python311 \
+  --trigger-topic audio-processing-jobs \
+  --memory 1GB \
+  --timeout 540s \
+  --project editorials-robot \
+  --region europe-west1
+
+# Deploy cron jobs
+gcloud app deploy cron.yaml --project=editorials-robot
 ```
 
-### 2. Infrastructure Setup
-Run the setup script to create Pub/Sub topics and secrets:
-```bash
-./setup_pubsub.sh
+## Project Structure
+
+```
+├── main.py                    # FastAPI application entry
+├── app/                       # Application modules
+│   ├── initialization.py      # Service container
+│   ├── routes_fastapi.py      # Route handlers
+│   ├── logic.py               # Business logic
+│   └── notifications.py       # Notification service
+├── handlers/                  # Command handlers
+├── shared/                    # Shared services package
+│   └── telegram_bot_shared/
+│       └── services/
+├── audio-processor-deploy/    # Cloud Function worker
+└── requirements.txt
 ```
 
-### 3. Build & Deploy
-The project uses Cloud Build for a streamlined pipeline.
+## Version History
 
-**Step 1: Build Base Image (One-time)**
-Builds the heavy image containing FFmpeg 8.0 and Whisper models.
-```bash
-gcloud builds submit --config cloudbuild.base.yaml .
-```
+Current version: **v1.9.0**
 
-**Step 2: Deploy Application**
-Deploys both the Bot and the Worker (Audio Processor).
-```bash
-# Deploy Worker
-gcloud builds submit --config cloudbuild.app.yaml .
+See CLAUDE.md for detailed changelog and development notes.
 
-# Deploy Bot
-./deploy_bot_cloudrun.sh
-```
-
-## 📂 Project Structure
-
-*   `main.py` - The Bot Interface (Webhooks).
-*   `audio-processor-deploy/` - The Worker Service (Docker + Logic).
-*   `services/` - Shared business logic (Audio, Telegram, Firestore).
-*   `handlers/` - Bot command handlers.
-
-## 🤝 Contributing
-
-See `GEMINI-evolution-plan.md` for the roadmap.
-1.  Fork the repo.
-2.  Create a feature branch.
-3.  Commit your changes.
-4.  Push to the branch.
-5.  Create a Pull Request.
-
-## 📄 License
+## License
 
 MIT

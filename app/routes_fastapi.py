@@ -3,6 +3,7 @@ from typing import Optional
 import logging
 import json
 import os
+import httpx
 
 from app import logic
 from app.initialization import services
@@ -10,6 +11,54 @@ from telegram_bot_shared.services.utility import UtilityService
 from handlers.admin_commands import ReportCommandHandler
 
 router = APIRouter()
+
+# Cached bot token for quick cold start messages (loaded once)
+_cached_bot_token: Optional[str] = None
+
+
+def _get_cached_bot_token() -> Optional[str]:
+    """Get bot token from cache or environment"""
+    global _cached_bot_token
+    if _cached_bot_token:
+        return _cached_bot_token
+
+    # Try environment variable first (fastest)
+    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    if token:
+        _cached_bot_token = token
+        return token
+
+    # Fallback: quick secret manager access
+    try:
+        from google.cloud import secretmanager
+        project_id = os.environ.get('GCP_PROJECT', 'editorials-robot')
+        sm_client = secretmanager.SecretManagerServiceClient()
+        name = f"projects/{project_id}/secrets/telegram-bot-token/versions/latest"
+        response = sm_client.access_secret_version(request={"name": name})
+        token = response.payload.data.decode("UTF-8").strip()
+        _cached_bot_token = token
+        return token
+    except Exception as e:
+        logging.warning(f"Failed to get bot token for cold start message: {e}")
+        return None
+
+
+async def send_cold_start_notification(chat_id: int):
+    """Send instant notification during cold start via raw HTTP (non-blocking)"""
+    bot_token = _get_cached_bot_token()
+    if not bot_token:
+        return
+
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(url, json={
+                "chat_id": chat_id,
+                "text": "⏳ Сервис просыпается... Ваш запрос будет обработан через несколько секунд."
+            })
+    except Exception as e:
+        # Don't fail if notification fails - just log and continue
+        logging.debug(f"Cold start notification failed: {e}")
 
 @router.get("/_ah/warmup")
 def warmup():
@@ -33,15 +82,37 @@ async def webhook(request: Request, x_telegram_bot_api_secret_token: Optional[st
             logging.warning(f"Unauthorized webhook attempt. Header: {x_telegram_bot_api_secret_token}, Expected: {webhook_secret[:5]}...")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized")
 
-    if not services.initialized:
-        if not services.initialize():
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Service initialization failed")
-    
+    # Parse update once and reuse
     try:
         update = await request.json()
         if not update:
             return "OK"
-        
+    except Exception as e:
+        logging.error(f"Failed to parse webhook JSON: {e}")
+        return "OK"
+
+    # Smart Cold Start: Send instant notification before slow initialization
+    if not services.initialized:
+        try:
+            chat_id = None
+
+            # Extract chat_id from various update types
+            if 'message' in update:
+                chat_id = update['message'].get('chat', {}).get('id')
+            elif 'callback_query' in update:
+                chat_id = update['callback_query'].get('message', {}).get('chat', {}).get('id')
+
+            if chat_id:
+                # Send instant "waking up" message (fire-and-forget)
+                await send_cold_start_notification(chat_id)
+        except Exception as e:
+            logging.debug(f"Could not send cold start notification: {e}")
+
+        # Now do the slow initialization
+        if not services.initialize():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Service initialization failed")
+
+    try:
         logging.info(f"Received update: {json.dumps(update)}")
         
         # Handle different update types

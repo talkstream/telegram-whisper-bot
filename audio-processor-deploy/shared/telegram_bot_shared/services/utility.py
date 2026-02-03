@@ -12,30 +12,38 @@ class UtilityService:
     
     @staticmethod
     def setup_logging(component_name="app"):
-        """Configure structured JSON logging for Google Cloud"""
+        """Configure structured JSON logging for Google Cloud
+
+        Respects LOG_LEVEL environment variable:
+        - DEBUG: All messages (verbose)
+        - INFO: Info and above (default for development)
+        - WARNING: Warnings and above (recommended for production)
+        - ERROR: Errors only
+        """
         import sys
+        import os
         import logging
         from pythonjsonlogger import jsonlogger
 
         class StackdriverJsonFormatter(jsonlogger.JsonFormatter):
             def add_fields(self, log_record, record, message_dict):
                 super(StackdriverJsonFormatter, self).add_fields(log_record, record, message_dict)
-                
+
                 # Map standard python levels to Stackdriver severity
                 if not log_record.get('severity'):
                     log_record['severity'] = record.levelname
-                
+
                 # Add timestamp if not present
                 if not log_record.get('timestamp'):
                     now = datetime.utcnow().replace(tzinfo=pytz.utc)
                     log_record['timestamp'] = now.isoformat()
-                
+
                 # Add component
                 if not log_record.get('component'):
                     log_record['component'] = component_name
 
         logger = logging.getLogger()
-        
+
         # Remove existing handlers
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
@@ -44,11 +52,16 @@ class UtilityService:
         formatter = StackdriverJsonFormatter('%(timestamp)s %(severity)s %(name)s %(message)s %(component)s %(trace_id)s %(user_id)s')
         handler.setFormatter(formatter)
         logger.handlers = [handler]
-        logger.setLevel(logging.INFO)
-        
-        # Quiet down some noisy libraries
+
+        # Set log level from environment variable (default: INFO for backward compatibility)
+        log_level_str = os.environ.get('LOG_LEVEL', 'INFO').upper()
+        log_level = getattr(logging, log_level_str, logging.INFO)
+        logger.setLevel(log_level)
+
+        # Quiet down some noisy libraries (always at WARNING or higher)
         logging.getLogger('google.cloud').setLevel(logging.WARNING)
         logging.getLogger('urllib3').setLevel(logging.WARNING)
+        logging.getLogger('httpx').setLevel(logging.WARNING)
 
     @staticmethod
     def format_duration(seconds):

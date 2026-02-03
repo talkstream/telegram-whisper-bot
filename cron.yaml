@@ -1,14 +1,14 @@
 cron:
 - description: "Warmup App Engine to prevent cold starts"
   url: /_ah/warmup
-  schedule: every 2 minutes
+  schedule: every 10 minutes
   retry_parameters:
     min_backoff_seconds: 2.5
     max_doublings: 5
-    
+
 - description: "Health check ping"
   url: /health
-  schedule: every 2 minutes
+  schedule: every 10 minutes
   retry_parameters:
     job_retry_limit: 1
     

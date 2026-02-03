@@ -3,7 +3,10 @@
 
 set -e  # Exit on error
 
-echo "🚀 Starting deployment..."
+echo "Starting deployment..."
+
+# Sync shared code first
+./sync_shared.sh
 
 # Check if we're in the right directory
 if [ ! -f "app.yaml" ]; then

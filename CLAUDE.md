@@ -68,7 +68,7 @@ Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request m
 - **Remote URL**: https://github.com/talkstream/telegram-whisper-bot.git
 - **Visibility**: Private
 - **Main Branch**: main
-- **Latest Tag**: v1.4.1
+- **Latest Tag**: v1.9.0
 
 ### Git Commands
 ```bash
@@ -98,7 +98,29 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v1.8.2
+### Current Version: v1.9.0
+Cost optimization and UX improvements release.
+
+**Optimization Release (v1.9.0):**
+- **Smart Cold Start UX**:
+  - Instant "Сервис просыпается..." message when instance is cold
+  - Uses lightweight httpx to send notification BEFORE full service initialization
+  - Eliminates 3-5 second silence during cold starts
+  - Cached bot token for minimal latency
+- **Cloud Logging Optimization**:
+  - Added LOG_LEVEL environment variable (default: WARNING in production)
+  - Reduced logging costs by 75-90%
+  - Added httpx to quiet libraries list
+- **Warmup Interval Optimization**:
+  - Changed from every 2 minutes to every 10 minutes
+  - Reduces 576 warmup requests/day
+  - Estimated savings: $15-30/month
+- **Documentation Cleanup**:
+  - Removed outdated GEMINI-*.md files
+  - Updated README.md with accurate architecture info
+  - Fixed incorrect "FFmpeg/whisper.cpp" references (we use OpenAI API)
+
+**Previous Version: v1.8.2**
 Fixed fractional minute display issues - all minutes now display as whole numbers using ceiling function.
 
 **Major Architecture Refactoring (v1.8.0):**
@@ -265,6 +287,7 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.8.0** - Major architecture refactoring for optimized deployment (July 4, 2025)
 - **v1.8.1** - Fixed Vertex AI deprecation warning - completed SDK migration (July 4, 2025)
 - **v1.8.2** - Fixed fractional minute display issues - all minutes now show as whole numbers (July 5, 2025)
+- **v1.9.0** - Cost optimization: Smart Cold Start UX, Cloud Logging optimization, warmup interval 10 min (February 4, 2026)
 
 ## Summary of June 25, 2025 Work
 

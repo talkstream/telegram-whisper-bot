@@ -40,6 +40,7 @@ env_variables:
   GCP_PROJECT: "editorials-robot"
   USE_ASYNC_PROCESSING: "true"
   AUDIO_PROCESSING_TOPIC: "audio-processing-jobs"
+  LOG_LEVEL: "WARNING"  # Reduce Cloud Logging costs (INFO/DEBUG filtered)
 
 # Request handling
 handlers:
