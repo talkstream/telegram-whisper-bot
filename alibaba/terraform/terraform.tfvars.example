@@ -1,0 +1,9 @@
+# Alibaba Cloud Terraform Variables
+# Copy this file to terraform.tfvars and fill in your values
+
+# Region - Frankfurt recommended for EU users
+region = "eu-central-1"
+
+# Project naming
+project_name = "telegram-whisper-bot"
+environment  = "prod"
