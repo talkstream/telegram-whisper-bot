@@ -99,22 +99,35 @@ git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
 ### Current Version: v2.1.0
-Speed optimization release with multi-backend ASR support.
+Speed optimization release with Alibaba Qwen-ASR backend (3-5x faster).
 
 **Speed Optimization (v2.1.0):**
-- **Multi-Backend ASR Support**:
-  - Added `WHISPER_BACKEND` environment variable
-  - Options: `openai` (default), `faster-whisper`, `qwen-asr`
-  - Automatic fallback to OpenAI on errors
-- **Alibaba DashScope Integration (qwen-asr)**:
-  - Added DashScope SDK for Paraformer ASR
-  - Requires OSS for local file transcription (URL-based API)
-  - Automatic fallback to OpenAI for local files
-  - Secret: `alibaba-api-key` in GCP Secret Manager
+- **Alibaba Paraformer ASR Backend**:
+  - `WHISPER_BACKEND=qwen-asr` enables Alibaba DashScope Paraformer
+  - 3-5x faster transcription vs OpenAI Whisper
+  - Integrated Alibaba OSS for file uploads to DashScope API
+  - Automatic fallback to OpenAI Whisper on failure
+- **Synchronous Processing for Short Audio**:
+  - Audio <30 seconds processed directly in App Engine
+  - Eliminates ~1.5 second Pub/Sub latency for short voice messages
 - **FFmpeg Optimization**:
   - Changed `FFMPEG_THREADS` from 1 to 4 for 3-4x faster conversion
+- **New Alibaba Cloud Secrets**:
+  - `alibaba-api-key` - DashScope API key
+  - `alibaba-oss-bucket`, `alibaba-oss-endpoint` - OSS config
+  - `alibaba-access-key-id`, `alibaba-access-key-secret` - RAM credentials
 - **Dependencies**:
-  - Added `dashscope>=1.20.0` to requirements.txt
+  - Added `dashscope>=1.20.0`, `oss2>=2.18.0`, `openai>=1.0.0`
+
+### 🚀 Next Version: v3.0.0 (Planned)
+**Full Alibaba Cloud Migration** - см. [docs/ALIBABA_MIGRATION_PLAN.md](docs/ALIBABA_MIGRATION_PLAN.md)
+
+Planned changes:
+- Migrate from GCP App Engine → Alibaba SAE/Function Compute
+- Migrate from Firestore → Tablestore
+- Migrate from Pub/Sub → MNS (Message Service)
+- Migrate from Secret Manager → KMS
+- Expected savings: ~68% ($25/мес → $8/мес)
 
 ### Previous Version: v2.0.0
 Infrastructure cost optimization with GPU Whisper option.
