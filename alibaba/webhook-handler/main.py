@@ -213,7 +213,7 @@ def handler(event, context):
                     'status': 'ok',
                     'service': 'telegram-whisper-bot',
                     'region': REGION,
-                    'version': '3.1.1-alibaba',
+                    'version': '3.2.0-alibaba',
                     'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                     'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
                 }, ensure_ascii=False)
@@ -410,6 +410,26 @@ def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
                     )
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
+
+        # Check for low balance warning
+        if balance_updated:
+            user = db.get_user(user_id)
+            new_balance = user.get('balance_minutes', 0) if user else 0
+            if 0 < new_balance < 5:
+                tg.send_message(
+                    chat_id,
+                    f"⚠️ <b>Низкий баланс!</b>\n"
+                    f"Осталось: {new_balance} мин.\n"
+                    f"Пополнить: /buy_minutes",
+                    parse_mode='HTML'
+                )
+            elif new_balance <= 0:
+                tg.send_message(
+                    chat_id,
+                    f"❌ <b>Баланс исчерпан!</b>\n"
+                    f"Пополнить: /buy_minutes",
+                    parse_mode='HTML'
+                )
 
         # Log transcription
         db.log_transcription({
@@ -814,11 +834,19 @@ def handle_user_search(text: str, chat_id: int, tg, db, page: int = 1) -> str:
             msg += f" | {trial_emoji}"
         msg += "\n\n"
 
-    # Pagination hint
+    # Pagination buttons
+    reply_markup = None
     if total_pages > 1:
-        msg += f"\n<i>Страница {page}/{total_pages}. Навигация: /user --page N</i>"
+        msg += f"\n<i>Страница {page}/{total_pages}</i>"
+        buttons = []
+        if page > 1:
+            buttons.append({"text": "← Назад", "callback_data": f"users_page_{page - 1}"})
+        if page < total_pages:
+            buttons.append({"text": "Вперёд →", "callback_data": f"users_page_{page + 1}"})
+        if buttons:
+            reply_markup = {"inline_keyboard": [buttons]}
 
-    tg.send_message(chat_id, msg[:4000], parse_mode='HTML')
+    tg.send_message(chat_id, msg[:4000], parse_mode='HTML', reply_markup=reply_markup)
     return 'users_listed'
 
 
@@ -1177,6 +1205,13 @@ def handle_callback_query(callback_query: Dict[str, Any]) -> str:
     # Buy callbacks (also for owner)
     if callback_data.startswith('buy_'):
         return handle_buy_callback(callback_data, user_id, chat_id)
+
+    # Pagination for /user list
+    if callback_data.startswith('users_page_'):
+        page = int(callback_data.replace('users_page_', ''))
+        # Delete old message and send new one with updated page
+        tg.delete_message(chat_id, message_id)
+        return handle_user_search(f'/user --page {page}', chat_id, tg, db, page)
 
     return f'callback_{callback_data}'
 

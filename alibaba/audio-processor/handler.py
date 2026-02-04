@@ -294,6 +294,26 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
+        # Check for low balance warning
+        if balance_updated:
+            user = db.get_user(user_id_int)
+            new_balance = user.get('balance_minutes', 0) if user else 0
+            if 0 < new_balance < 5:
+                tg.send_message(
+                    chat_id,
+                    f"⚠️ <b>Низкий баланс!</b>\n"
+                    f"Осталось: {new_balance} мин.\n"
+                    f"Пополнить: /buy_minutes",
+                    parse_mode='HTML'
+                )
+            elif new_balance <= 0:
+                tg.send_message(
+                    chat_id,
+                    f"❌ <b>Баланс исчерпан!</b>\n"
+                    f"Пополнить: /buy_minutes",
+                    parse_mode='HTML'
+                )
+
         # Log transcription
         db.log_transcription({
             'user_id': user_id,
