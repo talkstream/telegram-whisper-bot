@@ -430,81 +430,66 @@ class AudioService:
 
     def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio using Alibaba Paraformer via DashScope SDK.
+        Transcribe audio using Alibaba Paraformer via DashScope Recognition API.
 
-        For local files, uploads to OSS first, then uses Transcription API.
+        Uses Recognition.call() which supports local files directly (no OSS needed).
 
         Latency: Very fast (non-autoregressive architecture)
         Quality: Excellent for Chinese/CJK, good for Russian
-        Cost: Pay-per-use via Alibaba DashScope + OSS storage
+        Cost: Pay-per-use via Alibaba DashScope
 
         Args:
-            audio_path: Path to audio file or URL
+            audio_path: Path to audio file
             language: Language code (default: 'ru' for Russian)
 
         Returns:
             Transcribed text
-
-        Raises:
-            RuntimeError: If API key not configured or API fails
-            ValueError: If transcription is empty
         """
-        if not self.alibaba_api_key:
-            logging.warning("Alibaba API key not configured, falling back to OpenAI")
-            return self._transcribe_with_fallback(audio_path, language)
+        api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
+        if not api_key:
+            logging.warning("DASHSCOPE_API_KEY not configured")
+            raise RuntimeError("DASHSCOPE_API_KEY not configured")
 
         logging.info(f"Starting Alibaba ASR transcription: {audio_path}")
         start_time = time.time()
-        oss_url = None  # Track for cleanup
 
         try:
             import dashscope
-            from dashscope.audio.asr import Transcription
+            from dashscope.audio.asr import Recognition
 
             # Set API key
-            dashscope.api_key = self.alibaba_api_key
+            dashscope.api_key = api_key
 
-            # Determine file URL
-            if audio_path.startswith(('http://', 'https://', 'oss://')):
-                file_url = audio_path
-            else:
-                # Upload local file to OSS
-                oss_url = self._upload_to_oss(audio_path)
-                if not oss_url:
-                    logging.warning("OSS upload failed, falling back to OpenAI")
-                    return self._transcribe_with_fallback(audio_path, language)
-                file_url = oss_url
-
-            # Use Transcription API
-            logging.info(f"Calling DashScope Transcription with: {file_url}")
-            task = Transcription.async_call(
-                model='paraformer-v1',  # Multilingual model
-                file_urls=[file_url],
-                disfluency_removal_enabled=True
+            # Use Recognition API with local file (synchronous, no OSS needed)
+            logging.info("Calling DashScope Recognition API...")
+            recognition = Recognition(
+                model='paraformer-realtime-v2',
+                format='mp3',
+                sample_rate=44100,
+                callback=None
             )
 
-            # Wait for completion
-            result = Transcription.wait(task=task.output.task_id)
+            # Read file and transcribe
+            with open(audio_path, 'rb') as f:
+                audio_data = f.read()
+
+            result = recognition.call(audio_data)
 
             # Extract text from result
             full_text = ""
-            if result.output and result.output.results:
-                for res in result.output.results:
-                    if hasattr(res, 'transcription_url') and res.transcription_url:
-                        import urllib.request
-                        import json
-                        with urllib.request.urlopen(res.transcription_url) as response:
-                            data = json.loads(response.read().decode('utf-8'))
-                            if 'transcripts' in data:
-                                for t in data['transcripts']:
-                                    if 'text' in t:
-                                        full_text += t['text'] + " "
+            if result.status_code == 200:
+                if hasattr(result, 'output') and result.output:
+                    if hasattr(result.output, 'sentence') and result.output.sentence:
+                        full_text = result.output.sentence.get('text', '')
+                    elif hasattr(result.output, 'text'):
+                        full_text = result.output.text
+                    elif isinstance(result.output, dict):
+                        full_text = result.output.get('text', '') or result.output.get('sentence', {}).get('text', '')
+            else:
+                logging.error(f"DashScope Recognition failed: {result.code} - {result.message}")
+                raise RuntimeError(f"DashScope error: {result.message}")
 
             full_text = full_text.strip()
-
-            # Cleanup OSS file
-            if oss_url:
-                self._delete_from_oss(oss_url)
 
             duration = time.time() - start_time
             logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
@@ -514,21 +499,21 @@ class AudioService:
 
             # Quality check
             if not full_text or len(full_text.strip()) < 5:
-                logging.warning("Alibaba ASR returned empty result, falling back to OpenAI")
-                return self._transcribe_with_fallback(audio_path, language)
+                logging.warning("Alibaba ASR returned empty result")
+                raise ValueError("Transcription empty")
 
             return full_text
 
-        except ImportError:
-            logging.warning("dashscope not installed, falling back to OpenAI")
-            return self._transcribe_with_fallback(audio_path, language)
+        except ImportError as e:
+            logging.error(f"dashscope not installed: {e}")
+            raise RuntimeError("dashscope package not installed")
 
         except Exception as e:
             duration = time.time() - start_time
             if self.metrics_service:
                 self.metrics_service.log_api_call('alibaba-asr', duration, False, str(e))
-            logging.error(f"Alibaba ASR error: {e}, falling back to OpenAI")
-            return self._transcribe_with_fallback(audio_path, language)
+            logging.error(f"Alibaba ASR error: {e}")
+            raise RuntimeError(f"Transcription failed: {e}")
 
     def _transcribe_with_fallback(self, audio_path: str, language: str = 'ru') -> str:
         """
