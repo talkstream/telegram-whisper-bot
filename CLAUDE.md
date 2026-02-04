@@ -93,7 +93,7 @@ Note: Inline keyboard buttons have been re-enabled in v1.3.0 for trial request m
 - **Remote URL**: https://github.com/talkstream/telegram-whisper-bot.git
 - **Visibility**: Private
 - **Main Branch**: main
-- **Latest Tag**: v2.1.0
+- **Latest Tag**: v3.0.0
 
 ### Git Commands
 ```bash
@@ -369,6 +369,7 @@ Improved error messages - removed alarming emoji and made messages more user-fri
 - **v1.9.0** - Cost optimization: Smart Cold Start UX, Cloud Logging optimization, warmup interval 10 min (February 4, 2026)
 - **v2.0.0** - Infrastructure optimization: Cloud Logging exclusion filter, GPU Whisper support with faster-whisper (February 4, 2026)
 - **v2.1.0** - Speed optimization: Multi-backend ASR support (openai, faster-whisper, qwen-asr), FFmpeg multithreading (February 4, 2026)
+- **v3.0.0** - Complete Alibaba Cloud migration: Qwen3-ASR-Flash via REST API, Function Compute 3.0, Tablestore, MNS (February 4, 2026)
 
 ## Summary of June 25, 2025 Work
 
