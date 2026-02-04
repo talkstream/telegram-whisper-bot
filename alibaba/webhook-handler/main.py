@@ -283,24 +283,29 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         audio_service = AudioService(whisper_backend='qwen-asr')
 
         # Convert and transcribe
-        converted_path = audio_service.convert_audio(local_path)
+        converted_path = audio_service.convert_to_mp3(local_path)
+        if not converted_path:
+            tg.send_message(chat_id, "Не удалось обработать аудио. Попробуйте другой формат.")
+            return 'conversion_failed'
+
         text = audio_service.transcribe_audio(converted_path)
 
-        if not text:
+        if not text or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
             return 'no_speech'
 
-        # Use transcribed text directly (Gemini formatting disabled on Alibaba Cloud)
-        formatted_text = text
-
-        # Get user settings
+        # Get user settings BEFORE formatting
         settings = db.get_user_settings(user_id) or {}
         use_code_tags = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
-        # Apply settings
-        if not use_yo:
-            formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
+        # Format text with Qwen LLM (with Gemini fallback)
+        if len(text) > 50:
+            formatted_text = audio_service.format_text_with_qwen(text, use_code_tags=use_code_tags, use_yo=use_yo)
+        else:
+            formatted_text = text
+            if not use_yo:
+                formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
 
         # Send result
         if use_code_tags:
