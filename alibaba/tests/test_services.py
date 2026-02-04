@@ -61,6 +61,119 @@ class TestTablestore:
         assert settings is None or isinstance(settings, dict)
 
 
+# ============== Balance Update Tests ==============
+class TestBalanceUpdate:
+    """Test balance update functionality with optimistic locking"""
+
+    TEST_USER_ID = 999999998  # Dedicated test user
+
+    @pytest.fixture
+    def tablestore_service(self):
+        """Create Tablestore service instance"""
+        if not ALIBABA_ACCESS_KEY or not ALIBABA_SECRET_KEY:
+            pytest.skip("Alibaba credentials not configured")
+
+        from services.tablestore_service import TablestoreService
+        return TablestoreService(
+            endpoint=TABLESTORE_ENDPOINT,
+            access_key_id=ALIBABA_ACCESS_KEY,
+            access_key_secret=ALIBABA_SECRET_KEY,
+            instance_name=TABLESTORE_INSTANCE
+        )
+
+    @pytest.fixture
+    def test_user(self, tablestore_service):
+        """Create or ensure test user exists with known balance"""
+        user = tablestore_service.get_user(self.TEST_USER_ID)
+        if not user:
+            # Create test user - balance must be integer for Tablestore
+            tablestore_service.create_user(self.TEST_USER_ID, {
+                'balance_minutes': 100,  # Must be int
+                'trial_status': 'test',
+                'first_name': 'TestUser'
+            })
+        else:
+            # Reset balance to known value
+            tablestore_service.update_user(self.TEST_USER_ID, {'balance_minutes': 100})
+        return self.TEST_USER_ID
+
+    def test_balance_deduction(self, tablestore_service, test_user):
+        """Test that balance is correctly deducted"""
+        # Get initial balance
+        user_before = tablestore_service.get_user(test_user)
+        initial_balance = float(user_before.get('balance_minutes', 0))
+
+        # Deduct 5 minutes
+        result = tablestore_service.update_user_balance(test_user, -5)
+        assert result is True, "Balance update should return True"
+
+        # Verify balance was deducted
+        user_after = tablestore_service.get_user(test_user)
+        new_balance = float(user_after.get('balance_minutes', 0))
+        assert new_balance == initial_balance - 5, f"Balance should be {initial_balance - 5}, got {new_balance}"
+
+    def test_balance_addition(self, tablestore_service, test_user):
+        """Test that balance can be added"""
+        user_before = tablestore_service.get_user(test_user)
+        initial_balance = float(user_before.get('balance_minutes', 0))
+
+        # Add 10 minutes
+        result = tablestore_service.update_user_balance(test_user, 10)
+        assert result is True
+
+        user_after = tablestore_service.get_user(test_user)
+        new_balance = float(user_after.get('balance_minutes', 0))
+        assert new_balance == initial_balance + 10
+
+    def test_balance_cannot_go_negative(self, tablestore_service, test_user):
+        """Test that balance cannot go below zero"""
+        # Set balance to 5 (must be int)
+        tablestore_service.update_user(test_user, {'balance_minutes': 5})
+
+        # Try to deduct 10
+        result = tablestore_service.update_user_balance(test_user, -10)
+        assert result is True
+
+        # Balance should be 0, not -5
+        user = tablestore_service.get_user(test_user)
+        balance = float(user.get('balance_minutes', 0))
+        assert balance == 0, f"Balance should be 0, got {balance}"
+
+    def test_balance_update_returns_false_for_nonexistent_user(self, tablestore_service):
+        """Test that updating nonexistent user returns False"""
+        result = tablestore_service.update_user_balance(777777777, -1)
+        assert result is False
+
+    def test_balance_type_consistency(self, tablestore_service, test_user):
+        """Test that balance type remains consistent after updates"""
+        # Set initial balance as integer
+        tablestore_service.update_user(test_user, {'balance_minutes': 50})
+
+        # Update should work even if stored as int
+        result = tablestore_service.update_user_balance(test_user, -3)
+        assert result is True, "Update should succeed with integer balance"
+
+        user = tablestore_service.get_user(test_user)
+        balance = user.get('balance_minutes')
+        # Balance should now be float
+        assert balance == 47.0 or balance == 47
+
+    def test_multiple_sequential_updates(self, tablestore_service, test_user):
+        """Test multiple sequential balance updates"""
+        # Reset to known value (must be int)
+        tablestore_service.update_user(test_user, {'balance_minutes': 100})
+
+        # Perform 5 sequential deductions
+        for i in range(5):
+            result = tablestore_service.update_user_balance(test_user, -10)
+            assert result is True, f"Update {i+1} should succeed"
+
+        # Verify final balance
+        user = tablestore_service.get_user(test_user)
+        balance = int(user.get('balance_minutes', 0))
+        assert balance == 50, f"Balance should be 50 after 5x10 deductions, got {balance}"
+
+
 # ============== DashScope ASR Tests ==============
 class TestDashScopeASR:
     """Test DashScope ASR (Qwen) functionality"""

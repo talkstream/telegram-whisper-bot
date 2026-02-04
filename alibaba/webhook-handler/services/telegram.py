@@ -162,6 +162,24 @@ class TelegramService:
             logger.error(f"Error downloading file: {e}")
             return None
             
+    def answer_callback_query(self, callback_query_id: str, text: str = "", show_alert: bool = False) -> bool:
+        """Answer a callback query (acknowledge button press)"""
+        url = f"{self.api_url}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+
+        if text:
+            payload["text"] = text
+        if show_alert:
+            payload["show_alert"] = show_alert
+
+        try:
+            response = self.session.post(url, json=payload)
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error answering callback query: {e}")
+            return False
+
     def answer_pre_checkout_query(self, query_id: str, ok: bool = True, error_message: str = "") -> bool:
         """Answer a pre-checkout query"""
         url = f"{self.api_url}/answerPreCheckoutQuery"

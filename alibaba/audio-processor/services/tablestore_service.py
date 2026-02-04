@@ -32,7 +32,7 @@ class TablestoreService:
 
     def __init__(self, endpoint: str, access_key_id: str,
                  access_key_secret: str, instance_name: str,
-                 security_token: str = None):
+                 security_token: Optional[str] = None):
         """Initialize Tablestore client."""
         try:
             from tablestore import OTSClient
@@ -111,16 +111,18 @@ class TablestoreService:
         try:
             primary_key = [('user_id', str(user_id))]
 
-            # Prepare update columns
-            update_columns = {'PUT': []}
+            # Prepare update columns - use lowercase 'put' as per SDK docs
+            update_columns = {'put': []}
             for key, value in updates.items():
-                update_columns['PUT'].append((key, self._serialize_value(value)))
+                update_columns['put'].append((key, self._serialize_value(value)))
 
             # Add last_activity timestamp
-            update_columns['PUT'].append(('last_activity', datetime.now(pytz.utc).isoformat()))
+            update_columns['put'].append(('last_activity', datetime.now(pytz.utc).isoformat()))
 
+            # Create Row object with primary key and update columns
+            row = Row(primary_key, update_columns)
             condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
-            self.client.update_row('users', primary_key, update_columns, condition)
+            self.client.update_row('users', row, condition)
             logger.info(f"Updated user {user_id}")
             return True
 
@@ -128,27 +130,91 @@ class TablestoreService:
             logger.error(f"Error updating user {user_id}: {e}")
             return False
 
-    def update_user_balance(self, user_id: int, delta: int) -> bool:
+    def update_user_balance(self, user_id: int, delta: float, max_retries: int = 3) -> bool:
         """
-        Atomically update user balance.
-        Note: Tablestore doesn't support atomic increment like Firestore,
-        so we use optimistic locking pattern.
+        Update user balance with optimistic locking to prevent race conditions.
+        Uses retry mechanism if concurrent update is detected.
+
+        Args:
+            user_id: The user ID
+            delta: Amount to add (positive) or subtract (negative)
+            max_retries: Maximum retry attempts on conflict
+
+        Returns:
+            True if balance was updated successfully, False otherwise
         """
-        try:
-            # Get current balance
-            user = self.get_user(user_id)
-            if not user:
-                logger.error(f"User {user_id} not found for balance update")
-                return False
+        from tablestore import Row, Condition, RowExistenceExpectation, ComparatorType, SingleColumnCondition
 
-            current_balance = user.get('balance_minutes', 0)
-            new_balance = max(0, current_balance + delta)
+        raw_balance = None  # Initialize for error logging
 
-            return self.update_user(user_id, {'balance_minutes': new_balance})
+        for attempt in range(max_retries):
+            try:
+                # Get current balance
+                user = self.get_user(user_id)
+                if not user:
+                    logger.error(f"User {user_id} not found for balance update")
+                    return False
 
-        except Exception as e:
-            logger.error(f"Error updating balance for user {user_id}: {e}")
-            return False
+                # Get raw balance value for condition comparison (preserve original type)
+                raw_balance = user.get('balance_minutes', 0)
+
+                # Convert to float for arithmetic, but keep raw value for condition
+                if isinstance(raw_balance, str):
+                    current_balance = float(raw_balance)
+                elif isinstance(raw_balance, (int, float)):
+                    current_balance = float(raw_balance)
+                else:
+                    current_balance = 0.0
+                    raw_balance = 0  # Default for condition
+
+                # Keep balance as integer (Tablestore column type)
+                new_balance = int(max(0, current_balance + delta))
+
+                # Update with conditional check on current balance value
+                primary_key = [('user_id', str(user_id))]
+                # Use lowercase 'put' as per SDK docs
+                update_columns = {
+                    'put': [
+                        ('balance_minutes', new_balance),  # Must be int for Tablestore
+                        ('last_activity', datetime.now(pytz.utc).isoformat())
+                    ]
+                }
+
+                # Create Row object with primary key and update columns
+                row = Row(primary_key, update_columns)
+
+                # Create condition: only update if balance_minutes equals current value
+                # IMPORTANT: Use raw_balance to match the exact type stored in Tablestore
+                condition = Condition(
+                    RowExistenceExpectation.EXPECT_EXIST,
+                    SingleColumnCondition(
+                        'balance_minutes',
+                        raw_balance,  # Use original value/type for comparison
+                        ComparatorType.EQUAL,
+                        pass_if_missing=True  # Pass if column doesn't exist (new user)
+                    )
+                )
+
+                self.client.update_row('users', row, condition)
+                logger.info(f"Updated balance for user {user_id}: {current_balance} -> {new_balance} (delta: {delta:+.0f})")
+                return True
+
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a condition failure (concurrent update or type mismatch)
+                if 'OTSConditionCheckFail' in error_str or 'Condition check failed' in error_str:
+                    logger.warning(f"Balance update conflict for user {user_id}, attempt {attempt + 1}/{max_retries}, raw_balance={raw_balance!r}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                        continue  # Retry
+                    logger.error(f"Balance update failed after {max_retries} retries for user {user_id}")
+                    return False
+                else:
+                    logger.error(f"Error updating balance for user {user_id}: {e}", exc_info=True)
+                    return False
+
+        return False
 
     def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user settings."""

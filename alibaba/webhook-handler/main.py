@@ -1,13 +1,18 @@
 """
 Telegram Webhook Handler for Alibaba Cloud Function Compute
 Full implementation with Tablestore, MNS, and Qwen-ASR
+v3.1.0 - Complete admin commands and callback handlers
 """
 import json
 import logging
 import os
 import sys
-import asyncio
-from typing import Any, Dict, Optional
+import math
+import csv
+import tempfile
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional, List
+import pytz
 
 # Add shared services to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'telegram_bot_shared'))
@@ -48,6 +53,52 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 # Sync processing threshold (seconds) - increased to 60s for less MNS latency (v3.0.1)
 SYNC_PROCESSING_THRESHOLD = 60
 
+# Owner ID for admin commands
+OWNER_ID = int(os.environ.get('OWNER_ID', '0'))
+
+# Trial minutes
+TRIAL_MINUTES = 15
+
+# Product packages for purchase
+PRODUCT_PACKAGES = {
+    "micro_10": {
+        "title": "Промо-пакет 'Микро'",
+        "description": "10 минут транскрибации",
+        "payload": "buy_micro_10",
+        "stars_amount": 10,
+        "minutes": 10,
+        "purchase_limit": 3
+    },
+    "start_50": {
+        "title": "Пакет 'Старт'",
+        "description": "50 минут транскрибации",
+        "payload": "buy_start_50",
+        "stars_amount": 75,
+        "minutes": 50
+    },
+    "standard_200": {
+        "title": "Пакет 'Стандарт'",
+        "description": "200 минут транскрибации",
+        "payload": "buy_standard_200",
+        "stars_amount": 270,
+        "minutes": 200
+    },
+    "profi_1000": {
+        "title": "Пакет 'Профи'",
+        "description": "1000 минут транскрибации",
+        "payload": "buy_profi_1000",
+        "stars_amount": 1150,
+        "minutes": 1000
+    },
+    "max_8888": {
+        "title": "Пакет 'MAX'",
+        "description": "8888 минут транскрибации",
+        "payload": "buy_max_8888",
+        "stars_amount": 8800,
+        "minutes": 8888
+    }
+}
+
 # Global service instances (lazy initialization)
 _db_service = None
 _telegram_service = None
@@ -58,12 +109,22 @@ def get_db_service(access_key_id=None, access_key_secret=None, security_token=No
     global _db_service
     if _db_service is None:
         from services.tablestore_service import TablestoreService
+
+        # Read env vars at runtime (not at module import time)
+        ak_id = access_key_id or os.environ.get('ALIBABA_ACCESS_KEY') or ALIBABA_ACCESS_KEY
+        ak_secret = access_key_secret or os.environ.get('ALIBABA_SECRET_KEY') or ALIBABA_SECRET_KEY
+        sec_token = security_token or os.environ.get('ALIBABA_CLOUD_SECURITY_TOKEN') or ALIBABA_SECURITY_TOKEN
+        ts_endpoint = os.environ.get('TABLESTORE_ENDPOINT') or TABLESTORE_ENDPOINT
+        ts_instance = os.environ.get('TABLESTORE_INSTANCE') or TABLESTORE_INSTANCE
+
+        logger.info(f"Creating TablestoreService: endpoint={ts_endpoint}, instance={ts_instance}, ak_len={len(ak_id) if ak_id else 0}")
+
         _db_service = TablestoreService(
-            endpoint=TABLESTORE_ENDPOINT,
-            access_key_id=access_key_id or ALIBABA_ACCESS_KEY,
-            access_key_secret=access_key_secret or ALIBABA_SECRET_KEY,
-            security_token=security_token or ALIBABA_SECURITY_TOKEN,
-            instance_name=TABLESTORE_INSTANCE
+            endpoint=ts_endpoint,
+            access_key_id=ak_id,
+            access_key_secret=ak_secret,
+            security_token=sec_token,
+            instance_name=ts_instance
         )
     return _db_service
 
@@ -77,63 +138,86 @@ def get_telegram_service():
     return _telegram_service
 
 
-def create_http_response(status_code: int, body: Dict[str, Any]) -> str:
+def create_http_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Create HTTP response for FC HTTP Trigger.
-    For anonymous HTTP triggers, return JSON string directly.
+    Create HTTP response for FC3 HTTP Trigger.
+    Returns dict with statusCode, headers, and body.
     """
-    # For FC HTTP triggers, return just the JSON body as string
-    return json.dumps(body, ensure_ascii=False)
+    return {
+        'statusCode': status_code,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps(body, ensure_ascii=False)
+    }
 
 
-def handler(environ, context):
+def handler(event, context):
     """
-    FC HTTP trigger handler for Telegram webhook.
-    Receives WSGI environ dict for HTTP triggers.
+    FC3 HTTP trigger handler for Telegram webhook.
+    Uses event-based format (not WSGI).
+
+    Args:
+        event: Can be bytes (raw body) or dict (parsed JSON)
+        context: FC context object with credentials
     """
     try:
-        # For FC HTTP trigger, environ is a WSGI environment dict
-        # Extract credentials from environ (FC provides STS credentials)
         global ALIBABA_ACCESS_KEY, ALIBABA_SECRET_KEY, ALIBABA_SECURITY_TOKEN, _db_service, _telegram_service
 
         # Always reset services to ensure fresh credentials and tokens
         _db_service = None
         _telegram_service = None
 
-        if isinstance(environ, dict):
-            new_access_key = environ.get('accessKeyID') or environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
-            if new_access_key:
-                ALIBABA_ACCESS_KEY = new_access_key
-                ALIBABA_SECRET_KEY = environ.get('accessKeySecret') or environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
-                ALIBABA_SECURITY_TOKEN = environ.get('securityToken') or environ.get('ALIBABA_CLOUD_SECURITY_TOKEN')
+        # Extract credentials from context if available
+        if hasattr(context, 'credentials'):
+            creds = context.credentials
+            ALIBABA_ACCESS_KEY = getattr(creds, 'access_key_id', ALIBABA_ACCESS_KEY)
+            ALIBABA_SECRET_KEY = getattr(creds, 'access_key_secret', ALIBABA_SECRET_KEY)
+            ALIBABA_SECURITY_TOKEN = getattr(creds, 'security_token', ALIBABA_SECURITY_TOKEN)
 
-        # Get HTTP method
-        http_method = environ.get('REQUEST_METHOD', 'POST')
+        # Parse event - can be bytes or dict
+        request_body = {}
+        http_method = 'POST'
+
+        if isinstance(event, bytes):
+            # Raw bytes - try to parse as JSON
+            try:
+                event_str = event.decode('utf-8')
+                event = json.loads(event_str)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logger.warning(f"Could not parse event bytes")
+                event = {}
+
+        if isinstance(event, dict):
+            # FC3 HTTP trigger event format
+            http_method = event.get('requestContext', {}).get('http', {}).get('method', 'POST')
+
+            # Get body from event
+            body = event.get('body', '')
+            if event.get('isBase64Encoded', False):
+                import base64
+                body = base64.b64decode(body).decode('utf-8')
+
+            if body:
+                try:
+                    request_body = json.loads(body) if isinstance(body, str) else body
+                except json.JSONDecodeError:
+                    pass
+
         logger.info(f"HTTP method: {http_method}")
 
         # Handle health check (GET request)
         if http_method.upper() == 'GET':
-            return create_http_response(200, {
-                'status': 'ok',
-                'service': 'telegram-whisper-bot',
-                'region': REGION,
-                'version': '3.0.1-alibaba',
-                'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
-                'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
-            })
-
-        # Read body from wsgi.input
-        request_body = {}
-        wsgi_input = environ.get('wsgi.input')
-        if wsgi_input:
-            try:
-                content_length = int(environ.get('CONTENT_LENGTH', 0))
-                if content_length > 0:
-                    body_bytes = wsgi_input.read(content_length)
-                    if body_bytes:
-                        request_body = json.loads(body_bytes.decode('utf-8'))
-            except Exception as e:
-                logger.warning(f"Failed to read body: {e}")
+            return {
+                'statusCode': 200,
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({
+                    'status': 'ok',
+                    'service': 'telegram-whisper-bot',
+                    'region': REGION,
+                    'version': '3.1.1-alibaba',
+                    'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
+                    'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
+                }, ensure_ascii=False)
+            }
 
         logger.info(f"Processing update: {str(request_body)[:200]}")
 
@@ -203,10 +287,8 @@ def handle_message(message: Dict[str, Any]) -> str:
 def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     """Handle audio/voice/video message."""
     chat_id = message.get('chat', {}).get('id')
-    user_id = message.get('from', {}).get('id')
 
     tg = get_telegram_service()
-    db = get_db_service()
 
     # Get file info
     if 'voice' in message:
@@ -253,12 +335,9 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         return queue_audio_async(message, user, file_id, file_type, duration)
 
 
-def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
-                       file_id: str, file_type: str, duration: int) -> str:
+def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
+                       file_id: str, _file_type: str, duration: int) -> str:
     """Process audio synchronously (for short files)."""
-    import tempfile
-    import uuid
-
     chat_id = message.get('chat', {}).get('id')
     user_id = message.get('from', {}).get('id')
 
@@ -315,7 +394,22 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
 
         # Update balance
         duration_minutes = (duration + 59) // 60
-        db.update_user_balance(user_id, -duration_minutes)
+        balance_updated = db.update_user_balance(user_id, -duration_minutes)
+        if not balance_updated:
+            logger.error(f"CRITICAL: Failed to deduct {duration_minutes} min from user {user_id} balance!")
+            # Still continue - transcription was successful, but notify admin
+            try:
+                owner_id = int(os.environ.get('OWNER_ID', 0))
+                if owner_id:
+                    tg.send_message(
+                        owner_id,
+                        f"⚠️ Ошибка списания баланса!\n"
+                        f"User: {user_id}\n"
+                        f"Минут: {duration_minutes}\n"
+                        f"Требуется ручная корректировка."
+                    )
+            except Exception as notify_err:
+                logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
         # Log transcription
         db.log_transcription({
@@ -325,13 +419,13 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             'status': 'completed'
         })
 
-        # Cleanup
+        # Cleanup temp files
         try:
             os.remove(local_path)
             if converted_path != local_path:
                 os.remove(converted_path)
-        except:
-            pass
+        except OSError as cleanup_err:
+            logger.debug(f"Cleanup temp files failed: {cleanup_err}")
 
         return 'transcribed_sync'
 
@@ -371,13 +465,16 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     # Publish to MNS queue
     try:
         from services.mns_service import MNSPublisher
+        import json as json_module
+        # Validate MNS config
+        if not MNS_ENDPOINT or not ALIBABA_ACCESS_KEY or not ALIBABA_SECRET_KEY:
+            raise ValueError("MNS configuration incomplete")
         publisher = MNSPublisher(
             endpoint=MNS_ENDPOINT,
             access_key_id=ALIBABA_ACCESS_KEY,
-            access_key_secret=ALIBABA_SECRET_KEY,
-            queue_name=AUDIO_JOBS_QUEUE
+            access_key_secret=ALIBABA_SECRET_KEY
         )
-        publisher.publish(job_data)
+        publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
         logger.info(f"Published job {job_id} to MNS queue")
     except Exception as e:
         logger.error(f"Failed to publish to MNS: {e}")
@@ -479,25 +576,690 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         tg.send_message(chat_id, f"Использование буквы ё: {status}")
         return 'yo_toggle'
 
+    elif command == '/buy_minutes':
+        return handle_buy_minutes(chat_id, user_id, tg)
+
+    # ==================== ADMIN COMMANDS ====================
+
+    elif command == '/review_trials':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_review_trials(chat_id, tg, db)
+
+    elif command == '/credit':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_credit_command(text, chat_id, tg, db)
+
+    elif command == '/user':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_user_search(text, chat_id, tg, db)
+
+    elif command == '/stat':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_stat_command(chat_id, tg, db)
+
+    elif command == '/cost':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_cost_command(chat_id, tg, db)
+
+    elif command == '/status':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_status_command(chat_id, tg, db)
+
+    elif command == '/flush':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_flush_command(chat_id, tg, db)
+
+    elif command == '/export':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_export_command(text, chat_id, tg, db)
+
+    elif command == '/report':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_report_command(text, chat_id, tg, db)
+
+    elif command == '/metrics':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_metrics_command(text, chat_id, tg, db)
+
+    elif command == '/batch':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_batch_command(text, chat_id, tg, db)
+
     else:
         tg.send_message(chat_id, "Неизвестная команда. Используйте /help для справки.")
         return 'unknown_command'
+
+
+# ==================== BUY COMMANDS ====================
+
+def handle_buy_minutes(chat_id: int, _user_id: int, tg) -> str:
+    """Show available packages with inline buttons."""
+    msg = "💰 <b>Выберите пакет минут:</b>\n\n"
+
+    keyboard = {"inline_keyboard": []}
+
+    for _pkg_id, pkg in PRODUCT_PACKAGES.items():
+        msg += f"<b>{pkg['title']}</b>\n"
+        msg += f"  ⏱ {pkg['minutes']} мин | ⭐ {pkg['stars_amount']} звёзд\n\n"
+
+        keyboard["inline_keyboard"].append([
+            {"text": f"{pkg['title']} - {pkg['stars_amount']}⭐", "callback_data": pkg['payload']}
+        ])
+
+    tg.send_message(chat_id, msg, parse_mode='HTML', reply_markup=keyboard)
+    return 'buy_minutes_shown'
+
+
+# ==================== ADMIN COMMAND HANDLERS ====================
+
+def handle_review_trials(chat_id: int, tg, db) -> str:
+    """Handle /review_trials command."""
+    requests = db.get_pending_trial_requests()
+
+    if not requests:
+        tg.send_message(chat_id, "✅ Нет ожидающих заявок на пробный доступ.")
+        return 'no_pending_trials'
+
+    for req in requests:
+        target_user_id = req.get('user_id', 'unknown')
+        user_name = req.get('user_name', f'ID_{target_user_id}')
+        timestamp = req.get('request_timestamp', 'unknown')
+
+        msg = f"📋 <b>Заявка на пробный доступ</b>\n\n"
+        msg += f"👤 Пользователь: {user_name}\n"
+        msg += f"🆔 ID: {target_user_id}\n"
+        msg += f"📅 Подана: {timestamp}\n"
+
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Одобрить", "callback_data": f"approve_trial_{target_user_id}"},
+                {"text": "❌ Отклонить", "callback_data": f"deny_trial_{target_user_id}"}
+            ]]
+        }
+
+        tg.send_message(chat_id, msg, parse_mode='HTML', reply_markup=keyboard)
+
+    return 'trials_reviewed'
+
+
+def handle_credit_command(text: str, chat_id: int, tg, db) -> str:
+    """Handle /credit user_id minutes command."""
+    parts = text.split()
+    if len(parts) != 3:
+        tg.send_message(chat_id, "Использование: /credit USER_ID MINUTES")
+        return 'credit_usage'
+
+    try:
+        target_user_id = int(parts[1])
+        minutes_to_add = float(parts[2])
+
+        db.update_user_balance(target_user_id, minutes_to_add)
+        tg.send_message(chat_id, f"✅ Начислено {minutes_to_add} минут пользователю {target_user_id}")
+
+        # Notify the user
+        try:
+            if minutes_to_add == TRIAL_MINUTES:
+                user_msg = f"🎉 Поздравляем! Ваша заявка на пробный доступ одобрена. Вам начислено {int(minutes_to_add)} минут."
+            else:
+                user_msg = f"💰 Вам начислено {int(minutes_to_add)} минут администратором."
+            tg.send_message(target_user_id, user_msg)
+        except Exception as e:
+            logger.warning(f"Failed to notify user {target_user_id}: {e}")
+
+        return 'credit_added'
+
+    except ValueError:
+        tg.send_message(chat_id, "❌ Ошибка: USER_ID должен быть числом, MINUTES - числом.")
+        return 'credit_error'
+
+
+def handle_user_search(text: str, chat_id: int, tg, db) -> str:
+    """Handle /user [search] command."""
+    parts = text.split(maxsplit=1)
+    search_query = parts[1] if len(parts) > 1 else None
+
+    if search_query:
+        users = db.search_users(search_query)
+        if not users:
+            tg.send_message(chat_id, f"❌ Пользователи по запросу '{search_query}' не найдены.")
+            return 'user_not_found'
+        title = f"🔍 <b>Результаты поиска '{search_query}':</b>\n\n"
+    else:
+        users = db.get_all_users(limit=30)
+        title = f"👥 <b>Все пользователи (показаны первые {len(users)}):</b>\n\n"
+
+    msg = title
+    for idx, user in enumerate(users[:20], 1):
+        uid = user.get('user_id', 'unknown')
+        name = user.get('first_name', '') + ' ' + user.get('last_name', '')
+        name = name.strip() or f"ID_{uid}"
+        balance = user.get('balance_minutes', 0)
+        trial_status = user.get('trial_status', 'none')
+
+        trial_emoji = ""
+        if trial_status == 'approved':
+            trial_emoji = "✅"
+        elif trial_status == 'pending':
+            trial_emoji = "⏳"
+        elif trial_status == 'denied':
+            trial_emoji = "❌"
+
+        msg += f"{idx}. {name} (ID: {uid})\n"
+        msg += f"   💰 {balance} мин"
+        if trial_emoji:
+            msg += f" | {trial_emoji}"
+        msg += "\n"
+
+    if len(users) > 20:
+        msg += f"\n<i>Показаны первые 20 из {len(users)} пользователей</i>"
+
+    tg.send_message(chat_id, msg[:4000], parse_mode='HTML')
+    return 'users_listed'
+
+
+def handle_stat_command(chat_id: int, tg, db) -> str:
+    """Handle /stat command - usage statistics."""
+    stats = db.get_transcription_stats(days=30)
+
+    total_count = stats.get('total_count', 0)
+    total_seconds = stats.get('total_seconds', 0)
+    total_chars = stats.get('total_chars', 0)
+    total_minutes = total_seconds / 60
+
+    users = db.get_all_users()
+    total_users = len(users)
+    active_users = len(stats.get('user_stats', {}))
+
+    msg = "📊 <b>Статистика использования (30 дней)</b>\n\n"
+    msg += f"👥 Всего пользователей: {total_users}\n"
+    msg += f"👤 Активных: {active_users}\n\n"
+    msg += f"🎵 <b>Обработка:</b>\n"
+    msg += f"  • Транскрипций: {total_count}\n"
+    msg += f"  • Минут обработано: {total_minutes:.1f}\n"
+    msg += f"  • Символов: {total_chars:,}\n"
+
+    # Top users
+    user_stats = stats.get('user_stats', {})
+    if user_stats:
+        sorted_users = sorted(user_stats.items(), key=lambda x: x[1]['duration'], reverse=True)[:5]
+        msg += "\n🏆 <b>Топ пользователей:</b>\n"
+        for i, (uid, udata) in enumerate(sorted_users, 1):
+            user = db.get_user(int(uid)) if uid.isdigit() else None
+            name = user.get('first_name', f'ID_{uid}') if user else f'ID_{uid}'
+            minutes = udata['duration'] / 60
+            msg += f"  {i}. {name}: {minutes:.1f} мин\n"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'stat_shown'
+
+
+def handle_cost_command(chat_id: int, tg, db) -> str:
+    """Handle /cost command - cost analysis."""
+    stats = db.get_transcription_stats(days=30)
+
+    total_count = stats.get('total_count', 0)
+    total_seconds = stats.get('total_seconds', 0)
+    total_chars = stats.get('total_chars', 0)
+
+    if total_count == 0:
+        tg.send_message(chat_id, "📊 Нет данных за последние 30 дней.")
+        return 'no_cost_data'
+
+    total_minutes = total_seconds / 60
+
+    # Alibaba pricing (Qwen3-ASR + Qwen-turbo)
+    # Qwen3-ASR: approximately $0.002 per minute
+    # Qwen-turbo: approximately $0.0001 per 1000 chars
+    asr_cost = total_minutes * 0.002
+    llm_cost = (total_chars / 1000) * 0.0001
+
+    # Infrastructure (Alibaba FC + Tablestore + MNS)
+    fc_cost = 5  # ~$5/month estimate
+    tablestore_cost = 1  # ~$1/month estimate
+    mns_cost = 0.5  # ~$0.5/month estimate
+    infra_cost = fc_cost + tablestore_cost + mns_cost
+
+    total_api_cost = asr_cost + llm_cost
+    total_cost = total_api_cost + infra_cost
+
+    cost_per_minute = total_cost / total_minutes if total_minutes > 0 else 0
+
+    msg = f"""💰 <b>Расчет стоимости за 30 дней</b>
+📍 <i>Alibaba Cloud (eu-central-1)</i>
+
+📊 Обработано: {total_count} файлов
+⏱ Общая длительность: {math.ceil(total_minutes)} минут
+📝 Символов: {total_chars:,}
+
+💵 <b>API расходы:</b>
+• Qwen3-ASR: ${asr_cost:.3f}
+• Qwen-turbo LLM: ${llm_cost:.3f}
+• <b>Итого API: ${total_api_cost:.3f}</b>
+
+🏗 <b>Инфраструктура (оценка):</b>
+• Function Compute: ${fc_cost:.2f}
+• Tablestore: ${tablestore_cost:.2f}
+• MNS: ${mns_cost:.2f}
+• <b>Итого инфра: ${infra_cost:.2f}</b>
+
+💰 <b>ОБЩИЕ РАСХОДЫ: ${total_cost:.2f}</b>
+📈 <b>Себестоимость минуты: ${cost_per_minute:.4f}</b>"""
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'cost_shown'
+
+
+def handle_status_command(chat_id: int, tg, db) -> str:
+    """Handle /status command - queue status."""
+    queue_count = db.count_pending_jobs()
+
+    msg = "📊 <b>Статус очереди обработки</b>\n\n"
+
+    if queue_count == 0:
+        msg += "✅ Очередь пуста."
+    else:
+        msg += f"📥 Всего в очереди: {queue_count}\n\n"
+
+        pending_jobs = db.get_pending_jobs(limit=10)
+        if pending_jobs:
+            msg += "Активные задачи:\n"
+            for job in pending_jobs:
+                job_user_id = job.get('user_id', 'unknown')
+                status = job.get('status', 'unknown')
+                duration = job.get('duration', 0)
+                msg += f"• User {job_user_id} - {status} ({duration}s)\n"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'status_shown'
+
+
+def handle_flush_command(chat_id: int, tg, db) -> str:
+    """Handle /flush command - clean stuck jobs."""
+    stuck_jobs = db.get_stuck_jobs(hours_threshold=1)
+
+    if not stuck_jobs:
+        tg.send_message(chat_id, "✅ Нет застрявших задач в очереди.")
+        return 'no_stuck_jobs'
+
+    deleted_count = 0
+    refunded_users = {}
+
+    for job in stuck_jobs:
+        job_id = job.get('job_id')
+        job_user_id = job.get('user_id')
+        duration = job.get('duration', 0)
+
+        # Delete the job
+        if db.delete_job(job_id):
+            deleted_count += 1
+
+        # Track refunds
+        if job_user_id and duration > 0:
+            if job_user_id not in refunded_users:
+                refunded_users[job_user_id] = 0
+            refunded_users[job_user_id] += duration
+
+    # Apply refunds
+    for refund_user_id, total_seconds in refunded_users.items():
+        minutes_to_refund = total_seconds / 60
+        try:
+            db.update_user_balance(int(refund_user_id), minutes_to_refund)
+        except Exception:
+            pass
+
+    msg = f"🧹 <b>Очистка завершена</b>\n\n"
+    msg += f"✅ Удалено задач: {deleted_count}\n"
+    msg += f"💰 Возвращено минут {len(refunded_users)} пользователям"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'flush_done'
+
+
+def handle_export_command(text: str, chat_id: int, tg, db) -> str:
+    """Handle /export [users|logs|payments] [days] command."""
+    parts = text.split()
+    export_type = parts[1] if len(parts) > 1 else 'users'
+    days = int(parts[2]) if len(parts) > 2 else 30
+
+    if export_type not in ['users', 'logs', 'payments']:
+        tg.send_message(chat_id, "❌ Использование: /export [users|logs|payments] [дней]")
+        return 'export_usage'
+
+    try:
+        import tempfile
+
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8-sig')
+        csv_writer = csv.writer(temp_file)
+
+        if export_type == 'users':
+            csv_writer.writerow(['User ID', 'Name', 'Username', 'Balance', 'Trial Status', 'Created At'])
+            users = db.get_all_users(limit=1000)
+            for user in users:
+                csv_writer.writerow([
+                    user.get('user_id', ''),
+                    user.get('first_name', ''),
+                    user.get('username', ''),
+                    user.get('balance_minutes', 0),
+                    user.get('trial_status', ''),
+                    user.get('created_at', '')
+                ])
+            caption = f"📊 Экспорт пользователей\nВсего: {len(users)}"
+
+        elif export_type == 'logs':
+            stats = db.get_transcription_stats(days=days)
+            csv_writer.writerow(['Period', 'Total Count', 'Total Minutes', 'Total Chars'])
+            csv_writer.writerow([
+                f'Last {days} days',
+                stats.get('total_count', 0),
+                stats.get('total_seconds', 0) / 60,
+                stats.get('total_chars', 0)
+            ])
+            caption = f"📊 Экспорт статистики за {days} дней"
+
+        else:  # payments
+            payment_stats = db.get_payment_stats(days=days)
+            csv_writer.writerow(['Period', 'Total Payments', 'Total Stars', 'Total Minutes'])
+            csv_writer.writerow([
+                f'Last {days} days',
+                payment_stats.get('total_count', 0),
+                payment_stats.get('total_stars', 0),
+                payment_stats.get('total_minutes', 0)
+            ])
+            caption = f"💰 Экспорт платежей за {days} дней"
+
+        temp_file.close()
+        tg.send_document(chat_id, temp_file.name, caption=caption)
+
+        import os
+        os.unlink(temp_file.name)
+
+        return 'export_done'
+
+    except Exception as e:
+        logger.error(f"Error in export: {e}")
+        tg.send_message(chat_id, f"❌ Ошибка при экспорте: {str(e)}")
+        return 'export_error'
+
+
+def handle_report_command(text: str, chat_id: int, tg, db) -> str:
+    """Handle /report [daily|weekly] command."""
+    parts = text.split()
+    report_type = parts[1] if len(parts) > 1 else 'daily'
+
+    if report_type not in ['daily', 'weekly']:
+        tg.send_message(chat_id, "❌ Использование: /report [daily|weekly]")
+        return 'report_usage'
+
+    days = 1 if report_type == 'daily' else 7
+    period_name = "Ежедневный" if report_type == 'daily' else "Еженедельный"
+
+    stats = db.get_transcription_stats(days=days)
+    payment_stats = db.get_payment_stats(days=days)
+    users = db.get_all_users()
+
+    msg = f"📊 <b>{period_name} отчет</b>\n"
+    msg += f"📅 Период: последние {days} дней\n\n"
+
+    msg += f"👥 <b>Пользователи:</b>\n"
+    msg += f"  • Всего: {len(users)}\n"
+    msg += f"  • Активных: {len(stats.get('user_stats', {}))}\n\n"
+
+    msg += f"🎵 <b>Обработка:</b>\n"
+    msg += f"  • Транскрипций: {stats.get('total_count', 0)}\n"
+    msg += f"  • Минут: {stats.get('total_seconds', 0) / 60:.1f}\n\n"
+
+    msg += f"💰 <b>Доходы:</b>\n"
+    msg += f"  • Платежей: {payment_stats.get('total_count', 0)}\n"
+    msg += f"  • Stars: {payment_stats.get('total_stars', 0)} ⭐\n"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'report_shown'
+
+
+def handle_metrics_command(text: str, chat_id: int, tg, db) -> str:
+    """Handle /metrics [hours] command."""
+    parts = text.split()
+    hours = int(parts[1]) if len(parts) > 1 else 24
+
+    # For now, just show basic metrics
+    stats = db.get_transcription_stats(days=1)
+    queue_count = db.count_pending_jobs()
+
+    msg = f"📈 <b>Метрики за последние {hours} часов</b>\n\n"
+    msg += f"🎵 Транскрипций: {stats.get('total_count', 0)}\n"
+    msg += f"⏱ Минут обработано: {stats.get('total_seconds', 0) / 60:.1f}\n"
+    msg += f"📥 В очереди: {queue_count}\n"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'metrics_shown'
+
+
+def handle_batch_command(text: str, chat_id: int, tg, db) -> str:
+    """Handle /batch [user_id] command - show user's queue."""
+    parts = text.split()
+
+    if len(parts) < 2:
+        tg.send_message(chat_id, "Использование: /batch USER_ID")
+        return 'batch_usage'
+
+    target_user_id = parts[1]
+    pending_jobs = db.get_pending_jobs(limit=50)
+
+    user_jobs = [j for j in pending_jobs if str(j.get('user_id')) == target_user_id]
+
+    if not user_jobs:
+        tg.send_message(chat_id, f"✅ Нет задач в очереди для пользователя {target_user_id}")
+        return 'no_batch_jobs'
+
+    msg = f"📋 <b>Очередь пользователя {target_user_id}</b>\n\n"
+    for job in user_jobs:
+        job_id = job.get('job_id', 'unknown')[:8]
+        status = job.get('status', 'unknown')
+        duration = job.get('duration', 0)
+        msg += f"• {job_id}... - {status} ({duration}s)\n"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'batch_shown'
 
 
 def handle_callback_query(callback_query: Dict[str, Any]) -> str:
     """Handle callback query from inline keyboard."""
     callback_data = callback_query.get('data', '')
     user_id = callback_query.get('from', {}).get('id')
+    chat_id = callback_query.get('message', {}).get('chat', {}).get('id')
+    message_id = callback_query.get('message', {}).get('message_id')
+    callback_id = callback_query.get('id', '')
 
     logger.info(f"Callback query from {user_id}: {callback_data}")
-    # TODO: Implement callback handlers for payments, trial approvals, etc.
+
+    tg = get_telegram_service()
+    db = get_db_service()
+
+    # Acknowledge the callback
+    tg.answer_callback_query(callback_id)
+
+    # Only owner can use admin callbacks
+    if user_id != OWNER_ID:
+        # Check for buy_ callbacks (available to all users)
+        if callback_data.startswith('buy_'):
+            return handle_buy_callback(callback_data, user_id, chat_id)
+        return 'unauthorized_callback'
+
+    # Trial approval/denial
+    if callback_data.startswith('approve_trial_'):
+        target_user_id = int(callback_data.replace('approve_trial_', ''))
+        return handle_trial_approval(target_user_id, chat_id, message_id, tg, db)
+
+    if callback_data.startswith('deny_trial_'):
+        target_user_id = int(callback_data.replace('deny_trial_', ''))
+        return handle_trial_denial(target_user_id, chat_id, message_id, tg, db)
+
+    # User management
+    if callback_data.startswith('add_minutes_'):
+        target_user_id = int(callback_data.replace('add_minutes_', ''))
+        tg.send_message(chat_id, f"Для добавления минут используйте:\n/credit {target_user_id} [КОЛИЧЕСТВО]")
+        return 'add_minutes_prompt'
+
+    if callback_data.startswith('user_details_'):
+        target_user_id = int(callback_data.replace('user_details_', ''))
+        return show_user_details(target_user_id, chat_id, tg, db)
+
+    if callback_data.startswith('delete_user_'):
+        target_user_id = int(callback_data.replace('delete_user_', ''))
+        tg.send_message(chat_id, f"⚠️ Удаление пользователя {target_user_id} пока не реализовано.")
+        return 'delete_user_pending'
+
+    # Buy callbacks (also for owner)
+    if callback_data.startswith('buy_'):
+        return handle_buy_callback(callback_data, user_id, chat_id)
+
     return f'callback_{callback_data}'
+
+
+def handle_trial_approval(target_user_id: int, chat_id: int, message_id: int,
+                          tg, db) -> str:
+    """Handle trial request approval."""
+    # Update trial status
+    db.update_user(target_user_id, {'trial_status': 'approved'})
+
+    # Add trial minutes
+    db.update_user_balance(target_user_id, TRIAL_MINUTES)
+
+    # Update trial request
+    db.update_trial_request(target_user_id, {
+        'status': 'approved',
+        'processed_at': datetime.now(pytz.utc).isoformat()
+    })
+
+    # Notify the user
+    try:
+        tg.send_message(target_user_id,
+            f"✅ Ваша заявка на пробный доступ одобрена! "
+            f"На ваш баланс начислено {TRIAL_MINUTES} минут.")
+    except Exception as e:
+        logger.warning(f"Could not notify user {target_user_id}: {e}")
+
+    # Update the admin message
+    tg.edit_message_text(chat_id, message_id,
+        f"✅ Заявка пользователя {target_user_id} одобрена. "
+        f"Начислено {TRIAL_MINUTES} минут.")
+
+    # Delete from pending requests
+    db.delete_trial_request(target_user_id)
+
+    logger.info(f"Trial request for user {target_user_id} approved")
+    return 'trial_approved'
+
+
+def handle_trial_denial(target_user_id: int, chat_id: int, message_id: int,
+                        tg, db) -> str:
+    """Handle trial request denial."""
+    # Update trial request
+    db.update_trial_request(target_user_id, {
+        'status': 'denied',
+        'processed_at': datetime.now(pytz.utc).isoformat()
+    })
+
+    db.update_user(target_user_id, {'trial_status': 'denied'})
+
+    # Update the admin message
+    tg.edit_message_text(chat_id, message_id,
+        f"❌ Заявка пользователя {target_user_id} отклонена.")
+
+    # Delete from pending requests
+    db.delete_trial_request(target_user_id)
+
+    logger.info(f"Trial request for user {target_user_id} denied")
+    return 'trial_denied'
+
+
+def show_user_details(target_user_id: int, chat_id: int, tg, db) -> str:
+    """Show detailed user information."""
+    user = db.get_user(target_user_id)
+    if not user:
+        tg.send_message(chat_id, f"❌ Пользователь {target_user_id} не найден.")
+        return 'user_not_found'
+
+    name = user.get('first_name', '') + ' ' + user.get('last_name', '')
+    name = name.strip() or f"ID_{target_user_id}"
+    username = user.get('username', '')
+    balance = user.get('balance_minutes', 0)
+    trial_status = user.get('trial_status', 'none')
+    created_at = user.get('created_at', 'Неизвестно')
+
+    msg = f"📋 <b>Информация о пользователе</b>\n\n"
+    msg += f"👤 Имя: {name}\n"
+    if username:
+        msg += f"📝 Username: @{username}\n"
+    msg += f"🆔 ID: {target_user_id}\n"
+    msg += f"💰 Баланс: {balance} мин\n"
+    msg += f"🎫 Триал: {trial_status}\n"
+    msg += f"📅 Регистрация: {created_at}\n\n"
+    msg += f"<b>Действия:</b>\n"
+    msg += f"/credit {target_user_id} [минуты] - добавить минуты"
+
+    tg.send_message(chat_id, msg, parse_mode='HTML')
+    return 'user_details_shown'
+
+
+def handle_buy_callback(callback_data: str, user_id: int, chat_id: int) -> str:
+    """Handle buy package callback."""
+    tg = get_telegram_service()
+    db = get_db_service()
+
+    # Find package by payload
+    package = None
+    for pkg_id, pkg_data in PRODUCT_PACKAGES.items():
+        if pkg_data['payload'] == callback_data:
+            package = pkg_data
+            package['id'] = pkg_id
+            break
+
+    if not package:
+        tg.send_message(chat_id, "❌ Пакет не найден.")
+        return 'package_not_found'
+
+    # Check micro package limit
+    if package['id'] == 'micro_10':
+        user = db.get_user(user_id)
+        micro_purchases = user.get('micro_package_purchases', 0) if user else 0
+        if micro_purchases >= package.get('purchase_limit', 3):
+            tg.send_message(chat_id,
+                "❌ Вы уже исчерпали лимит покупок промо-пакета 'Микро'. "
+                "Выберите другой пакет с помощью команды /buy_minutes")
+            return 'micro_limit_reached'
+
+    # Send invoice
+    tg.send_invoice(
+        chat_id=chat_id,
+        title=package['title'],
+        description=package['description'],
+        payload=f"minutes_{package['minutes']}",
+        currency="XTR",
+        prices=[{"label": "Stars", "amount": package['stars_amount']}]
+    )
+
+    return 'invoice_sent'
 
 
 def handle_pre_checkout(pre_checkout_query: Dict[str, Any]) -> str:
     """Handle pre-checkout query for Telegram Payments."""
     tg = get_telegram_service()
     query_id = pre_checkout_query.get('id')
+    if not query_id:
+        logger.error("Pre-checkout query missing id")
+        return 'pre_checkout_error'
     tg.answer_pre_checkout_query(query_id, ok=True)
     return 'pre_checkout_approved'
 
@@ -517,7 +1279,8 @@ def handle_successful_payment(message: Dict[str, Any]) -> str:
 
     try:
         minutes = int(payload.split('_')[1])
-    except:
+    except (IndexError, ValueError) as e:
+        logger.warning(f"Could not parse payment payload '{payload}': {e}")
         minutes = 0
 
     if minutes > 0:

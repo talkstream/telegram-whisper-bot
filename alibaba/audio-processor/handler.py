@@ -54,6 +54,8 @@ def get_db_service():
     """Get or create Tablestore service instance."""
     global _db_service
     if _db_service is None:
+        if not ALIBABA_ACCESS_KEY or not ALIBABA_SECRET_KEY:
+            raise ValueError("Alibaba credentials not configured")
         from services.tablestore_service import TablestoreService
         _db_service = TablestoreService(
             endpoint=TABLESTORE_ENDPOINT,
@@ -69,6 +71,8 @@ def get_telegram_service():
     """Get or create Telegram service instance."""
     global _telegram_service
     if _telegram_service is None:
+        if not TELEGRAM_BOT_TOKEN:
+            raise ValueError("TELEGRAM_BOT_TOKEN not configured")
         from services.telegram import TelegramService
         _telegram_service = TelegramService(TELEGRAM_BOT_TOKEN)
     return _telegram_service
@@ -78,6 +82,8 @@ def get_audio_service():
     """Get or create Audio service instance."""
     global _audio_service
     if _audio_service is None:
+        if not DASHSCOPE_API_KEY:
+            raise ValueError("DASHSCOPE_API_KEY not configured")
         from services.audio import AudioService
         _audio_service = AudioService(
             whisper_backend=WHISPER_BACKEND,
@@ -86,7 +92,7 @@ def get_audio_service():
     return _audio_service
 
 
-def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     """
     FC handler for audio processing
     Triggered by timer or MNS message
@@ -137,6 +143,8 @@ def poll_queue() -> Dict[str, Any]:
     from services.mns_service import MNSService
 
     try:
+        if not MNS_ENDPOINT or not ALIBABA_ACCESS_KEY or not ALIBABA_SECRET_KEY:
+            raise ValueError("MNS configuration incomplete")
         mns = MNSService(
             endpoint=MNS_ENDPOINT,
             access_key_id=ALIBABA_ACCESS_KEY,
@@ -191,12 +199,19 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     user_id = job_data.get('user_id')
     chat_id = job_data.get('chat_id')
     file_id = job_data.get('file_id')
-    file_type = job_data.get('file_type', 'voice')
+    _file_type = job_data.get('file_type', 'voice')  # Preserved for future use
     duration = job_data.get('duration', 0)
 
-    if not all([job_id, user_id, chat_id, file_id]):
+    if job_id is None or user_id is None or chat_id is None or file_id is None:
         logger.error(f"Invalid job data: {job_data}")
         return {'ok': False, 'error': 'Missing required fields'}
+
+    # Type narrowing after validation - reassign with correct types
+    job_id = str(job_id)
+    user_id_int = int(user_id)  # For numeric operations (balance, settings)
+    user_id = str(user_id)  # Keep as string for job records
+    chat_id = int(chat_id)
+    file_id = str(file_id)
 
     logger.info(f"Processing job {job_id} for user {user_id}")
 
@@ -240,7 +255,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             return {'ok': True, 'result': 'no_speech'}
 
         # Get user settings BEFORE formatting
-        settings = db.get_user_settings(int(user_id)) or {}
+        settings = db.get_user_settings(user_id_int) or {}
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
@@ -261,7 +276,23 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Update balance
         duration_minutes = (duration + 59) // 60
-        db.update_user_balance(int(user_id), -duration_minutes)
+        balance_updated = db.update_user_balance(user_id_int, -duration_minutes)
+        if not balance_updated:
+            logger.error(f"CRITICAL: Failed to deduct {duration_minutes} min from user {user_id} balance!")
+            # Notify admin about the issue
+            try:
+                owner_id = int(os.environ.get('OWNER_ID', 0))
+                if owner_id:
+                    tg.send_message(
+                        owner_id,
+                        f"⚠️ Ошибка списания баланса!\n"
+                        f"User: {user_id}\n"
+                        f"Минут: {duration_minutes}\n"
+                        f"Job: {job_id}\n"
+                        f"Требуется ручная корректировка."
+                    )
+            except Exception as notify_err:
+                logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
         # Log transcription
         db.log_transcription({
@@ -282,8 +313,8 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             os.remove(local_path)
             if converted_path != local_path:
                 os.remove(converted_path)
-        except:
-            pass
+        except OSError as cleanup_err:
+            logger.debug(f"Cleanup temp files failed: {cleanup_err}")
 
         logger.info(f"Job {job_id} completed successfully")
         return {'ok': True, 'result': 'completed'}

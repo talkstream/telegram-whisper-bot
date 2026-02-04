@@ -16,7 +16,7 @@ Usage:
 import logging
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
 import pytz
@@ -32,8 +32,18 @@ class TablestoreService:
 
     def __init__(self, endpoint: str, access_key_id: str,
                  access_key_secret: str, instance_name: str,
-                 security_token: str = None):
+                 security_token: Optional[str] = None):
         """Initialize Tablestore client."""
+        # Validate required parameters
+        if not access_key_id:
+            raise ValueError("access_key_id is None or empty.")
+        if not access_key_secret:
+            raise ValueError("access_key_secret is None or empty.")
+        if not endpoint:
+            raise ValueError("endpoint is None or empty.")
+        if not instance_name:
+            raise ValueError("instance_name is None or empty.")
+
         try:
             from tablestore import OTSClient
             self.client = OTSClient(
@@ -111,16 +121,18 @@ class TablestoreService:
         try:
             primary_key = [('user_id', str(user_id))]
 
-            # Prepare update columns
-            update_columns = {'PUT': []}
+            # Prepare update columns - use lowercase 'put' as per SDK docs
+            update_columns = {'put': []}
             for key, value in updates.items():
-                update_columns['PUT'].append((key, self._serialize_value(value)))
+                update_columns['put'].append((key, self._serialize_value(value)))
 
             # Add last_activity timestamp
-            update_columns['PUT'].append(('last_activity', datetime.now(pytz.utc).isoformat()))
+            update_columns['put'].append(('last_activity', datetime.now(pytz.utc).isoformat()))
 
+            # Create Row object with primary key and update columns
+            row = Row(primary_key, update_columns)
             condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
-            self.client.update_row('users', primary_key, update_columns, condition)
+            self.client.update_row('users', row, condition)
             logger.info(f"Updated user {user_id}")
             return True
 
@@ -128,27 +140,93 @@ class TablestoreService:
             logger.error(f"Error updating user {user_id}: {e}")
             return False
 
-    def update_user_balance(self, user_id: int, delta: int) -> bool:
+    def update_user_balance(self, user_id: int, delta: float, max_retries: int = 3) -> bool:
         """
-        Atomically update user balance.
-        Note: Tablestore doesn't support atomic increment like Firestore,
-        so we use optimistic locking pattern.
+        Update user balance with optimistic locking to prevent race conditions.
+        Uses retry mechanism if concurrent update is detected.
+
+        Args:
+            user_id: The user ID
+            delta: Amount to add (positive) or subtract (negative)
+            max_retries: Maximum retry attempts on conflict
+
+        Returns:
+            True if balance was updated successfully, False otherwise
         """
-        try:
-            # Get current balance
-            user = self.get_user(user_id)
-            if not user:
-                logger.error(f"User {user_id} not found for balance update")
-                return False
+        from tablestore import Row, Condition, RowExistenceExpectation, ComparatorType, SingleColumnCondition
 
-            current_balance = user.get('balance_minutes', 0)
-            new_balance = max(0, current_balance + delta)
+        raw_balance = None  # Initialize for error logging
 
-            return self.update_user(user_id, {'balance_minutes': new_balance})
+        for attempt in range(max_retries):
+            try:
+                # Get current balance
+                user = self.get_user(user_id)
+                if not user:
+                    logger.error(f"User {user_id} not found for balance update")
+                    return False
 
-        except Exception as e:
-            logger.error(f"Error updating balance for user {user_id}: {e}")
-            return False
+                # Get raw balance value for condition comparison (preserve original type)
+                raw_balance = user.get('balance_minutes', 0)
+
+                # Convert to float for arithmetic, but keep raw value for condition
+                if isinstance(raw_balance, str):
+                    current_balance = float(raw_balance)
+                elif isinstance(raw_balance, (int, float)):
+                    current_balance = float(raw_balance)
+                else:
+                    current_balance = 0.0
+                    raw_balance = 0  # Default for condition
+
+                # Keep balance as integer (Tablestore column type)
+                new_balance = int(max(0, current_balance + delta))
+
+                # Update with conditional check on current balance value
+                # This ensures no other process modified the balance between read and write
+                primary_key = [('user_id', str(user_id))]
+                # Use lowercase 'put' as per SDK docs
+                update_columns = {
+                    'put': [
+                        ('balance_minutes', new_balance),  # Must be int for Tablestore
+                        ('last_activity', datetime.now(pytz.utc).isoformat())
+                    ]
+                }
+
+                # Create Row object with primary key and update columns
+                row = Row(primary_key, update_columns)
+
+                # Create condition: only update if balance_minutes equals current value
+                # IMPORTANT: Use raw_balance to match the exact type stored in Tablestore
+                # If balance was never set, pass_if_missing=True allows the update
+                condition = Condition(
+                    RowExistenceExpectation.EXPECT_EXIST,
+                    SingleColumnCondition(
+                        'balance_minutes',
+                        raw_balance,  # Use original value/type for comparison
+                        ComparatorType.EQUAL,
+                        pass_if_missing=True  # Pass if column doesn't exist (new user)
+                    )
+                )
+
+                self.client.update_row('users', row, condition)
+                logger.info(f"Updated balance for user {user_id}: {current_balance} -> {new_balance} (delta: {delta:+.0f})")
+                return True
+
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a condition failure (concurrent update or type mismatch)
+                if 'OTSConditionCheckFail' in error_str or 'Condition check failed' in error_str:
+                    logger.warning(f"Balance update conflict for user {user_id}, attempt {attempt + 1}/{max_retries}, raw_balance={raw_balance!r}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                        continue  # Retry
+                    logger.error(f"Balance update failed after {max_retries} retries for user {user_id}")
+                    return False
+                else:
+                    logger.error(f"Error updating balance for user {user_id}: {e}", exc_info=True)
+                    return False
+
+        return False
 
     def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user settings."""
@@ -241,10 +319,85 @@ class TablestoreService:
 
     def get_pending_trial_requests(self) -> List[Dict[str, Any]]:
         """Get all pending trial requests."""
-        # Note: This requires a range query or secondary index in Tablestore
-        # For simplicity, we'll scan the table (not efficient for large datasets)
-        logger.warning("get_pending_trial_requests: Consider adding secondary index for production")
-        return []  # TODO: Implement with proper indexing
+        from tablestore import INF_MIN, INF_MAX, Direction
+
+        try:
+            inclusive_start_primary_key = [('user_id', INF_MIN)]
+            exclusive_end_primary_key = [('user_id', INF_MAX)]
+
+            consumed, next_start_primary_key, row_list, next_token = self.client.get_range(
+                'trial_requests',
+                Direction.FORWARD,
+                inclusive_start_primary_key,
+                exclusive_end_primary_key,
+                [],
+                100  # limit
+            )
+
+            pending_requests = []
+            for row in row_list:
+                row_dict = self._row_to_dict(row)
+                if row_dict.get('status') == 'pending':
+                    pending_requests.append(row_dict)
+
+            return pending_requests
+
+        except Exception as e:
+            logger.error(f"Error getting pending trial requests: {e}")
+            return []
+
+    def get_trial_request(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get trial request for a specific user."""
+        try:
+            primary_key = [('user_id', str(user_id))]
+            consumed, return_row, next_token = self.client.get_row(
+                'trial_requests',
+                primary_key,
+                []
+            )
+
+            if return_row is None:
+                return None
+
+            return self._row_to_dict(return_row)
+
+        except Exception as e:
+            logger.error(f"Error getting trial request for {user_id}: {e}")
+            return None
+
+    def update_trial_request(self, user_id: int, updates: Dict[str, Any]) -> bool:
+        """Update trial request status."""
+        from tablestore import Condition, RowExistenceExpectation
+
+        try:
+            primary_key = [('user_id', str(user_id))]
+            update_columns = {'PUT': []}
+
+            for key, value in updates.items():
+                update_columns['PUT'].append((key, self._serialize_value(value)))
+
+            condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
+            self.client.update_row('trial_requests', primary_key, update_columns, condition)
+            return True
+
+        except Exception as e:
+            logger.error(f"Error updating trial request for {user_id}: {e}")
+            return False
+
+    def delete_trial_request(self, user_id: int) -> bool:
+        """Delete a trial request."""
+        from tablestore import Condition, RowExistenceExpectation
+
+        try:
+            primary_key = [('user_id', str(user_id))]
+            condition = Condition(RowExistenceExpectation.IGNORE)
+            self.client.delete_row('trial_requests', primary_key, condition)
+            logger.info(f"Deleted trial request for user {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error deleting trial request for {user_id}: {e}")
+            return False
 
     # ==================== JOB OPERATIONS ====================
 
@@ -414,3 +567,268 @@ class TablestoreService:
         except Exception as e:
             logger.error(f"Error getting all users: {e}")
             return []
+
+    def search_users(self, query: str) -> List[Dict[str, Any]]:
+        """Search users by name, username, or ID."""
+        users = self.get_all_users(limit=200)
+        query_lower = query.lower()
+
+        results = []
+        for user in users:
+            # Check if query matches user_id
+            if query == str(user.get('user_id', '')):
+                results.append(user)
+                continue
+
+            # Check name/username
+            first_name = str(user.get('first_name', '')).lower()
+            last_name = str(user.get('last_name', '')).lower()
+            username = str(user.get('username', '')).lower()
+
+            if query_lower in first_name or query_lower in last_name or query_lower in username:
+                results.append(user)
+
+        return results
+
+    def count_pending_jobs(self) -> int:
+        """Count pending audio jobs."""
+        from tablestore import INF_MIN, INF_MAX, Direction
+
+        try:
+            inclusive_start_primary_key = [('job_id', INF_MIN)]
+            exclusive_end_primary_key = [('job_id', INF_MAX)]
+
+            consumed, next_start_primary_key, row_list, next_token = self.client.get_range(
+                'audio_jobs',
+                Direction.FORWARD,
+                inclusive_start_primary_key,
+                exclusive_end_primary_key,
+                [],
+                1000
+            )
+
+            count = 0
+            for row in row_list:
+                row_dict = self._row_to_dict(row)
+                status = row_dict.get('status', '')
+                if status in ['pending', 'processing']:
+                    count += 1
+
+            return count
+
+        except Exception as e:
+            logger.error(f"Error counting pending jobs: {e}")
+            return 0
+
+    def get_pending_jobs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get pending/processing audio jobs."""
+        from tablestore import INF_MIN, INF_MAX, Direction
+
+        try:
+            inclusive_start_primary_key = [('job_id', INF_MIN)]
+            exclusive_end_primary_key = [('job_id', INF_MAX)]
+
+            consumed, next_start_primary_key, row_list, next_token = self.client.get_range(
+                'audio_jobs',
+                Direction.FORWARD,
+                inclusive_start_primary_key,
+                exclusive_end_primary_key,
+                [],
+                limit * 2  # fetch more to filter
+            )
+
+            pending_jobs = []
+            for row in row_list:
+                row_dict = self._row_to_dict(row)
+                status = row_dict.get('status', '')
+                if status in ['pending', 'processing']:
+                    pending_jobs.append(row_dict)
+                    if len(pending_jobs) >= limit:
+                        break
+
+            return pending_jobs
+
+        except Exception as e:
+            logger.error(f"Error getting pending jobs: {e}")
+            return []
+
+    def get_stuck_jobs(self, hours_threshold: int = 1) -> List[Dict[str, Any]]:
+        """Get jobs stuck for more than threshold hours."""
+        from tablestore import INF_MIN, INF_MAX, Direction
+
+        try:
+            inclusive_start_primary_key = [('job_id', INF_MIN)]
+            exclusive_end_primary_key = [('job_id', INF_MAX)]
+
+            consumed, next_start_primary_key, row_list, next_token = self.client.get_range(
+                'audio_jobs',
+                Direction.FORWARD,
+                inclusive_start_primary_key,
+                exclusive_end_primary_key,
+                [],
+                500
+            )
+
+            cutoff_time = datetime.now(pytz.utc) - timedelta(hours=hours_threshold)
+            stuck_jobs = []
+
+            for row in row_list:
+                row_dict = self._row_to_dict(row)
+                status = row_dict.get('status', '')
+
+                if status not in ['pending', 'processing']:
+                    continue
+
+                # Check created_at timestamp
+                created_at = row_dict.get('created_at', '')
+                if created_at:
+                    try:
+                        if isinstance(created_at, str):
+                            created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        else:
+                            created_dt = created_at
+                        if created_dt < cutoff_time:
+                            stuck_jobs.append(row_dict)
+                    except Exception:
+                        pass
+
+            return stuck_jobs
+
+        except Exception as e:
+            logger.error(f"Error getting stuck jobs: {e}")
+            return []
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete an audio job."""
+        from tablestore import Condition, RowExistenceExpectation
+
+        try:
+            primary_key = [('job_id', job_id)]
+            condition = Condition(RowExistenceExpectation.IGNORE)
+            self.client.delete_row('audio_jobs', primary_key, condition)
+            logger.info(f"Deleted job {job_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error deleting job {job_id}: {e}")
+            return False
+
+    def get_transcription_stats(self, days: int = 30) -> Dict[str, Any]:
+        """Get transcription statistics for the last N days."""
+        from tablestore import INF_MIN, INF_MAX, Direction
+
+        try:
+            inclusive_start_primary_key = [('log_id', INF_MIN)]
+            exclusive_end_primary_key = [('log_id', INF_MAX)]
+
+            consumed, next_start_primary_key, row_list, next_token = self.client.get_range(
+                'transcription_logs',
+                Direction.FORWARD,
+                inclusive_start_primary_key,
+                exclusive_end_primary_key,
+                [],
+                10000
+            )
+
+            cutoff_time = datetime.now(pytz.utc) - timedelta(days=days)
+            total_seconds = 0
+            total_chars = 0
+            count = 0
+            user_stats = {}
+
+            for row in row_list:
+                row_dict = self._row_to_dict(row)
+
+                # Check timestamp
+                timestamp = row_dict.get('timestamp', '')
+                if timestamp:
+                    try:
+                        if isinstance(timestamp, str):
+                            ts_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        else:
+                            ts_dt = timestamp
+
+                        if ts_dt < cutoff_time:
+                            continue
+                    except Exception:
+                        continue
+
+                # Only count successful
+                if row_dict.get('status') == 'completed':
+                    duration = row_dict.get('duration', 0)
+                    chars = row_dict.get('char_count', 0)
+
+                    total_seconds += duration
+                    total_chars += chars
+                    count += 1
+
+                    # Track per-user stats
+                    uid = row_dict.get('user_id', 'unknown')
+                    if uid not in user_stats:
+                        user_stats[uid] = {'duration': 0, 'count': 0}
+                    user_stats[uid]['duration'] += duration
+                    user_stats[uid]['count'] += 1
+
+            return {
+                'total_count': count,
+                'total_seconds': total_seconds,
+                'total_chars': total_chars,
+                'user_stats': user_stats
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting transcription stats: {e}")
+            return {'total_count': 0, 'total_seconds': 0, 'total_chars': 0, 'user_stats': {}}
+
+    def get_payment_stats(self, days: int = 30) -> Dict[str, Any]:
+        """Get payment statistics for the last N days."""
+        from tablestore import INF_MIN, INF_MAX, Direction
+
+        try:
+            inclusive_start_primary_key = [('payment_id', INF_MIN)]
+            exclusive_end_primary_key = [('payment_id', INF_MAX)]
+
+            consumed, next_start_primary_key, row_list, next_token = self.client.get_range(
+                'payment_logs',
+                Direction.FORWARD,
+                inclusive_start_primary_key,
+                exclusive_end_primary_key,
+                [],
+                5000
+            )
+
+            cutoff_time = datetime.now(pytz.utc) - timedelta(days=days)
+            total_stars = 0
+            total_minutes = 0
+            count = 0
+
+            for row in row_list:
+                row_dict = self._row_to_dict(row)
+
+                # Check timestamp
+                timestamp = row_dict.get('timestamp', '')
+                if timestamp:
+                    try:
+                        if isinstance(timestamp, str):
+                            ts_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        else:
+                            ts_dt = timestamp
+
+                        if ts_dt < cutoff_time:
+                            continue
+                    except Exception:
+                        continue
+
+                total_stars += row_dict.get('stars_amount', 0)
+                total_minutes += row_dict.get('minutes_added', 0)
+                count += 1
+
+            return {
+                'total_count': count,
+                'total_stars': total_stars,
+                'total_minutes': total_minutes
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting payment stats: {e}")
+            return {'total_count': 0, 'total_stars': 0, 'total_minutes': 0}

@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.0.1 |
+| **Version** | v3.1.0 |
 | **ASR** | `qwen3-asr-flash` (REST API) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS |
@@ -77,10 +77,15 @@ alibaba/
 | `/status` | Queue status |
 | `/flush` | Clean stuck jobs |
 | `/metrics [hours]` | Performance metrics |
+| `/batch [user_id]` | Show user's job queue |
 
 ---
 
 ## Tariff Structure
+
+| Package | Minutes | Price | Markup |
+|---------|---------|-------|--------|
+| Micro | 10 | 10 stars | Promo (limit 3) |
 
 | Package | Minutes | Price | Markup |
 |---------|---------|-------|--------|
