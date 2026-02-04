@@ -430,107 +430,151 @@ class AudioService:
 
     def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio using Alibaba Paraformer via DashScope REST API.
+        Transcribe audio using Alibaba Paraformer via DashScope WebSocket API.
 
-        Uses direct HTTP requests (no SDK needed).
+        Uses WebSocket for real-time streaming transcription.
 
         Args:
-            audio_path: Path to audio file
+            audio_path: Path to audio file (must be converted to proper format)
             language: Language code (default: 'ru' for Russian)
 
         Returns:
             Transcribed text
         """
-        import requests
-        import base64
+        import json
+        import uuid
+        import websocket
+        import ssl
 
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
         if not api_key:
             logging.warning("DASHSCOPE_API_KEY not configured")
             raise RuntimeError("DASHSCOPE_API_KEY not configured")
 
-        logging.info(f"Starting Alibaba ASR transcription: {audio_path}")
+        logging.info(f"Starting Alibaba ASR transcription via WebSocket: {audio_path}")
         start_time = time.time()
 
+        # WebSocket endpoint (international)
+        ws_url = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
+
+        task_id = str(uuid.uuid4())
+        full_text = ""
+        error_message = None
+
         try:
-            # Read and encode audio file
+            # Read audio file
             with open(audio_path, 'rb') as f:
                 audio_data = f.read()
 
-            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+            logging.info(f"Audio file size: {len(audio_data)} bytes")
 
-            # DashScope Paraformer API endpoint
-            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
+            # Create WebSocket connection
+            ws = websocket.create_connection(
+                ws_url,
+                header=[f"Authorization: Bearer {api_key}"],
+                sslopt={"cert_reqs": ssl.CERT_NONE}
+            )
 
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-
-            # Use file upload approach for transcription
-            payload = {
-                "model": "paraformer-v2",
-                "input": {
-                    "file_urls": []  # Will use different approach
+            # Send run-task instruction
+            run_task = {
+                "header": {
+                    "action": "run-task",
+                    "task_id": task_id,
+                    "streaming": "duplex"
                 },
-                "parameters": {
-                    "language_hints": ["ru"]
+                "payload": {
+                    "task_group": "audio",
+                    "task": "asr",
+                    "function": "recognition",
+                    "model": "paraformer-realtime-v2",
+                    "parameters": {
+                        "format": "mp3",
+                        "sample_rate": 44100
+                    },
+                    "input": {}
                 }
             }
 
-            # Try simpler approach - use sensevoice model with base64 audio
-            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/recognition"
-            payload = {
-                "model": "sensevoice-v1",
-                "input": {
-                    "audio": f"data:audio/mp3;base64,{audio_base64}"
+            logging.info("Sending run-task...")
+            ws.send(json.dumps(run_task))
+
+            # Wait for task-started
+            response = ws.recv()
+            data = json.loads(response)
+            logging.info(f"Received: {data.get('header', {}).get('event', 'unknown')}")
+
+            if data.get('header', {}).get('event') == 'task-failed':
+                error_message = data.get('payload', {}).get('error_message', 'Unknown error')
+                raise RuntimeError(f"Task failed: {error_message}")
+
+            # Send audio data in chunks (100ms chunks recommended)
+            chunk_size = 4410 * 2  # ~100ms at 44100Hz mono 16-bit
+            for i in range(0, len(audio_data), chunk_size):
+                chunk = audio_data[i:i + chunk_size]
+                ws.send_binary(chunk)
+
+            # Send finish-task
+            finish_task = {
+                "header": {
+                    "action": "finish-task",
+                    "task_id": task_id,
+                    "streaming": "duplex"
                 },
-                "parameters": {}
+                "payload": {
+                    "input": {}
+                }
             }
 
-            logging.info("Calling DashScope Recognition API via REST...")
-            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            logging.info("Sending finish-task...")
+            ws.send(json.dumps(finish_task))
 
-            if response.status_code == 200:
-                data = response.json()
-                logging.info(f"DashScope response: {data}")
+            # Receive results until task-finished
+            while True:
+                try:
+                    response = ws.recv()
+                    data = json.loads(response)
+                    event = data.get('header', {}).get('event', '')
 
-                # Extract text from response
-                full_text = ""
-                if 'output' in data:
-                    output = data['output']
-                    if isinstance(output, dict):
-                        if 'text' in output:
-                            full_text = output['text']
-                        elif 'sentence' in output:
-                            sent = output['sentence']
-                            if isinstance(sent, dict):
-                                full_text = sent.get('text', '')
-                            elif isinstance(sent, list):
-                                full_text = ' '.join([s.get('text', '') for s in sent if isinstance(s, dict)])
+                    logging.info(f"Event: {event}")
 
-                full_text = full_text.strip()
+                    if event == 'result-generated':
+                        output = data.get('payload', {}).get('output', {})
+                        sentence = output.get('sentence', {})
+                        if isinstance(sentence, dict):
+                            text = sentence.get('text', '')
+                            if text and sentence.get('sentence_end', False):
+                                full_text += text + " "
+                        elif isinstance(sentence, list):
+                            for s in sentence:
+                                if isinstance(s, dict) and s.get('sentence_end', False):
+                                    full_text += s.get('text', '') + " "
 
-                duration = time.time() - start_time
-                logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
+                    elif event == 'task-finished':
+                        logging.info("Task finished")
+                        break
 
-                if self.metrics_service:
-                    self.metrics_service.log_api_call('alibaba-asr', duration, True)
+                    elif event == 'task-failed':
+                        error_message = data.get('payload', {}).get('error_message', 'Unknown error')
+                        raise RuntimeError(f"Task failed: {error_message}")
 
-                if not full_text or len(full_text.strip()) < 3:
-                    logging.warning("Alibaba ASR returned empty result")
-                    raise ValueError("Transcription empty")
+                except websocket.WebSocketConnectionClosedException:
+                    logging.info("WebSocket connection closed")
+                    break
 
-                return full_text
+            ws.close()
 
-            else:
-                error_msg = response.text
-                logging.error(f"DashScope API error: {response.status_code} - {error_msg}")
-                raise RuntimeError(f"DashScope API error: {response.status_code}")
+            full_text = full_text.strip()
+            duration = time.time() - start_time
+            logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
 
-        except requests.RequestException as e:
-            logging.error(f"Request error: {e}")
-            raise RuntimeError(f"Transcription request failed: {e}")
+            if self.metrics_service:
+                self.metrics_service.log_api_call('alibaba-asr', duration, True)
+
+            if not full_text or len(full_text.strip()) < 3:
+                logging.warning("Alibaba ASR returned empty result")
+                raise ValueError("Transcription empty")
+
+            return full_text
 
         except Exception as e:
             duration = time.time() - start_time
