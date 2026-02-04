@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.1.0 |
+| **Version** | v3.1.1 |
 | **ASR** | `qwen3-asr-flash` (REST API) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS |
