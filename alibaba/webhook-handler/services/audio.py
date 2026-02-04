@@ -430,13 +430,9 @@ class AudioService:
 
     def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio using Alibaba Paraformer via DashScope Recognition API.
+        Transcribe audio using Alibaba Paraformer via DashScope REST API.
 
-        Uses Recognition.call() which supports local files directly (no OSS needed).
-
-        Latency: Very fast (non-autoregressive architecture)
-        Quality: Excellent for Chinese/CJK, good for Russian
-        Cost: Pay-per-use via Alibaba DashScope
+        Uses direct HTTP requests (no SDK needed).
 
         Args:
             audio_path: Path to audio file
@@ -445,6 +441,9 @@ class AudioService:
         Returns:
             Transcribed text
         """
+        import requests
+        import base64
+
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
         if not api_key:
             logging.warning("DASHSCOPE_API_KEY not configured")
@@ -454,59 +453,84 @@ class AudioService:
         start_time = time.time()
 
         try:
-            import dashscope
-            from dashscope.audio.asr import Recognition
-
-            # Set API key
-            dashscope.api_key = api_key
-
-            # Use Recognition API with local file (synchronous, no OSS needed)
-            logging.info("Calling DashScope Recognition API...")
-            recognition = Recognition(
-                model='paraformer-realtime-v2',
-                format='mp3',
-                sample_rate=44100,
-                callback=None
-            )
-
-            # Read file and transcribe
+            # Read and encode audio file
             with open(audio_path, 'rb') as f:
                 audio_data = f.read()
 
-            result = recognition.call(audio_data)
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
 
-            # Extract text from result
-            full_text = ""
-            if result.status_code == 200:
-                if hasattr(result, 'output') and result.output:
-                    if hasattr(result.output, 'sentence') and result.output.sentence:
-                        full_text = result.output.sentence.get('text', '')
-                    elif hasattr(result.output, 'text'):
-                        full_text = result.output.text
-                    elif isinstance(result.output, dict):
-                        full_text = result.output.get('text', '') or result.output.get('sentence', {}).get('text', '')
+            # DashScope Paraformer API endpoint
+            url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            # Use file upload approach for transcription
+            payload = {
+                "model": "paraformer-v2",
+                "input": {
+                    "file_urls": []  # Will use different approach
+                },
+                "parameters": {
+                    "language_hints": ["ru"]
+                }
+            }
+
+            # Try simpler approach - use sensevoice model with base64 audio
+            url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/recognition"
+            payload = {
+                "model": "sensevoice-v1",
+                "input": {
+                    "audio": f"data:audio/mp3;base64,{audio_base64}"
+                },
+                "parameters": {}
+            }
+
+            logging.info("Calling DashScope Recognition API via REST...")
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+
+            if response.status_code == 200:
+                data = response.json()
+                logging.info(f"DashScope response: {data}")
+
+                # Extract text from response
+                full_text = ""
+                if 'output' in data:
+                    output = data['output']
+                    if isinstance(output, dict):
+                        if 'text' in output:
+                            full_text = output['text']
+                        elif 'sentence' in output:
+                            sent = output['sentence']
+                            if isinstance(sent, dict):
+                                full_text = sent.get('text', '')
+                            elif isinstance(sent, list):
+                                full_text = ' '.join([s.get('text', '') for s in sent if isinstance(s, dict)])
+
+                full_text = full_text.strip()
+
+                duration = time.time() - start_time
+                logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
+
+                if self.metrics_service:
+                    self.metrics_service.log_api_call('alibaba-asr', duration, True)
+
+                if not full_text or len(full_text.strip()) < 3:
+                    logging.warning("Alibaba ASR returned empty result")
+                    raise ValueError("Transcription empty")
+
+                return full_text
+
             else:
-                logging.error(f"DashScope Recognition failed: {result.code} - {result.message}")
-                raise RuntimeError(f"DashScope error: {result.message}")
+                error_msg = response.text
+                logging.error(f"DashScope API error: {response.status_code} - {error_msg}")
+                raise RuntimeError(f"DashScope API error: {response.status_code}")
 
-            full_text = full_text.strip()
-
-            duration = time.time() - start_time
-            logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
-
-            if self.metrics_service:
-                self.metrics_service.log_api_call('alibaba-asr', duration, True)
-
-            # Quality check
-            if not full_text or len(full_text.strip()) < 5:
-                logging.warning("Alibaba ASR returned empty result")
-                raise ValueError("Transcription empty")
-
-            return full_text
-
-        except ImportError as e:
-            logging.error(f"dashscope not installed: {e}")
-            raise RuntimeError("dashscope package not installed")
+        except requests.RequestException as e:
+            logging.error(f"Request error: {e}")
+            raise RuntimeError(f"Transcription request failed: {e}")
 
         except Exception as e:
             duration = time.time() - start_time
@@ -742,7 +766,7 @@ class AudioService:
             
     def format_text_with_qwen(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
         """
-        Format transcribed text using Qwen LLM (Alibaba).
+        Format transcribed text using Qwen LLM (Alibaba) via REST API.
         Falls back to Gemini if Qwen fails.
 
         Args:
@@ -753,6 +777,8 @@ class AudioService:
         Returns:
             Formatted text
         """
+        import requests
+
         # Check if text is too short to format
         word_count = len(text.split())
         if word_count < 10:
@@ -790,23 +816,50 @@ class AudioService:
         api_start_time = time.time()
 
         try:
-            from dashscope import Generation
-
             api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
             if not api_key:
                 logging.warning("DASHSCOPE_API_KEY not set, falling back to Gemini")
                 return self.format_text_with_gemini(text, use_code_tags, use_yo)
 
-            logging.info(f"Starting Qwen LLM request. Input chars: {len(text)}")
+            logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
 
-            response = Generation.call(
-                model='qwen-plus',
-                messages=[{'role': 'user', 'content': prompt}],
-                api_key=api_key
-            )
+            # DashScope Qwen API via REST
+            url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": "qwen-plus",
+                "input": {
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ]
+                },
+                "parameters": {}
+            }
+
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
 
             if response.status_code == 200:
-                formatted_text = response.output.text.strip()
+                data = response.json()
+                logging.info(f"Qwen response: {data}")
+
+                # Extract text from response
+                formatted_text = ""
+                if 'output' in data:
+                    output = data['output']
+                    if isinstance(output, dict):
+                        if 'text' in output:
+                            formatted_text = output['text']
+                        elif 'choices' in output:
+                            choices = output['choices']
+                            if choices and isinstance(choices, list):
+                                formatted_text = choices[0].get('message', {}).get('content', '')
+
+                formatted_text = formatted_text.strip()
                 api_duration = time.time() - api_start_time
                 logging.info(f"Qwen LLM finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
 
@@ -826,11 +879,11 @@ class AudioService:
                 logging.info("Successfully formatted text with Qwen LLM")
                 return formatted_text
             else:
-                logging.warning(f"Qwen API error: {response.code} - {response.message}, trying Gemini fallback")
+                logging.warning(f"Qwen API error: {response.status_code} - {response.text}, trying Gemini fallback")
                 return self.format_text_with_gemini(text, use_code_tags, use_yo)
 
-        except ImportError:
-            logging.warning("dashscope not installed, falling back to Gemini")
+        except requests.RequestException as e:
+            logging.warning(f"Qwen API request failed: {e}, falling back to Gemini")
             return self.format_text_with_gemini(text, use_code_tags, use_yo)
 
         except Exception as e:
