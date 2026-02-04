@@ -17,8 +17,8 @@ class AudioService:
     """Service for all audio processing operations"""
 
     # Audio processing constants
-    AUDIO_BITRATE = '128k'
-    AUDIO_SAMPLE_RATE = '44100'
+    AUDIO_BITRATE = '64k'
+    AUDIO_SAMPLE_RATE = '16000'  # 16kHz for ASR compatibility
     AUDIO_CHANNELS = '1'  # Mono for memory efficiency
     FFMPEG_THREADS = '4'  # Optimized for speed (was 1)
     FFMPEG_TIMEOUT = 60  # seconds
@@ -430,158 +430,194 @@ class AudioService:
 
     def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
         """
-        Transcribe audio using Alibaba Paraformer via DashScope WebSocket API.
+        Transcribe audio using Qwen3-ASR-Flash via DashScope REST API.
 
-        Uses WebSocket for real-time streaming transcription.
+        Uses the modern Qwen3-ASR model (2026) with file-based transcription.
+        Model: qwen3-asr-flash (fast, multilingual, 52 languages)
+
+        Uses pure requests - no dashscope SDK needed!
 
         Args:
-            audio_path: Path to audio file (must be converted to proper format)
+            audio_path: Path to audio file (MP3, WAV, etc.)
             language: Language code (default: 'ru' for Russian)
 
         Returns:
             Transcribed text
         """
-        import json
-        import uuid
-        import websocket
-        import ssl
+        import base64
+        import pathlib
+        import requests
 
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
         if not api_key:
             logging.warning("DASHSCOPE_API_KEY not configured")
             raise RuntimeError("DASHSCOPE_API_KEY not configured")
 
-        logging.info(f"Starting Alibaba ASR transcription via WebSocket: {audio_path}")
+        logging.info(f"Starting Qwen3-ASR-Flash transcription: {audio_path}")
         start_time = time.time()
 
-        # WebSocket endpoint (international)
-        ws_url = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
-
-        task_id = str(uuid.uuid4())
-        full_text = ""
-        error_message = None
-
         try:
-            # Read audio file
-            with open(audio_path, 'rb') as f:
-                audio_data = f.read()
+            # Get file info
+            file_path = pathlib.Path(audio_path)
+            file_size = file_path.stat().st_size
+            logging.info(f"Audio file size: {file_size} bytes")
 
-            logging.info(f"Audio file size: {len(audio_data)} bytes")
+            # Determine MIME type
+            suffix = file_path.suffix.lower()
+            mime_types = {
+                '.mp3': 'audio/mpeg',
+                '.wav': 'audio/wav',
+                '.ogg': 'audio/ogg',
+                '.m4a': 'audio/mp4',
+                '.flac': 'audio/flac',
+                '.webm': 'audio/webm'
+            }
+            audio_mime_type = mime_types.get(suffix, 'audio/mpeg')
 
-            # Create WebSocket connection
-            ws = websocket.create_connection(
-                ws_url,
-                header=[f"Authorization: Bearer {api_key}"],
-                sslopt={"cert_reqs": ssl.CERT_NONE}
-            )
+            # Encode audio as base64 data URI
+            base64_str = base64.b64encode(file_path.read_bytes()).decode('utf-8')
+            data_uri = f"data:{audio_mime_type};base64,{base64_str}"
 
-            # Send run-task instruction
-            run_task = {
-                "header": {
-                    "action": "run-task",
-                    "task_id": task_id,
-                    "streaming": "duplex"
+            logging.info(f"Encoded audio to base64 ({len(base64_str)} chars)")
+
+            # DashScope MultiModalConversation API endpoint (international)
+            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            # Request payload
+            payload = {
+                "model": "qwen3-asr-flash",
+                "input": {
+                    "messages": [
+                        {"role": "system", "content": [{"text": ""}]},
+                        {"role": "user", "content": [{"audio": data_uri}]}
+                    ]
                 },
-                "payload": {
-                    "task_group": "audio",
-                    "task": "asr",
-                    "function": "recognition",
-                    "model": "paraformer-realtime-v2",
-                    "parameters": {
-                        "format": "mp3",
-                        "sample_rate": 44100
-                    },
-                    "input": {}
+                "parameters": {
+                    "result_format": "message",
+                    "asr_options": {
+                        "enable_itn": True
+                    }
                 }
             }
 
-            logging.info("Sending run-task...")
-            ws.send(json.dumps(run_task))
+            logging.info("Calling Qwen3-ASR-Flash API...")
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
 
-            # Wait for task-started
-            response = ws.recv()
-            data = json.loads(response)
-            logging.info(f"Received: {data.get('header', {}).get('event', 'unknown')}")
-
-            if data.get('header', {}).get('event') == 'task-failed':
-                error_message = data.get('payload', {}).get('error_message', 'Unknown error')
-                raise RuntimeError(f"Task failed: {error_message}")
-
-            # Send audio data in chunks (100ms chunks recommended)
-            chunk_size = 4410 * 2  # ~100ms at 44100Hz mono 16-bit
-            for i in range(0, len(audio_data), chunk_size):
-                chunk = audio_data[i:i + chunk_size]
-                ws.send_binary(chunk)
-
-            # Send finish-task
-            finish_task = {
-                "header": {
-                    "action": "finish-task",
-                    "task_id": task_id,
-                    "streaming": "duplex"
-                },
-                "payload": {
-                    "input": {}
-                }
-            }
-
-            logging.info("Sending finish-task...")
-            ws.send(json.dumps(finish_task))
-
-            # Receive results until task-finished
-            while True:
-                try:
-                    response = ws.recv()
-                    data = json.loads(response)
-                    event = data.get('header', {}).get('event', '')
-
-                    logging.info(f"Event: {event}")
-
-                    if event == 'result-generated':
-                        output = data.get('payload', {}).get('output', {})
-                        sentence = output.get('sentence', {})
-                        if isinstance(sentence, dict):
-                            text = sentence.get('text', '')
-                            if text and sentence.get('sentence_end', False):
-                                full_text += text + " "
-                        elif isinstance(sentence, list):
-                            for s in sentence:
-                                if isinstance(s, dict) and s.get('sentence_end', False):
-                                    full_text += s.get('text', '') + " "
-
-                    elif event == 'task-finished':
-                        logging.info("Task finished")
-                        break
-
-                    elif event == 'task-failed':
-                        error_message = data.get('payload', {}).get('error_message', 'Unknown error')
-                        raise RuntimeError(f"Task failed: {error_message}")
-
-                except websocket.WebSocketConnectionClosedException:
-                    logging.info("WebSocket connection closed")
-                    break
-
-            ws.close()
-
-            full_text = full_text.strip()
             duration = time.time() - start_time
-            logging.info(f"Alibaba ASR completed in {duration:.2f}s, {len(full_text)} chars")
+            logging.info(f"API response received in {duration:.2f}s, status: {response.status_code}")
 
+            if response.status_code == 200:
+                data = response.json()
+                logging.info(f"Response: {str(data)[:500]}...")
+
+                # Extract transcription from response
+                full_text = ""
+
+                # Try different response structures
+                output = data.get('output', {})
+
+                # Structure 1: output.choices[0].message.content[0].text
+                choices = output.get('choices', [])
+                if choices:
+                    message = choices[0].get('message', {})
+                    content = message.get('content', [])
+                    if isinstance(content, list) and content:
+                        full_text = content[0].get('text', '')
+                    elif isinstance(content, str):
+                        full_text = content
+
+                # Structure 2: output.text
+                if not full_text:
+                    full_text = output.get('text', '')
+
+                # Structure 3: direct text in output
+                if not full_text and isinstance(output, str):
+                    full_text = output
+
+                full_text = full_text.strip()
+                logging.info(f"Qwen3-ASR completed in {duration:.2f}s, {len(full_text)} chars")
+
+                if self.metrics_service:
+                    self.metrics_service.log_api_call('qwen3-asr', duration, True)
+
+                if not full_text or len(full_text) < 3:
+                    logging.warning("Qwen3-ASR returned empty result")
+                    raise ValueError("Transcription empty")
+
+                return full_text
+
+            else:
+                # API error
+                error_data = response.json() if response.text else {}
+                error_code = error_data.get('code', response.status_code)
+                error_msg = error_data.get('message', response.text[:200])
+                logging.error(f"Qwen3-ASR API error: {error_code} - {error_msg}")
+                raise RuntimeError(f"API error: {error_code} - {error_msg}")
+
+        except requests.RequestException as e:
+            duration = time.time() - start_time
             if self.metrics_service:
-                self.metrics_service.log_api_call('alibaba-asr', duration, True)
-
-            if not full_text or len(full_text.strip()) < 3:
-                logging.warning("Alibaba ASR returned empty result")
-                raise ValueError("Transcription empty")
-
-            return full_text
+                self.metrics_service.log_api_call('qwen3-asr', duration, False, str(e))
+            logging.error(f"Qwen3-ASR request error: {e}")
+            raise RuntimeError(f"Transcription failed: {e}")
 
         except Exception as e:
             duration = time.time() - start_time
             if self.metrics_service:
-                self.metrics_service.log_api_call('alibaba-asr', duration, False, str(e))
-            logging.error(f"Alibaba ASR error: {e}")
+                self.metrics_service.log_api_call('qwen3-asr', duration, False, str(e))
+            logging.error(f"Qwen3-ASR error: {e}")
             raise RuntimeError(f"Transcription failed: {e}")
+
+    def _convert_to_pcm(self, input_path: str) -> Optional[str]:
+        """
+        Convert audio file to PCM WAV format (16kHz, mono, 16-bit) for ASR.
+
+        Args:
+            input_path: Path to input audio file
+
+        Returns:
+            Path to converted PCM file or None on error
+        """
+        output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir='/tmp').name
+
+        ffmpeg_command = [
+            'ffmpeg', '-y',
+            '-i', input_path,
+            '-ar', '16000',      # 16kHz sample rate
+            '-ac', '1',          # Mono
+            '-f', 's16le',       # Raw PCM 16-bit little-endian
+            '-acodec', 'pcm_s16le',
+            output_path
+        ]
+
+        try:
+            logging.info(f"Converting to PCM: {input_path} -> {output_path}")
+            subprocess.run(
+                ffmpeg_command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.FFMPEG_TIMEOUT
+            )
+            logging.info(f"PCM conversion successful")
+            return output_path
+
+        except subprocess.TimeoutExpired:
+            logging.error(f"PCM conversion timed out")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+
+        except subprocess.CalledProcessError as e:
+            logging.error(f"PCM conversion failed: {e.stderr}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
 
     def _transcribe_with_fallback(self, audio_path: str, language: str = 'ru') -> str:
         """
@@ -616,14 +652,16 @@ class AudioService:
             subprocess.CalledProcessError: If FFmpeg fails
         """
         import subprocess
-        import json
-        import os
 
         # Get Whisper model path from environment
         model_path = os.getenv('WHISPER_MODEL_PATH', '/opt/whisper/models/ggml-base.bin')
 
         # Temporary output file for transcription
         output_json = f"{audio_path}.transcript.json"
+
+        # Calculate timeout before try block to avoid unbound variable
+        audio_duration = self.get_audio_duration(audio_path)
+        timeout = max(int(audio_duration * 3), 60)
 
         try:
             # FFmpeg command with Whisper filter
@@ -644,10 +682,6 @@ class AudioService:
                 '-f', 'null',
                 '-'
             ]
-
-            # Execute FFmpeg with timeout
-            audio_duration = self.get_audio_duration(audio_path)
-            timeout = max(int(audio_duration * 3), 60)
 
             logging.info(f"Starting FFmpeg Whisper transcription (timeout: {timeout}s)")
 

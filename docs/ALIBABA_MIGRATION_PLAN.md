@@ -31,19 +31,25 @@
 
 ## 🎯 Целевая архитектура (100% Alibaba Cloud)
 
+**⚠️ КРИТИЧЕСКАЯ КОНФИГУРАЦИЯ: [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md)**
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Alibaba Cloud                                               │
-│  ├─ SAE / Function Compute (webhook handler)                │
-│  ├─ Function Compute (audio processor)                      │
-│  ├─ Tablestore / Lindorm (users, jobs, logs, payments)      │
-│  ├─ MNS / EventBridge (message queue)                       │
-│  ├─ KMS (secrets and API keys)                              │
-│  ├─ API Gateway (HTTPS endpoint for Telegram)               │
-│  ├─ DashScope (Paraformer ASR + Qwen LLM formatting)       │
-│  └─ OSS (file storage)                                      │
+│  ├─ Function Compute 3.0 (webhook handler + audio processor)│
+│  ├─ Tablestore (users, jobs, logs, payments)                │
+│  ├─ MNS (message queue for async processing)                │
+│  ├─ DashScope qwen3-asr-flash-realtime (ASR via WebSocket) │
+│  ├─ DashScope qwen-plus (LLM formatting)                    │
+│  └─ SLS (logging)                                           │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Модели DashScope (НЕ МЕНЯТЬ!)
+| Сервис | Модель | Endpoint |
+|--------|--------|----------|
+| ASR | `qwen3-asr-flash-realtime` | `wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime` |
+| LLM | `qwen-plus` | `https://dashscope-intl.aliyuncs.com/api/v1/...` |
 
 ---
 

@@ -1,7 +1,32 @@
 # Telegram Whisper Bot - Project Documentation
 
 ## Overview
-A Telegram bot that transcribes audio files using OpenAI Whisper and formats the text using Google Gemini AI. The bot supports async processing via Google Cloud Pub/Sub and includes a payment system using Telegram Stars.
+A Telegram bot that transcribes audio files using Alibaba Qwen3-ASR and formats the text using Qwen LLM (with Gemini fallback). The bot supports async processing via Alibaba MNS and includes a payment system using Telegram Stars.
+
+## 🔴 КРИТИЧЕСКАЯ КОНФИГУРАЦИЯ (v3.0.0)
+
+**⚠️ НЕ ТЕРЯТЬ! Полная документация: [docs/ALIBABA_CRITICAL_CONFIG.md](docs/ALIBABA_CRITICAL_CONFIG.md)**
+
+### ASR модель (распознавание речи)
+| Параметр | Значение |
+|----------|----------|
+| **Модель** | `qwen3-asr-flash` |
+| **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1` |
+| **Протокол** | REST API через `dashscope.MultiModalConversation.call()` |
+| **SDK** | `dashscope>=1.20.0` |
+
+### LLM модель (форматирование)
+| Параметр | Значение |
+|----------|----------|
+| **Модель** | `qwen-plus` |
+| **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
+| **Fallback** | Gemini 2.0 Flash |
+
+### ❌ НЕ ИСПОЛЬЗОВАТЬ
+- ~~paraformer-realtime-v2~~ (устаревшая модель 2024)
+- ~~paraformer-v1~~ (устаревшая модель)
+- ~~qwen3-asr-flash-realtime WebSocket~~ (сложен в serverless, используйте REST)
+- ~~dashscope.aliyuncs.com~~ (Beijing, использовать `-intl` для международного)
 
 ## Architecture
 
