@@ -61,3 +61,4 @@ htmlcov/
 .terraform.lock.hcl
 terraform.tfvars
 *.auto.tfvars
+alibaba/s.yaml

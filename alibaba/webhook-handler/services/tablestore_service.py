@@ -244,6 +244,36 @@ class TablestoreService:
         """Update user settings."""
         return self.update_user(user_id, {'settings': json.dumps(settings)})
 
+    def increment_micro_purchases(self, user_id: int) -> bool:
+        """Increment the micro package purchase counter for a user."""
+        from tablestore import Row, Condition, RowExistenceExpectation
+
+        try:
+            user = self.get_user(user_id)
+            if not user:
+                logger.error(f"User {user_id} not found for micro purchases increment")
+                return False
+
+            current_count = user.get('micro_package_purchases', 0)
+            if isinstance(current_count, str):
+                current_count = int(current_count)
+            new_count = current_count + 1
+
+            primary_key = [('user_id', str(user_id))]
+            update_columns = {
+                'put': [('micro_package_purchases', new_count)]
+            }
+            row = Row(primary_key, update_columns)
+            condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
+
+            self.client.update_row('users', row, condition)
+            logger.info(f"Incremented micro_package_purchases for user {user_id}: {current_count} -> {new_count}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error incrementing micro purchases for user {user_id}: {e}")
+            return False
+
     # ==================== USER STATE OPERATIONS ====================
 
     def get_user_state(self, user_id: int) -> Optional[Dict[str, Any]]:
@@ -569,23 +599,29 @@ class TablestoreService:
             return []
 
     def search_users(self, query: str) -> List[Dict[str, Any]]:
-        """Search users by name, username, or ID."""
+        """Search users by name, username, or ID (partial match)."""
         users = self.get_all_users(limit=200)
         query_lower = query.lower()
 
         results = []
         for user in users:
-            # Check if query matches user_id
-            if query == str(user.get('user_id', '')):
+            user_id_str = str(user.get('user_id', ''))
+
+            # Check if query matches user_id (partial match)
+            if query in user_id_str:
                 results.append(user)
                 continue
 
-            # Check name/username
+            # Check name/username (support both old user_name and new first_name/last_name)
             first_name = str(user.get('first_name', '')).lower()
             last_name = str(user.get('last_name', '')).lower()
             username = str(user.get('username', '')).lower()
+            user_name = str(user.get('user_name', '')).lower()  # Old field from migration
 
-            if query_lower in first_name or query_lower in last_name or query_lower in username:
+            if (query_lower in first_name or
+                query_lower in last_name or
+                query_lower in username or
+                query_lower in user_name):
                 results.append(user)
 
         return results

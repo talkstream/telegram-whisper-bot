@@ -236,17 +236,17 @@ def process_update(update: Dict[str, Any]) -> str:
     if 'callback_query' in update:
         return handle_callback_query(update['callback_query'])
 
-    # Handle message
-    if 'message' in update:
-        return handle_message(update['message'])
-
     # Handle pre_checkout_query (payments)
     if 'pre_checkout_query' in update:
         return handle_pre_checkout(update['pre_checkout_query'])
 
-    # Handle successful_payment
-    if 'successful_payment' in update.get('message', {}):
-        return handle_successful_payment(update['message'])
+    # Handle message (check for successful_payment first)
+    if 'message' in update:
+        message = update['message']
+        # Handle successful_payment inside message
+        if 'successful_payment' in message:
+            return handle_successful_payment(message)
+        return handle_message(message)
 
     return 'no_action'
 
@@ -581,6 +581,30 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
 
     # ==================== ADMIN COMMANDS ====================
 
+    elif command == '/admin':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        admin_help = (
+            "🔐 <b>Админ-команды</b>\n\n"
+            "<b>Пользователи:</b>\n"
+            "/user [search] — поиск пользователей\n"
+            "/credit &lt;id&gt; &lt;мин&gt; — добавить минуты\n"
+            "/review_trials — заявки на триал\n\n"
+            "<b>Статистика:</b>\n"
+            "/stat — общая статистика\n"
+            "/cost — стоимость обработки\n"
+            "/metrics [часы] — метрики производительности\n\n"
+            "<b>Система:</b>\n"
+            "/status — статус очереди MNS\n"
+            "/flush — очистить зависшие задачи\n"
+            "/batch [user_id] — очередь пользователя\n\n"
+            "<b>Отчёты:</b>\n"
+            "/export [users|logs|payments] [дни] — экспорт CSV\n"
+            "/report [daily|weekly] — отчёт"
+        )
+        tg.send_message(chat_id, admin_help, parse_mode='HTML')
+        return 'admin_help'
+
     elif command == '/review_trials':
         if user_id != OWNER_ID:
             return 'unauthorized'
@@ -724,26 +748,55 @@ def handle_credit_command(text: str, chat_id: int, tg, db) -> str:
         return 'credit_error'
 
 
-def handle_user_search(text: str, chat_id: int, tg, db) -> str:
-    """Handle /user [search] command."""
-    parts = text.split(maxsplit=1)
-    search_query = parts[1] if len(parts) > 1 else None
+def handle_user_search(text: str, chat_id: int, tg, db, page: int = 1) -> str:
+    """Handle /user [search] or /user --page N command."""
+    parts = text.split()
+    search_query = None
+
+    # Parse command: /user [search] or /user --page N or /user -p N
+    if len(parts) > 1:
+        # Check for explicit page flag: /user --page 2 or /user -p 2
+        if parts[1] in ('--page', '-p') and len(parts) > 2 and parts[2].isdigit():
+            page = int(parts[2])
+        else:
+            # Everything else is a search query (including numbers - search by ID)
+            search_query = ' '.join(parts[1:])
+
+    PAGE_SIZE = 20
 
     if search_query:
         users = db.search_users(search_query)
         if not users:
             tg.send_message(chat_id, f"❌ Пользователи по запросу '{search_query}' не найдены.")
             return 'user_not_found'
-        title = f"🔍 <b>Результаты поиска '{search_query}':</b>\n\n"
+        title_prefix = f"🔍 <b>Поиск '{search_query}'</b>"
     else:
-        users = db.get_all_users(limit=30)
-        title = f"👥 <b>Все пользователи (показаны первые {len(users)}):</b>\n\n"
+        users = db.get_all_users(limit=100)
+        title_prefix = "👥 <b>Все пользователи</b>"
+
+    total = len(users)
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    page_users = users[start_idx:end_idx]
+
+    title = f"{title_prefix} ({start_idx + 1}-{min(end_idx, total)} из {total}):\n\n"
 
     msg = title
-    for idx, user in enumerate(users[:20], 1):
+    for idx, user in enumerate(page_users, start_idx + 1):
         uid = user.get('user_id', 'unknown')
+        # Support both old user_name and new first_name/last_name
         name = user.get('first_name', '') + ' ' + user.get('last_name', '')
-        name = name.strip() or f"ID_{uid}"
+        name = name.strip()
+        # Only use user_name if it doesn't look like a placeholder
+        if not name:
+            user_name = user.get('user_name', '')
+            if user_name and not user_name.startswith('User_') and not user_name.startswith('ID_'):
+                name = user_name
+            else:
+                name = f"ID_{uid}"
         balance = user.get('balance_minutes', 0)
         trial_status = user.get('trial_status', 'none')
 
@@ -755,14 +808,15 @@ def handle_user_search(text: str, chat_id: int, tg, db) -> str:
         elif trial_status == 'denied':
             trial_emoji = "❌"
 
-        msg += f"{idx}. {name} (ID: {uid})\n"
+        msg += f"{idx}. {name} (ID: <code>{uid}</code>)\n"
         msg += f"   💰 {balance} мин"
         if trial_emoji:
             msg += f" | {trial_emoji}"
-        msg += "\n"
+        msg += "\n\n"
 
-    if len(users) > 20:
-        msg += f"\n<i>Показаны первые 20 из {len(users)} пользователей</i>"
+    # Pagination hint
+    if total_pages > 1:
+        msg += f"\n<i>Страница {page}/{total_pages}. Навигация: /user --page N</i>"
 
     tg.send_message(chat_id, msg[:4000], parse_mode='HTML')
     return 'users_listed'
@@ -1270,6 +1324,8 @@ def handle_successful_payment(message: Dict[str, Any]) -> str:
     user_id = message.get('from', {}).get('id')
     payment = message.get('successful_payment', {})
 
+    logger.info(f"Processing successful payment for user {user_id}: {payment}")
+
     tg = get_telegram_service()
     db = get_db_service()
 
@@ -1280,17 +1336,27 @@ def handle_successful_payment(message: Dict[str, Any]) -> str:
     try:
         minutes = int(payload.split('_')[1])
     except (IndexError, ValueError) as e:
-        logger.warning(f"Could not parse payment payload '{payload}': {e}")
-        minutes = 0
+        logger.error(f"Could not parse payment payload '{payload}': {e}")
+        tg.send_message(chat_id, "❌ Ошибка обработки платежа. Свяжитесь с поддержкой.")
+        return 'payment_parse_error'
 
     if minutes > 0:
-        db.update_user_balance(user_id, minutes)
-        db.log_payment({
-            'user_id': str(user_id),
-            'minutes_added': minutes,
-            'stars_amount': payment.get('total_amount', 0),
-            'telegram_payment_charge_id': payment.get('telegram_payment_charge_id', '')
-        })
-        tg.send_message(chat_id, f"✅ Оплата прошла успешно! Добавлено {minutes} минут.")
+        success = db.update_user_balance(user_id, minutes)
+        if success:
+            logger.info(f"Balance updated for user {user_id}: +{minutes} minutes")
+            db.log_payment({
+                'user_id': str(user_id),
+                'minutes_added': minutes,
+                'stars_amount': payment.get('total_amount', 0),
+                'telegram_payment_charge_id': payment.get('telegram_payment_charge_id', '')
+            })
+            # Update micro package purchase counter
+            if minutes == 10:
+                db.increment_micro_purchases(user_id)
+            tg.send_message(chat_id, f"✅ Оплата прошла успешно! Добавлено {minutes} минут.")
+        else:
+            logger.error(f"Failed to update balance for user {user_id}")
+            tg.send_message(chat_id, "❌ Ошибка зачисления минут. Свяжитесь с поддержкой.")
+            return 'balance_update_failed'
 
     return 'payment_processed'
