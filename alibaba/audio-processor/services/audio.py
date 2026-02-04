@@ -460,7 +460,7 @@ class AudioService:
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
 
             # DashScope Paraformer API endpoint
-            url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
 
             headers = {
                 "Authorization": f"Bearer {api_key}",
@@ -479,7 +479,7 @@ class AudioService:
             }
 
             # Try simpler approach - use sensevoice model with base64 audio
-            url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/recognition"
+            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/recognition"
             payload = {
                 "model": "sensevoice-v1",
                 "input": {
@@ -824,7 +824,7 @@ class AudioService:
             logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
 
             # DashScope Qwen API via REST
-            url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
 
             headers = {
                 "Authorization": f"Bearer {api_key}",
