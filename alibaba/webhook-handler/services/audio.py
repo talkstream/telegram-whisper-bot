@@ -17,7 +17,7 @@ class AudioService:
     """Service for all audio processing operations"""
 
     # Audio processing constants
-    AUDIO_BITRATE = '64k'
+    AUDIO_BITRATE = '32k'  # Optimized: was 64k, 32k is sufficient for ASR (v3.0.1)
     AUDIO_SAMPLE_RATE = '16000'  # 16kHz for ASR compatibility
     AUDIO_CHANNELS = '1'  # Mono for memory efficiency
     FFMPEG_THREADS = '4'  # Optimized for speed (was 1)
@@ -121,17 +121,30 @@ class AudioService:
         
     def convert_to_mp3(self, input_path: str, output_path: Optional[str] = None) -> Optional[str]:
         """
-        Convert audio file to MP3 with standard settings
+        Convert audio file to MP3 with smart settings based on duration.
+        Uses minimal settings for short audio (<10 sec) for faster processing.
         Returns path to converted file or None on error
         """
         if not output_path:
             output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", dir='/tmp').name
-            
+
+        # Smart settings based on audio duration (v3.0.1)
+        duration = self.get_audio_duration(input_path)
+        if duration < 10:
+            # Ultra-light settings for short audio: 24kbps, 8kHz (still good enough for ASR)
+            bitrate = '24k'
+            sample_rate = '8000'
+            logging.info(f"Short audio ({duration:.1f}s) - using light settings: {bitrate}, {sample_rate}Hz")
+        else:
+            # Standard settings
+            bitrate = self.AUDIO_BITRATE
+            sample_rate = self.AUDIO_SAMPLE_RATE
+
         ffmpeg_command = [
             'ffmpeg', '-y',
             '-i', input_path,
-            '-b:a', self.AUDIO_BITRATE,
-            '-ar', self.AUDIO_SAMPLE_RATE,
+            '-b:a', bitrate,
+            '-ar', sample_rate,
             '-ac', self.AUDIO_CHANNELS,
             '-threads', self.FFMPEG_THREADS,
             output_path
@@ -857,10 +870,10 @@ class AudioService:
         """
         import requests
 
-        # Check if text is too short to format
+        # Check if text is too short to format - skip LLM for texts under 150 words (v3.0.1)
         word_count = len(text.split())
-        if word_count < 10:
-            logging.info(f"Text too short for formatting ({word_count} words), returning original")
+        if word_count < 150:
+            logging.info(f"Text too short for LLM formatting ({word_count} words < 150), returning original")
             return text
 
         # Prepare instructions (same as Gemini for consistency)
@@ -885,7 +898,6 @@ class AudioService:
 4. {code_tag_instruction}
 5. {yo_instruction}
 6. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
-7. Если текст короче 10 слов - верни как есть
 
 Текст для форматирования:
 
@@ -910,7 +922,7 @@ class AudioService:
             }
 
             payload = {
-                "model": "qwen-plus",
+                "model": "qwen-turbo",  # v3.0.1: qwen-turbo is 2x faster, 3x cheaper than qwen-plus
                 "input": {
                     "messages": [
                         {"role": "user", "content": prompt}
@@ -1017,7 +1029,6 @@ class AudioService:
 4. {code_tag_instruction}
 5. {yo_instruction}
 6. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
-7. Если текст короче 10 слов - верни как есть
 
 Текст для форматирования:
 

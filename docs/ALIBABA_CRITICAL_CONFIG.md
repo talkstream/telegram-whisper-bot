@@ -3,7 +3,7 @@
 **⚠️ ВНИМАНИЕ: НЕ ТЕРЯТЬ ЭТУ ИНФОРМАЦИЮ!**
 
 **Последнее обновление:** 2026-02-04
-**Версия:** v3.0.0 ✅ РАБОТАЕТ
+**Версия:** v3.0.1 ✅ ОПТИМИЗИРОВАНО
 
 ---
 
@@ -69,19 +69,20 @@ response = dashscope.MultiModalConversation.call(
 
 ## 🤖 LLM модель (форматирование текста)
 
-### Основная модель
+### Основная модель (v3.0.1)
 
 | Параметр | Значение |
 |----------|----------|
-| **Модель** | `qwen-plus` |
+| **Модель** | `qwen-turbo` ⚡ (v3.0.1: 2x быстрее, 3x дешевле чем qwen-plus) |
 | **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
 | **Fallback** | Gemini 2.0 Flash |
+| **Порог форматирования** | 150 слов (v3.0.1: увеличен со 100) |
 
 ### REST API формат
 
 ```json
 {
-    "model": "qwen-plus",
+    "model": "qwen-turbo",
     "input": {
         "messages": [{"role": "user", "content": "..."}]
     },
@@ -107,13 +108,13 @@ response = dashscope.MultiModalConversation.call(
 
 ## 📦 Python зависимости
 
-### requirements.txt
+### requirements.txt (v3.0.1)
 
 ```
 # Alibaba Cloud SDK
 tablestore>=6.3.0
 aliyun-mns>=1.1.5
-dashscope>=1.20.0
+# dashscope removed in v3.0.1 - using pure requests for DashScope API (faster cold start)
 oss2>=2.18.0
 
 # Telegram
@@ -214,7 +215,7 @@ acs:fc:eu-central-1:5907469887573677:layers/websocket-client/versions/1
 
 ---
 
-## 🔧 FFmpeg команды
+## 🔧 FFmpeg команды (v3.0.1)
 
 ### Конвертация в PCM для ASR
 
@@ -222,11 +223,20 @@ acs:fc:eu-central-1:5907469887573677:layers/websocket-client/versions/1
 ffmpeg -y -i input.mp3 -ar 16000 -ac 1 -f s16le -acodec pcm_s16le output.wav
 ```
 
-### Конвертация в MP3
+### Конвертация в MP3 (оптимизировано в v3.0.1)
 
 ```bash
-ffmpeg -y -i input.ogg -b:a 64k -ar 16000 -ac 1 -threads 4 output.mp3
+# Стандартные настройки (audio > 10 sec)
+ffmpeg -y -i input.ogg -b:a 32k -ar 16000 -ac 1 -threads 4 output.mp3
+
+# Ультра-легкие настройки для коротких аудио (< 10 sec)
+ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
 ```
+
+**v3.0.1 оптимизации:**
+- Снижен битрейт: 64k → 32k (достаточно для ASR)
+- Умные настройки: для коротких аудио (<10 сек) используется 24k/8kHz
+- Увеличен порог синхронной обработки: 30 → 60 секунд
 
 ---
 

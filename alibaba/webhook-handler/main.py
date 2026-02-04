@@ -45,8 +45,8 @@ ALIBABA_SECURITY_TOKEN = (
 )
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 
-# Sync processing threshold (seconds)
-SYNC_PROCESSING_THRESHOLD = 30
+# Sync processing threshold (seconds) - increased to 60s for less MNS latency (v3.0.1)
+SYNC_PROCESSING_THRESHOLD = 60
 
 # Global service instances (lazy initialization)
 _db_service = None
@@ -117,7 +117,7 @@ def handler(environ, context):
                 'status': 'ok',
                 'service': 'telegram-whisper-bot',
                 'region': REGION,
-                'version': '3.0.0-alibaba',
+                'version': '3.0.1-alibaba',
                 'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                 'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
             })
