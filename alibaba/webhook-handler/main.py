@@ -65,7 +65,7 @@ PRODUCT_PACKAGES = {
         "title": "Промо-пакет 'Микро'",
         "description": "10 минут транскрибации",
         "payload": "buy_micro_10",
-        "stars_amount": 10,
+        "stars_amount": 5,
         "minutes": 10,
         "purchase_limit": 3
     },
@@ -73,28 +73,28 @@ PRODUCT_PACKAGES = {
         "title": "Пакет 'Старт'",
         "description": "50 минут транскрибации",
         "payload": "buy_start_50",
-        "stars_amount": 75,
+        "stars_amount": 35,
         "minutes": 50
     },
     "standard_200": {
         "title": "Пакет 'Стандарт'",
         "description": "200 минут транскрибации",
         "payload": "buy_standard_200",
-        "stars_amount": 270,
+        "stars_amount": 119,
         "minutes": 200
     },
     "profi_1000": {
         "title": "Пакет 'Профи'",
         "description": "1000 минут транскрибации",
         "payload": "buy_profi_1000",
-        "stars_amount": 1150,
+        "stars_amount": 549,
         "minutes": 1000
     },
     "max_8888": {
         "title": "Пакет 'MAX'",
         "description": "8888 минут транскрибации",
         "payload": "buy_max_8888",
-        "stars_amount": 8800,
+        "stars_amount": 4444,
         "minutes": 8888
     }
 }
