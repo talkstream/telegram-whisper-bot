@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.1.1 |
+| **Version** | v3.3.0 |
 | **ASR** | `qwen3-asr-flash` (REST API) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS |
@@ -30,16 +30,19 @@
 
 ```
 alibaba/
+├── shared/              # Single source of truth for services (v3.3.0+)
+│   ├── audio.py         # AudioService (Qwen3-ASR + Qwen-turbo)
+│   ├── tablestore_service.py
+│   ├── telegram.py      # TelegramService
+│   ├── mns_service.py   # MNSService + MNSPublisher
+│   └── utility.py
 ├── webhook-handler/     # FastAPI on FC 3.0 (512MB)
-│   └── services/
-│       ├── TelegramService
-│       ├── TablestoreService
-│       └── UtilityService
-└── audio-processor/     # MNS-triggered worker (512MB)
-    └── services/
-        ├── AudioService (Qwen3-ASR + Qwen-turbo)
-        └── MNSService
+│   └── services/ → ../shared/ (auto-copied at deploy)
+└── audio-processor/     # MNS-triggered worker (1024MB)
+    └── services/ → ../shared/ (auto-copied at deploy)
 ```
+
+**Note**: `services/` directories are auto-generated from `shared/` during deployment via pre-deploy actions in `s.yaml`. Do not edit them directly.
 
 ### Key Features
 - Async audio processing via MNS

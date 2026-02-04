@@ -213,7 +213,7 @@ def handler(event, context):
                     'status': 'ok',
                     'service': 'telegram-whisper-bot',
                     'region': REGION,
-                    'version': '3.2.0-alibaba',
+                    'version': '3.3.0-alibaba',
                     'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                     'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
                 }, ensure_ascii=False)

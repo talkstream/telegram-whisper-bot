@@ -61,4 +61,10 @@ htmlcov/
 .terraform.lock.hcl
 terraform.tfvars
 *.auto.tfvars
+
+# Alibaba FC (secrets)
 alibaba/s.yaml
+
+# Auto-generated services directories (copied from shared/ at deploy)
+alibaba/webhook-handler/services/
+alibaba/audio-processor/services/

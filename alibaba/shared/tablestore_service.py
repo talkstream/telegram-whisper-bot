@@ -401,10 +401,11 @@ class TablestoreService:
 
         try:
             primary_key = [('user_id', str(user_id))]
-            update_columns = {'PUT': []}
+            # Use lowercase 'put' as per SDK docs
+            update_columns = {'put': []}
 
             for key, value in updates.items():
-                update_columns['PUT'].append((key, self._serialize_value(value)))
+                update_columns['put'].append((key, self._serialize_value(value)))
 
             condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
             self.client.update_row('trial_requests', primary_key, update_columns, condition)
@@ -462,10 +463,11 @@ class TablestoreService:
 
         try:
             primary_key = [('job_id', job_id)]
-            update_columns = {'PUT': []}
+            # Use lowercase 'put' as per SDK docs
+            update_columns = {'put': []}
 
             for key, value in updates.items():
-                update_columns['PUT'].append((key, self._serialize_value(value)))
+                update_columns['put'].append((key, self._serialize_value(value)))
 
             condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
             self.client.update_row('audio_jobs', primary_key, update_columns, condition)
