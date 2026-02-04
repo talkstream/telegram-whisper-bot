@@ -84,18 +84,15 @@ alibaba/
 
 ---
 
-## Tariff Structure
+## Tariff Structure (300% markup)
 
-| Package | Minutes | Price | Markup |
-|---------|---------|-------|--------|
-| Micro | 10 | 10 stars | Promo (limit 3) |
-
-| Package | Minutes | Price | Markup |
-|---------|---------|-------|--------|
-| Start | 50 | 75 stars | 300% |
-| Standard | 200 | 270 stars | 270% |
-| Profi | 1000 | 1150 stars | 230% |
-| MAX | 8888 | 8800 stars | 200% |
+| Package | Minutes | Price | Cost/min |
+|---------|---------|-------|----------|
+| Micro | 10 | 5 ⭐ | 0.50 ⭐ (promo, limit 3) |
+| Start | 50 | 29 ⭐ | 0.58 ⭐ |
+| Standard | 200 | 119 ⭐ | 0.60 ⭐ |
+| Profi | 1000 | 599 ⭐ | 0.60 ⭐ |
+| MAX | 8888 | 4999 ⭐ | 0.56 ⭐ |
 
 ---
 
@@ -184,6 +181,9 @@ ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
 
 | Document | Description |
 |----------|-------------|
+| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Architecture, deployment, forking |
+| [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | Admin commands, monitoring |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues & solutions |
 | [ALIBABA_CRITICAL_CONFIG.md](docs/ALIBABA_CRITICAL_CONFIG.md) | Critical Alibaba configuration |
 | [UX_IMPROVEMENTS.md](docs/UX_IMPROVEMENTS.md) | UI/UX patterns and templates |
 | [DEPLOY.md](alibaba/DEPLOY.md) | Deployment instructions |

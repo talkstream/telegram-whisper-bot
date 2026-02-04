@@ -1,106 +1,235 @@
 # Telegram Whisper Bot
 
-**Professional AI Transcription Bot for Telegram**
+**AI-бот для транскрипции голосовых сообщений в Telegram**
 
-A production-ready bot that converts Voice, Audio, and Video messages into perfectly formatted Russian text using Alibaba Qwen3-ASR and Qwen LLM (with Gemini fallback).
+[![Version](https://img.shields.io/badge/version-3.3.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Telegram](https://img.shields.io/badge/Telegram-@editorialsrobot-blue?logo=telegram)](https://t.me/editorialsrobot)
 
-## Key Features
+Конвертируйте голосовые сообщения, аудио и видео файлы в отформатированный текст. Работает на базе Qwen3-ASR и Qwen LLM.
 
-- **Universal Transcription:** Handles Voice Notes, Audio files (MP3/WAV/OGG/etc), and Video files (MP4/MOV/etc)
-- **High Performance:**
-  - Async processing via Alibaba MNS (Message Service)
-  - Sub-second response times with Function Compute 3.0
-  - Cost-effective serverless architecture
-- **AI Formatting:** Uses Qwen-plus LLM to add punctuation, fix grammar, and format paragraphs (Gemini 2.5 Flash fallback)
-- **User Settings:**
-  - `/code` - Toggle monospace font output
-  - `/yo` - Toggle letter "ё" usage
-- **Payment System:** Telegram Stars integration with progressive pricing
-- **Admin Tools:** User management, metrics, CSV export, automated reports
+**[Попробовать бота →](https://t.me/editorialsrobot)**
 
-## Tech Stack
+---
 
-- **Language:** Python 3.11
-- **Cloud:** Alibaba Cloud (Function Compute 3.0, Tablestore, MNS, OSS)
-- **Framework:** FastAPI (webhook-handler), Python handler (audio-processor)
-- **AI Models:**
-  - Transcription: Alibaba `qwen3-asr-flash` via DashScope REST API
-  - Formatting: Alibaba `qwen-plus` (Gemini 2.5 Flash fallback)
+## Быстрый старт
 
-## Architecture
+1. Откройте [@editorialsrobot](https://t.me/editorialsrobot) в Telegram
+2. Отправьте голосовое сообщение или аудио файл
+3. Получите отформатированный текст через несколько секунд
 
-```
-Telegram API
-    │ Webhook
-    ▼
-Function Compute (webhook-handler)
-  ├─ FastAPI application
-  ├─ Tablestore for user data
-  └─ Sends job to MNS queue
-    │ MNS Queue
-    ▼
-Function Compute (audio-processor)
-  ├─ Qwen3-ASR-Flash (DashScope API)
-  ├─ Qwen-plus LLM formatting
-  └─ Memory: 512MB, Timeout: 5 min
-    │
-    ▼
-Tablestore + KMS (secrets)
-```
+Новым пользователям доступен бесплатный пробный период — 15 минут транскрипции. Отправьте `/trial` для активации.
 
-## Deployment
+---
 
-### Prerequisites
-- Alibaba Cloud account with Function Compute enabled
-- `aliyun` CLI or Serverless Devs (`s`) installed
-- Telegram Bot Token from @BotFather
-- DashScope API key for ASR and LLM
+## Возможности
 
-### Deploy
+- **Универсальная транскрипция** — голосовые сообщения, аудио, видео файлы
+- **Умное форматирование** — пунктуация, абзацы, исправление ошибок через LLM
+- **Длинные файлы** — до 1 часа аудио (асинхронная обработка)
+- **52 языка** — автоматическое определение языка
+- **Настройки** — моноширинный шрифт, буква «ё»
+- **Оплата в Stars** — нативная интеграция с Telegram Stars
+
+---
+
+## Поддерживаемые форматы
+
+### Аудио
+| Формат | Расширения |
+|--------|------------|
+| Opus/OGG | `.ogg`, `.opus` |
+| MP3 | `.mp3` |
+| WAV | `.wav` |
+| AAC/M4A | `.aac`, `.m4a` |
+| FLAC | `.flac` |
+
+### Видео (извлечение аудиодорожки)
+| Формат | Расширения |
+|--------|------------|
+| MP4 | `.mp4` |
+| QuickTime | `.mov` |
+| WebM | `.webm` |
+| Matroska | `.mkv` |
+
+**Ограничения:** максимум 20 МБ, до 1 часа длительности.
+
+---
+
+## Тарифы
+
+Оплата через **Telegram Stars** — нативную валюту Telegram.
+
+| Пакет | Минуты | Цена | Стоимость/мин |
+|-------|--------|------|---------------|
+| Micro | 10 | 5 ⭐ | 0.50 ⭐ |
+| Start | 50 | 29 ⭐ | 0.58 ⭐ |
+| Standard | 200 | 119 ⭐ | 0.60 ⭐ |
+| Profi | 1000 | 599 ⭐ | 0.60 ⭐ |
+| MAX | 8888 | 4999 ⭐ | 0.56 ⭐ |
+
+> **Micro** — промо-пакет, ограничен 3 покупками на аккаунт.
+
+### Сравнение с конкурентами
+
+| Сервис | Стоимость | Примечания |
+|--------|-----------|------------|
+| **Whisper Bot** | ~$0.009/мин | Полный контроль, EU-сервера |
+| OpenAI Whisper API | $0.006/мин | Лимит 30 мин, 25 МБ |
+| Google Speech-to-Text | $0.016-0.024/мин | Скрытые расходы на инфраструктуру |
+| Telegram Premium | Бесплатно* | *$4.99/мес, только 8 языков, ~5 мин |
+
+---
+
+## Команды
+
+| Команда | Описание |
+|---------|----------|
+| `/start` | Регистрация и приветствие |
+| `/help` | Справка по использованию |
+| `/balance` | Проверить баланс минут |
+| `/trial` | Запросить пробный период (15 мин) |
+| `/buy_minutes` | Купить минуты |
+| `/settings` | Показать настройки |
+| `/code` | Переключить моноширинный шрифт |
+| `/yo` | Переключить букву «ё» |
+
+---
+
+## Технические характеристики
+
+| Параметр | Значение |
+|----------|----------|
+| ASR-модель | Qwen3-ASR-Flash |
+| LLM-форматирование | Qwen-turbo (резерв: Gemini 2.5 Flash) |
+| Задержка TTFT | ~92 мс |
+| Синхронная обработка | до 60 сек аудио |
+| Асинхронная обработка | 60+ сек через очередь |
+| Регион | EU (Франкфурт) |
+| Время холодного старта | 2-3 сек |
+
+---
+
+## Почему Whisper Bot?
+
+### Преимущества
+
+1. **Приватность** — данные в EU (Франкфурт), не на серверах OpenAI/Google
+2. **Длинные файлы** — до 1 часа (vs 30 мин у OpenAI)
+3. **Видео поддержка** — MP4, MOV, WebM с извлечением аудио
+4. **Умное форматирование** — LLM добавляет пунктуацию и абзацы
+5. **Нативная оплата** — Telegram Stars без внешних платёжных систем
+6. **Пробный период** — 15 бесплатных минут для оценки
+
+### Ограничения
+
+1. **52 языка** — меньше чем 99+ у OpenAI/Google
+2. **Без real-time** — только загруженные файлы, не live-трансляции
+3. **Без диаризации** — не определяет говорящих
+4. **Без перевода** — только транскрипция
+
+---
+
+## Чего бот НЕ делает
+
+Для управления ожиданиями:
+
+- **Real-time streaming** — обрабатываются только файлы
+- **Диаризация спикеров** — не определяет кто говорит
+- **Перевод** — только транскрипция на языке оригинала
+- **Синтез речи** — только speech-to-text
+- **Интеграция с Zoom/Meet** — не записывает конференции
+- **Enterprise SLA** — это pet-project без гарантий uptime
+- **HIPAA/GDPR сертификация** — не для медицинских данных
+
+---
+
+## Roadmap
+
+### v3.4.0 (планируется)
+- [ ] Inline-кнопки пагинации для админ-команд
+- [ ] Health endpoint для мониторинга
+- [ ] Rate limiting по пользователям
+
+### v3.5.0 (планируется)
+- [ ] Диаризация спикеров (если Qwen добавит)
+- [ ] Batch-транскрипция нескольких файлов
+- [ ] Telegram Mini App для истории
+
+### Будущее
+- [ ] Мультиязычный интерфейс
+- [ ] Whisper fallback для редких языков
+- [ ] Open-source версия для self-hosting
+
+---
+
+## Changelog
+
+### [3.3.0] — 2026-02-04
+
+#### Изменено
+- **Shared services архитектура**: консолидировано ~2500 строк дублированного кода
+  - `alibaba/shared/` — единственный источник истины
+  - `services/` генерируются автоматически при деплое
+
+#### Исправлено
+- **Критический баг**: `'PUT'` → `'put'` в Tablestore операциях
+  - Затрагивал trial approvals и обновление jobs
+
+### [3.2.0] — 2026-02-04
+
+#### Добавлено
+- Команда `/admin` для владельца бота
+- Поиск пользователей `/user` с пагинацией
+- Уведомления о низком балансе
+- Inline-кнопки пагинации
+- Плановые отчёты (daily/weekly)
+
+#### Исправлено
+- `successful_payment` handler перекрывался обработчиком сообщений
+
+### [3.1.1] — 2026-02-02
+
+#### Исправлено
+- Критический баг списания баланса
+
+### [3.0.1] — 2026-01-30
+
+#### Добавлено
+- Миграция с GCP на Alibaba Cloud
+- Qwen3-ASR-Flash для транскрипции
+- MNS для асинхронной обработки
+- Tablestore для хранения данных
+
+---
+
+## Для разработчиков
+
+Документация для разработчиков и администраторов:
+
+| Документ | Описание |
+|----------|----------|
+| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Архитектура, деплой, форк |
+| [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | Админ-команды, мониторинг |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Частые проблемы и решения |
+| [CLAUDE.md](CLAUDE.md) | Контекст для AI-ассистентов |
+
+### Быстрый деплой
 
 ```bash
-# Deploy using Serverless Devs
 cd alibaba
 s deploy
-
-# Or using deployment script
-./alibaba/scripts/deploy.sh
 ```
 
-## Project Structure
+Полные инструкции: [alibaba/DEPLOY.md](alibaba/DEPLOY.md)
 
-```
-├── main.py                    # GCP FastAPI entry (legacy)
-├── alibaba/                   # Alibaba Cloud deployment
-│   ├── webhook-handler/       # Main bot (FC trigger: HTTP)
-│   │   ├── main.py           # FastAPI application
-│   │   └── services/         # Alibaba-specific services
-│   ├── audio-processor/       # Worker (FC trigger: MNS)
-│   │   ├── handler.py        # MNS message handler
-│   │   └── services/         # Audio processing services
-│   ├── terraform/            # Infrastructure as Code
-│   └── scripts/              # Deployment scripts
-├── handlers/                  # Command handlers (reference)
-├── shared/                    # Shared services package
-│   └── telegram_bot_shared/
-│       └── services/
-└── requirements.txt
-```
+---
 
-## Version History
+## Лицензия
 
-Current version: **v3.0.1**
+MIT License — см. [LICENSE](LICENSE) для деталей.
 
-### v3.0.x - Alibaba Cloud Migration
-- Complete migration from GCP to Alibaba Cloud
-- Qwen3-ASR-Flash for transcription (faster than OpenAI Whisper)
-- Qwen-plus LLM with Gemini fallback
-- Function Compute 3.0 serverless architecture
-- Tablestore for user data storage
-- MNS for async job processing
+---
 
-See CLAUDE.md for detailed changelog and development notes.
-
-## License
-
-MIT
+**Бот:** [@editorialsrobot](https://t.me/editorialsrobot)
+**Репозиторий:** [github.com/talkstream/telegram-whisper-bot](https://github.com/talkstream/telegram-whisper-bot)
