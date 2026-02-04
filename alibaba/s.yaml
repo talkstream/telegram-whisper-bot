@@ -1,0 +1,38 @@
+edition: 3.0.0
+name: telegram-whisper-bot
+access: default
+
+vars:
+  region: eu-central-1
+  service_name: telegram-whisper-bot-prod
+
+resources:
+  webhook-handler:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: ${vars.service_name}$$webhook-handler
+      code: ./webhook-handler
+      handler: main.handler
+      runtime: python3.11
+      memorySize: 512
+      timeout: 60
+      instanceConcurrency: 5
+      environmentVariables:
+        WHISPER_BACKEND: qwen-asr
+        LOG_LEVEL: INFO
+
+  audio-processor:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: ${vars.service_name}$$audio-processor
+      code: ./audio-processor
+      handler: handler.handler
+      runtime: python3.11
+      memorySize: 1024
+      timeout: 300
+      instanceConcurrency: 1
+      environmentVariables:
+        WHISPER_BACKEND: qwen-asr
+        LOG_LEVEL: INFO

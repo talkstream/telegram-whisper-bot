@@ -75,7 +75,7 @@ response = dashscope.MultiModalConversation.call(
 |----------|----------|
 | **Модель** | `qwen-turbo` ⚡ (v3.0.1: 2x быстрее, 3x дешевле чем qwen-plus) |
 | **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
-| **Fallback** | Gemini 2.0 Flash |
+| **Fallback** | Gemini 2.5 Flash (`gemini-2.5-flash`) |
 | **Порог форматирования** | 150 слов (v3.0.1: увеличен со 100) |
 
 ### REST API формат

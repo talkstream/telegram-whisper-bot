@@ -870,10 +870,10 @@ class AudioService:
         """
         import requests
 
-        # Check if text is too short to format - skip LLM for texts under 150 words (v3.0.1)
+        # Check if text is too short to format
         word_count = len(text.split())
-        if word_count < 150:
-            logging.info(f"Text too short for LLM formatting ({word_count} words < 150), returning original")
+        if word_count < 10:
+            logging.info(f"Text too short for LLM formatting ({word_count} words < 10), returning original")
             return text
 
         # Prepare instructions (same as Gemini for consistency)
@@ -892,12 +892,13 @@ class AudioService:
         # EXACT SAME PROMPT as Gemini (proven quality)
         prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
 
-1. Исправь ошибки распознавания речи
-2. Добавь знаки препинания
-3. Раздели на абзацы по смыслу
-4. {code_tag_instruction}
-5. {yo_instruction}
-6. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
+1. Исправь ошибки распознавания речи (артефакты, повторы, обрывки слов)
+2. Расставь знаки препинания по правилам русского языка
+3. НЕ заменяй слова на синонимы, НЕ меняй формы слов — сохраняй именно те слова, которые произнёс автор
+4. Раздели на абзацы по смыслу и интонации (минимум 2-3 предложения в абзаце, не разбивай каждое предложение отдельно)
+5. {code_tag_instruction}
+6. {yo_instruction}
+7. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
 
 Текст для форматирования:
 
@@ -1023,19 +1024,20 @@ class AudioService:
 
             prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
 
-1. Исправь ошибки распознавания речи
-2. Добавь знаки препинания
-3. Раздели на абзацы по смыслу
-4. {code_tag_instruction}
-5. {yo_instruction}
-6. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
+1. Исправь ошибки распознавания речи (артефакты, повторы, обрывки слов)
+2. Расставь знаки препинания по правилам русского языка
+3. НЕ заменяй слова на синонимы, НЕ меняй формы слов — сохраняй именно те слова, которые произнёс автор
+4. Раздели на абзацы по смыслу и интонации (минимум 2-3 предложения в абзаце, не разбивай каждое предложение отдельно)
+5. {code_tag_instruction}
+6. {yo_instruction}
+7. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
 
 Текст для форматирования:
 
 {text}"""
 
             # Call Gemini API via REST
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
 
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],

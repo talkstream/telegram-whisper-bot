@@ -3,7 +3,7 @@
 ## Overview
 A Telegram bot that transcribes audio files using Alibaba Qwen3-ASR and formats the text using Qwen LLM (with Gemini fallback). The bot supports async processing via Alibaba MNS and includes a payment system using Telegram Stars.
 
-## 🔴 КРИТИЧЕСКАЯ КОНФИГУРАЦИЯ (v3.0.0)
+## 🔴 КРИТИЧЕСКАЯ КОНФИГУРАЦИЯ (v3.0.1)
 
 **⚠️ НЕ ТЕРЯТЬ! Полная документация: [docs/ALIBABA_CRITICAL_CONFIG.md](docs/ALIBABA_CRITICAL_CONFIG.md)**
 
@@ -20,7 +20,7 @@ A Telegram bot that transcribes audio files using Alibaba Qwen3-ASR and formats 
 |----------|----------|
 | **Модель** | `qwen-plus` |
 | **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
-| **Fallback** | Gemini 2.0 Flash |
+| **Fallback** | Gemini 2.5 Flash (`gemini-2.5-flash`) |
 
 ### ❌ НЕ ИСПОЛЬЗОВАТЬ
 - ~~paraformer-realtime-v2~~ (устаревшая модель 2024)
@@ -30,23 +30,20 @@ A Telegram bot that transcribes audio files using Alibaba Qwen3-ASR and formats 
 
 ## Architecture
 
-### Core Components
-1. **Main Bot (main.py)**: Webhook handler for Telegram updates
-2. **Audio Processor (audio_processor.py)**: Async worker for audio processing via Pub/Sub
-3. **Services** (services/):
+### Alibaba Cloud Components (v3.0.1)
+1. **Webhook Handler (alibaba/webhook-handler/)**: FastAPI app on Function Compute 3.0
+2. **Audio Processor (alibaba/audio-processor/)**: MNS-triggered worker for audio processing
+3. **Services** (alibaba/*/services/):
    - `TelegramService`: All Telegram API operations
-   - `FirestoreService`: All database operations
-   - `AudioService`: Audio processing, transcription, and formatting
+   - `TablestoreService`: User data storage (OTS)
+   - `AudioService`: Audio processing, transcription (Qwen3-ASR), formatting (Qwen-plus)
+   - `MNSService`: Message queue operations
    - `UtilityService`: Utility functions (formatting, text processing)
-   - `StatsService`: Statistics and analytics operations
-4. **Handlers** (handlers/):
-   - `CommandRouter`: Routes commands to appropriate handlers
-   - `user_commands.py`: User command handlers (help, balance, settings, etc.)
-   - `admin_commands.py`: Admin command handlers (status, stats, credit, etc.)
+4. **GCP Legacy** (handlers/, app/): Reference code for future Alibaba feature parity
 
 ### Key Features
-- Async audio processing with Pub/Sub (can be toggled with `USE_ASYNC_PROCESSING`)
-- Memory optimized to 1GB (from 2GB)
+- Async audio processing with MNS (Message Service)
+- Memory optimized to 512MB on Function Compute
 - User balance system with trial access
 - Payment integration with Telegram Stars
 - User settings menu for output customization
@@ -123,7 +120,7 @@ git tag -l
 git clone https://github.com/talkstream/telegram-whisper-bot.git
 ```
 
-### Current Version: v2.1.0
+### Previous Version: v2.1.0
 Speed optimization release with Alibaba Qwen-ASR backend (3-5x faster).
 
 **Speed Optimization (v2.1.0):**
@@ -144,14 +141,15 @@ Speed optimization release with Alibaba Qwen-ASR backend (3-5x faster).
 - **Dependencies**:
   - Added `dashscope>=1.20.0`, `oss2>=2.18.0`, `openai>=1.0.0`
 
-### 🚀 Next Version: v3.0.0 (Planned)
+### Current Version: v3.0.1
 **Full Alibaba Cloud Migration** - см. [docs/ALIBABA_MIGRATION_PLAN.md](docs/ALIBABA_MIGRATION_PLAN.md)
 
-Planned changes:
-- Migrate from GCP App Engine → Alibaba SAE/Function Compute
-- Migrate from Firestore → Tablestore
-- Migrate from Pub/Sub → MNS (Message Service)
-- Migrate from Secret Manager → KMS
+Completed changes:
+- Migrated from GCP App Engine → Alibaba Function Compute 3.0
+- Migrated from Firestore → Tablestore
+- Migrated from Pub/Sub → MNS (Message Service)
+- ASR: OpenAI Whisper → Qwen3-ASR-Flash (DashScope REST API)
+- LLM: Gemini → Qwen-plus (with Gemini fallback)
 - Expected savings: ~68% ($25/мес → $8/мес)
 
 ### Previous Version: v2.0.0
@@ -698,16 +696,16 @@ gcloud functions deploy audio-processor \
    - Fixed regression issues from v1.8.0
    - Added missing service methods
 
-### Current State:
-- **Latest Version**: v1.8.2
-- **Architecture**: Fully modular with app/ directory
-- **Performance**: 2-3x faster deployments, sub-1s warmup
-- **All features working**: Including new /yo and /code commands
-- **Minute Display**: All minutes now show as whole numbers (using ceiling)
-- **Deployments**: All changes deployed to production
+### Current State (v3.0.1):
+- **Latest Version**: v3.0.1
+- **Architecture**: Alibaba Cloud (Function Compute 3.0, Tablestore, MNS)
+- **ASR**: Qwen3-ASR-Flash via DashScope REST API
+- **LLM**: Qwen-plus with Gemini 2.5 Flash fallback
+- **All features working**: Including /yo and /code commands
+- **Minute Display**: All minutes show as whole numbers (ceiling)
 - **GitHub**: All versions tagged and pushed
 
-The bot now supports both audio and video transcription with customizable output formatting and clean minute displays.
+The bot runs on Alibaba Cloud with Qwen3-ASR for transcription and Qwen-plus for text formatting.
 
 ## Important Technical Notes
 

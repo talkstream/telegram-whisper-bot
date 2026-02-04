@@ -2,16 +2,16 @@
 
 **Professional AI Transcription Bot for Telegram**
 
-A production-ready bot that converts Voice, Audio, and Video messages into perfectly formatted Russian text using OpenAI Whisper API and Google Gemini 2.5 Flash.
+A production-ready bot that converts Voice, Audio, and Video messages into perfectly formatted Russian text using Alibaba Qwen3-ASR and Qwen LLM (with Gemini fallback).
 
 ## Key Features
 
 - **Universal Transcription:** Handles Voice Notes, Audio files (MP3/WAV/OGG/etc), and Video files (MP4/MOV/etc)
 - **High Performance:**
-  - Async processing via Google Cloud Pub/Sub
-  - Smart Cold Start UX - instant feedback even during service warmup
-  - Sub-second response times with warm instances
-- **AI Formatting:** Uses Gemini 2.5-flash to add punctuation, fix grammar, and format paragraphs
+  - Async processing via Alibaba MNS (Message Service)
+  - Sub-second response times with Function Compute 3.0
+  - Cost-effective serverless architecture
+- **AI Formatting:** Uses Qwen-plus LLM to add punctuation, fix grammar, and format paragraphs (Gemini 2.5 Flash fallback)
 - **User Settings:**
   - `/code` - Toggle monospace font output
   - `/yo` - Toggle letter "ё" usage
@@ -21,11 +21,11 @@ A production-ready bot that converts Voice, Audio, and Video messages into perfe
 ## Tech Stack
 
 - **Language:** Python 3.11
-- **Cloud:** Google Cloud Platform (App Engine, Cloud Functions, Firestore, Pub/Sub)
-- **Framework:** FastAPI + Gunicorn
+- **Cloud:** Alibaba Cloud (Function Compute 3.0, Tablestore, MNS, OSS)
+- **Framework:** FastAPI (webhook-handler), Python handler (audio-processor)
 - **AI Models:**
-  - Transcription: OpenAI `whisper-1` API ($0.006/min)
-  - Formatting: Google `gemini-2.5-flash` (Vertex AI)
+  - Transcription: Alibaba `qwen3-asr-flash` via DashScope REST API
+  - Formatting: Alibaba `qwen-plus` (Gemini 2.5 Flash fallback)
 
 ## Architecture
 
@@ -33,68 +33,71 @@ A production-ready bot that converts Voice, Audio, and Video messages into perfe
 Telegram API
     │ Webhook
     ▼
-App Engine (F2, FastAPI)
-  ├─ min_instances: 0 (scale to zero)
-  ├─ Smart Cold Start UX
-  └─ Warmup: every 10 min
-    │ Pub/Sub
+Function Compute (webhook-handler)
+  ├─ FastAPI application
+  ├─ Tablestore for user data
+  └─ Sends job to MNS queue
+    │ MNS Queue
     ▼
-Cloud Function (Audio Processor)
-  ├─ OpenAI Whisper API
-  ├─ Gemini 2.5-flash
-  └─ Memory: 1GB, Timeout: 9 min
+Function Compute (audio-processor)
+  ├─ Qwen3-ASR-Flash (DashScope API)
+  ├─ Qwen-plus LLM formatting
+  └─ Memory: 512MB, Timeout: 5 min
     │
     ▼
-Firestore + Secret Manager
+Tablestore + KMS (secrets)
 ```
 
 ## Deployment
 
 ### Prerequisites
-- Google Cloud Project with billing enabled
-- `gcloud` CLI installed and authenticated
+- Alibaba Cloud account with Function Compute enabled
+- `aliyun` CLI or Serverless Devs (`s`) installed
 - Telegram Bot Token from @BotFather
+- DashScope API key for ASR and LLM
 
 ### Deploy
 
 ```bash
-# Main bot (App Engine)
-gcloud app deploy --project=editorials-robot
+# Deploy using Serverless Devs
+cd alibaba
+s deploy
 
-# Audio processor (Cloud Function)
-cd audio-processor-deploy
-gcloud functions deploy audio-processor \
-  --runtime python311 \
-  --trigger-topic audio-processing-jobs \
-  --memory 1GB \
-  --timeout 540s \
-  --project editorials-robot \
-  --region europe-west1
-
-# Deploy cron jobs
-gcloud app deploy cron.yaml --project=editorials-robot
+# Or using deployment script
+./alibaba/scripts/deploy.sh
 ```
 
 ## Project Structure
 
 ```
-├── main.py                    # FastAPI application entry
-├── app/                       # Application modules
-│   ├── initialization.py      # Service container
-│   ├── routes_fastapi.py      # Route handlers
-│   ├── logic.py               # Business logic
-│   └── notifications.py       # Notification service
-├── handlers/                  # Command handlers
+├── main.py                    # GCP FastAPI entry (legacy)
+├── alibaba/                   # Alibaba Cloud deployment
+│   ├── webhook-handler/       # Main bot (FC trigger: HTTP)
+│   │   ├── main.py           # FastAPI application
+│   │   └── services/         # Alibaba-specific services
+│   ├── audio-processor/       # Worker (FC trigger: MNS)
+│   │   ├── handler.py        # MNS message handler
+│   │   └── services/         # Audio processing services
+│   ├── terraform/            # Infrastructure as Code
+│   └── scripts/              # Deployment scripts
+├── handlers/                  # Command handlers (reference)
 ├── shared/                    # Shared services package
 │   └── telegram_bot_shared/
 │       └── services/
-├── audio-processor-deploy/    # Cloud Function worker
 └── requirements.txt
 ```
 
 ## Version History
 
-Current version: **v1.9.0**
+Current version: **v3.0.1**
+
+### v3.0.x - Alibaba Cloud Migration
+- Complete migration from GCP to Alibaba Cloud
+- Qwen3-ASR-Flash for transcription (faster than OpenAI Whisper)
+- Qwen-plus LLM with Gemini fallback
+- Function Compute 3.0 serverless architecture
+- Tablestore for user data storage
+- MNS for async job processing
 
 See CLAUDE.md for detailed changelog and development notes.
 
