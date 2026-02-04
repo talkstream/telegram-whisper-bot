@@ -124,6 +124,41 @@ class MNSService:
             logger.error(f"Error receiving message: {e}")
             return None
 
+    def receive_messages(self, batch_size: int = 10, wait_seconds: int = 1) -> list:
+        """
+        Receive multiple messages from the queue.
+
+        Args:
+            batch_size: Maximum number of messages to receive
+            wait_seconds: Long polling wait time for each message
+
+        Returns:
+            List of message dictionaries with 'body', 'receipt_handle', 'message_id'
+        """
+        from mns.mns_exception import MNSExceptionBase
+
+        messages = []
+        for _ in range(batch_size):
+            try:
+                recv_msg = self.queue.receive_message(wait_seconds)
+                messages.append({
+                    'body': recv_msg.message_body,
+                    'receipt_handle': recv_msg.receipt_handle,
+                    'message_id': recv_msg.message_id,
+                    'dequeue_count': recv_msg.dequeue_count
+                })
+            except MNSExceptionBase as e:
+                if 'MessageNotExist' in str(e):
+                    # No more messages available
+                    break
+                logger.error(f"MNS error receiving message: {e}")
+                break
+            except Exception as e:
+                logger.error(f"Error receiving message: {e}")
+                break
+
+        return messages
+
     def delete_message(self, receipt_handle: str) -> bool:
         """
         Delete a message after successful processing.

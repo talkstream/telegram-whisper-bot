@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 from typing import Any, Dict, Optional
 
 # Add services to path
@@ -210,18 +209,21 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         db.update_job(job_id, {'status': 'processing'})
 
         # Download file from Telegram
-        file_path = tg.get_file_path(file_id)
-        if not file_path:
+        telegram_file_path = tg.get_file_path(file_id)
+        if not telegram_file_path:
             raise Exception("Failed to get file path from Telegram")
 
-        local_path = os.path.join(tempfile.gettempdir(), f"audio_{job_id}.oga")
-        tg.download_file(file_path, local_path)
+        local_path = tg.download_file(telegram_file_path)
+        if not local_path:
+            raise Exception("Failed to download file from Telegram")
 
         # Send progress message
         tg.send_message(chat_id, "🔄 Транскрибирую...")
 
         # Convert audio
-        converted_path = audio.convert_audio(local_path)
+        converted_path = audio.convert_to_mp3(local_path)
+        if not converted_path:
+            raise Exception("Failed to convert audio to MP3")
 
         # Transcribe
         text = audio.transcribe_audio(converted_path)
@@ -231,17 +233,25 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             db.update_job(job_id, {'status': 'failed', 'error': 'no_speech'})
             return {'ok': True, 'result': 'no_speech'}
 
-        # Format text
-        formatted_text = audio.format_text(text) if len(text) > 50 else text
+        # Check for "continuation follows" phrase (indicates no speech detected)
+        if text.strip() == "Продолжение следует...":
+            tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
+            db.update_job(job_id, {'status': 'failed', 'error': 'no_speech'})
+            return {'ok': True, 'result': 'no_speech'}
 
-        # Get user settings
+        # Get user settings BEFORE formatting
         settings = db.get_user_settings(int(user_id)) or {}
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
-        # Apply settings
-        if not use_yo:
-            formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
+        # Format text (Qwen LLM with Gemini fallback)
+        if len(text) > 50:
+            formatted_text = audio.format_text_with_qwen(text, use_code_tags=use_code, use_yo=use_yo)
+        else:
+            formatted_text = text
+            # Apply yo setting for short text that wasn't formatted
+            if not use_yo:
+                formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
 
         # Send result
         if use_code:

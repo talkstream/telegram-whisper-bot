@@ -1,6 +1,7 @@
 """
 Audio Service - Centralized audio processing operations for the Telegram Whisper Bot
 
+v3.0.0: Alibaba Cloud migration - Qwen LLM for formatting with Gemini fallback
 v2.1.0: Added Alibaba ASR backend option (requires OSS for local files)
 v2.0.0: Added faster-whisper GPU support as alternative backend
 """
@@ -10,7 +11,6 @@ import tempfile
 import subprocess
 import time
 from typing import Optional, Tuple
-import google.genai as genai
 
 
 class AudioService:
@@ -755,14 +755,18 @@ class AudioService:
             logging.warning(f"Could not get audio duration: {e}, using default 600s")
             return 600.0  # Default 10 minutes
             
-    def format_text_with_gemini(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
+    def format_text_with_qwen(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
         """
-        Format transcribed text using Gemini 3 Flash.
+        Format transcribed text using Qwen LLM (Alibaba).
+        Falls back to Gemini if Qwen fails.
 
-        Gemini 3 Flash optimizations:
-        - More concise prompts work better
-        - Explicit instructions about NOT adding commentary
-        - Temperature 0.3 for consistency
+        Args:
+            text: Raw transcribed text
+            use_code_tags: Whether to wrap text in <code> tags
+            use_yo: Whether to preserve ё letters
+
+        Returns:
+            Formatted text
         """
         # Check if text is too short to format
         word_count = len(text.split())
@@ -770,16 +774,113 @@ class AudioService:
             logging.info(f"Text too short for formatting ({word_count} words), returning original")
             return text
 
+        # Prepare instructions (same as Gemini for consistency)
+        code_tag_instruction = (
+            "Оберни ВЕСЬ текст в теги <code></code>."
+            if use_code_tags else
+            "НЕ используй теги <code>."
+        )
+
+        yo_instruction = (
+            "Сохраняй букву ё где она есть."
+            if use_yo else
+            "Заменяй все буквы ё на е."
+        )
+
+        # EXACT SAME PROMPT as Gemini (proven quality)
+        prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
+
+1. Исправь ошибки распознавания речи
+2. Добавь знаки препинания
+3. Раздели на абзацы по смыслу
+4. {code_tag_instruction}
+5. {yo_instruction}
+6. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
+7. Если текст короче 10 слов - верни как есть
+
+Текст для форматирования:
+
+{text}"""
+
         api_start_time = time.time()
+
         try:
-            # Initialize the client with Vertex AI configuration
-            client = genai.Client(
-                vertexai=True,
-                project=os.environ.get('GCP_PROJECT', 'editorials-robot'),
-                location='us-central1'
+            from dashscope import Generation
+
+            api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
+            if not api_key:
+                logging.warning("DASHSCOPE_API_KEY not set, falling back to Gemini")
+                return self.format_text_with_gemini(text, use_code_tags, use_yo)
+
+            logging.info(f"Starting Qwen LLM request. Input chars: {len(text)}")
+
+            response = Generation.call(
+                model='qwen-plus',
+                messages=[{'role': 'user', 'content': prompt}],
+                api_key=api_key
             )
-            
-            # Prepare user settings for prompt
+
+            if response.status_code == 200:
+                formatted_text = response.output.text.strip()
+                api_duration = time.time() - api_start_time
+                logging.info(f"Qwen LLM finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
+
+                # Remove code tags if present but not wanted
+                if not use_code_tags and formatted_text.startswith('<code>'):
+                    formatted_text = formatted_text.replace('<code>', '').replace('</code>', '')
+
+                # Quality check
+                if len(formatted_text) < 5:
+                    logging.warning("Qwen returned very short text, trying Gemini fallback")
+                    return self.format_text_with_gemini(text, use_code_tags, use_yo)
+
+                # Log API call metrics
+                if self.metrics_service:
+                    self.metrics_service.log_api_call('qwen-llm', api_duration, True)
+
+                logging.info("Successfully formatted text with Qwen LLM")
+                return formatted_text
+            else:
+                logging.warning(f"Qwen API error: {response.code} - {response.message}, trying Gemini fallback")
+                return self.format_text_with_gemini(text, use_code_tags, use_yo)
+
+        except ImportError:
+            logging.warning("dashscope not installed, falling back to Gemini")
+            return self.format_text_with_gemini(text, use_code_tags, use_yo)
+
+        except Exception as e:
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('qwen-llm', api_duration, False, str(e))
+
+            logging.warning(f"Qwen LLM failed: {e}, falling back to Gemini")
+            return self.format_text_with_gemini(text, use_code_tags, use_yo)
+
+    def format_text_with_gemini(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
+        """
+        Format transcribed text using Gemini via HTTP API.
+        Fallback method when Qwen LLM is unavailable.
+
+        NOTE: This is the backup formatter. Requires GCP credentials.
+        """
+        import requests
+
+        # Check if text is too short to format
+        word_count = len(text.split())
+        if word_count < 10:
+            logging.info(f"Text too short for formatting ({word_count} words), returning original")
+            return text
+
+        api_start_time = time.time()
+
+        try:
+            # Get API key from environment
+            api_key = os.environ.get('GOOGLE_API_KEY') or os.environ.get('GEMINI_API_KEY')
+            if not api_key:
+                logging.warning("No Gemini API key available, returning original text")
+                return text
+
+            # Prepare instructions
             code_tag_instruction = (
                 "Оберни ВЕСЬ текст в теги <code></code>."
                 if use_code_tags else
@@ -792,7 +893,6 @@ class AudioService:
                 "Заменяй все буквы ё на е."
             )
 
-            # Optimized prompt for Gemini 3
             prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
 
 1. Исправь ошибки распознавания речи
@@ -807,24 +907,28 @@ class AudioService:
 
 {text}"""
 
-            # Generate with Gemini 2.5 Flash (with detailed logging)
-            model_name = "gemini-2.5-flash"
-            logging.info(f"Starting Gemini request. Model: {model_name}, Input chars: {len(text)}")
-            gemini_start_time = time.time()
-            
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config={
-                    'temperature': 0.3,
-                    'top_p': 0.95,
-                    'max_output_tokens': 8192,
+            # Call Gemini API via REST
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.3,
+                    "topP": 0.95,
+                    "maxOutputTokens": 8192
                 }
-            )
-            
-            gemini_duration = time.time() - gemini_start_time
-            formatted_text = response.text.strip()
-            logging.info(f"Gemini request finished. Duration: {gemini_duration:.2f}s, Output chars: {len(formatted_text)}")
+            }
+
+            logging.info(f"Starting Gemini request. Input chars: {len(text)}")
+
+            response = requests.post(url, json=payload, timeout=60)
+            response.raise_for_status()
+
+            data = response.json()
+            formatted_text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+
+            api_duration = time.time() - api_start_time
+            logging.info(f"Gemini finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
 
             # Remove code tags if present but not wanted
             if not use_code_tags and formatted_text.startswith('<code>'):
@@ -834,22 +938,20 @@ class AudioService:
             if len(formatted_text) < 5:
                 logging.warning("Gemini returned very short text, using original")
                 return text
-            
+
             # Log API call metrics
-            api_duration = time.time() - api_start_time
             if self.metrics_service:
                 self.metrics_service.log_api_call('gemini', api_duration, True)
-            
-            logging.info("Successfully formatted text with Gemini 3")
+
+            logging.info("Successfully formatted text with Gemini")
             return formatted_text
 
         except Exception as e:
-            # Log failed API call
             api_duration = time.time() - api_start_time
             if self.metrics_service:
                 self.metrics_service.log_api_call('gemini', api_duration, False, str(e))
 
-            logging.error(f"Gemini 3 formatting failed: {str(e)}")
+            logging.error(f"Gemini formatting failed: {str(e)}")
             # Fallback: return original text
             return text
             
@@ -912,8 +1014,8 @@ class AudioService:
                 logging.warning("Whisper returned 'Продолжение следует...', indicating no speech detected")
                 return None, "На записи не обнаружено речи или текст не был распознан."
                 
-            # Format
-            formatted_text = self.format_text_with_gemini(transcribed_text)
+            # Format (Qwen LLM with Gemini fallback)
+            formatted_text = self.format_text_with_qwen(transcribed_text)
             
             return transcribed_text, formatted_text
             
