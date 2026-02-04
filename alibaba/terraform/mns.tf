@@ -9,15 +9,12 @@ resource "alicloud_mns_queue" "audio_jobs" {
   message_retention_period = 345600 # 4 days
   visibility_timeout       = 600    # 10 minutes (processing timeout)
   polling_wait_seconds     = 0
-
-  logging_enabled = true
 }
 
 # MNS Topic for notifications (optional, for fan-out patterns)
 resource "alicloud_mns_topic" "notifications" {
   name                 = "${local.name_prefix}-notifications"
   maximum_message_size = 65536
-  logging_enabled      = true
 }
 
 # Subscription for admin notifications (optional)

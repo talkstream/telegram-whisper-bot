@@ -8,8 +8,8 @@ resource "alicloud_fc_service" "main" {
 
   # Enable logging to SLS
   log_config {
-    project  = alicloud_log_project.main.name
-    logstore = alicloud_log_store.fc_logs.name
+    project  = alicloud_log_project.main.project_name
+    logstore = alicloud_log_store.fc_logs.logstore_name
   }
 
   # IAM role for FC
@@ -81,21 +81,28 @@ resource "alicloud_fc_function" "audio_processor" {
 }
 
 # MNS Trigger for Audio Processor
-resource "alicloud_fc_trigger" "audio_mns" {
+# TODO: Configure proper MNS queue trigger
+# For MVP, using synchronous processing or timer-based polling
+# resource "alicloud_fc_trigger" "audio_mns" {
+#   service  = alicloud_fc_service.main.name
+#   function = alicloud_fc_function.audio_processor.name
+#   name     = "mns-trigger"
+#   type     = "mns_topic"
+#   ...
+# }
+
+# Timer trigger for polling MNS queue (alternative to direct MNS trigger)
+resource "alicloud_fc_trigger" "audio_timer" {
   service  = alicloud_fc_service.main.name
   function = alicloud_fc_function.audio_processor.name
-  name     = "mns-trigger"
-  type     = "mns_topic"
+  name     = "timer-trigger"
+  type     = "timer"
 
   config = jsonencode({
-    sourceMRN    = "acs:mns:${var.region}:${data.alicloud_account.current.id}:/queues/${alicloud_mns_queue.audio_jobs.name}"
-    filterTag    = ""
-    notifyStrategy = "BACKOFF_RETRY"
-    notifyContentFormat = "JSON"
+    cronExpression = "@every 1m"  # Poll every minute
+    enable         = true
+    payload        = jsonencode({action = "poll_queue"})
   })
-
-  # Note: MNS queue triggers require additional setup
-  # This is a placeholder - actual MNS trigger may need different config
 }
 
 # Outputs

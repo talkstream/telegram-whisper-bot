@@ -3,14 +3,14 @@
 
 # Log Project
 resource "alicloud_log_project" "main" {
-  name        = "${local.name_prefix}-logs"
-  description = "Telegram Whisper Bot logs"
+  project_name = "${local.name_prefix}-logs"
+  description  = "Telegram Whisper Bot logs"
 }
 
 # Log Store for Function Compute logs
 resource "alicloud_log_store" "fc_logs" {
-  project               = alicloud_log_project.main.name
-  name                  = "fc-logs"
+  project_name          = alicloud_log_project.main.project_name
+  logstore_name         = "fc-logs"
   retention_period      = 7  # 7 days retention (cost optimization)
   shard_count           = 2
   auto_split            = true
@@ -20,8 +20,8 @@ resource "alicloud_log_store" "fc_logs" {
 
 # Log Store for application logs
 resource "alicloud_log_store" "app_logs" {
-  project               = alicloud_log_project.main.name
-  name                  = "app-logs"
+  project_name          = alicloud_log_project.main.project_name
+  logstore_name         = "app-logs"
   retention_period      = 30  # 30 days for app logs
   shard_count           = 2
   auto_split            = true
@@ -31,8 +31,8 @@ resource "alicloud_log_store" "app_logs" {
 
 # Index for FC logs (enables search)
 resource "alicloud_log_store_index" "fc_logs_index" {
-  project  = alicloud_log_project.main.name
-  logstore = alicloud_log_store.fc_logs.name
+  project  = alicloud_log_project.main.project_name
+  logstore = alicloud_log_store.fc_logs.logstore_name
 
   full_text {
     case_sensitive = false
@@ -69,7 +69,7 @@ resource "alicloud_log_store_index" "fc_logs_index" {
 
 # Outputs
 output "log_project_name" {
-  value = alicloud_log_project.main.name
+  value = alicloud_log_project.main.project_name
 }
 
 output "log_endpoint" {

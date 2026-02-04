@@ -47,3 +47,11 @@ secrets.yaml
 key.json
 *.key
 *.pem
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars

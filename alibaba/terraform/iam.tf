@@ -2,8 +2,8 @@
 
 # RAM Role for Function Compute
 resource "alicloud_ram_role" "fc_role" {
-  name        = "${local.name_prefix}-fc-role"
-  document    = jsonencode({
+  name                     = "${local.name_prefix}-fc-role"
+  assume_role_policy_document = jsonencode({
     Version = "1"
     Statement = [
       {
@@ -113,7 +113,7 @@ resource "alicloud_ram_policy" "sls_access" {
         ]
         Effect   = "Allow"
         Resource = [
-          "acs:log:*:*:project/${alicloud_log_project.main.name}/logstore/*"
+          "acs:log:*:*:project/${alicloud_log_project.main.project_name}/logstore/*"
         ]
       }
     ]

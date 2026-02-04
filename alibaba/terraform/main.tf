@@ -12,8 +12,24 @@ terraform {
 }
 
 # Provider configuration
+# Credentials are set via environment variables:
+# ALICLOUD_ACCESS_KEY and ALICLOUD_SECRET_KEY
 provider "alicloud" {
-  region = var.region
+  region     = var.region
+  access_key = var.access_key
+  secret_key = var.secret_key
+}
+
+variable "access_key" {
+  description = "Alibaba Cloud Access Key ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "secret_key" {
+  description = "Alibaba Cloud Access Key Secret"
+  type        = string
+  sensitive   = true
 }
 
 # Variables
@@ -67,8 +83,4 @@ output "tablestore_instance_name" {
 
 output "mns_queue_name" {
   value = alicloud_mns_queue.audio_jobs.name
-}
-
-output "fc_service_name" {
-  value = alicloud_fc_service.main.name
 }

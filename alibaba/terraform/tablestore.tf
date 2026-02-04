@@ -3,7 +3,7 @@
 
 # Tablestore Instance
 resource "alicloud_ots_instance" "main" {
-  name        = "${local.name_prefix}-db"
+  name        = "twbot-prod"  # Max 16 chars: a-z, A-Z, 0-9, hyphen
   description = "Telegram Whisper Bot database"
 
   # High Performance instance for production
@@ -229,7 +229,7 @@ resource "alicloud_ots_table" "user_state" {
     type = "String"
   }
 
-  time_to_live                  = 3600  # 1 hour TTL
+  time_to_live                  = 86400  # 1 day TTL (minimum allowed)
   max_version                   = 1
   deviation_cell_version_in_sec = 86400
 
