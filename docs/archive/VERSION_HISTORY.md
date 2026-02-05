@@ -1,6 +1,6 @@
 # Telegram Whisper Bot - Version History
 
-## Current Version: v3.3.0 (February 4, 2026)
+## Current Version: v3.4.0 (February 6, 2026)
 
 ---
 
@@ -8,6 +8,7 @@
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v3.4.0 | 2026-02-06 | Evolving progress messages, typing indicators, LLM threshold 100 chars, DB 6→4 calls |
 | v3.3.0 | 2026-02-04 | Shared services refactor (~2500 lines dedup), 'PUT'→'put' fix, pre-deploy actions |
 | v3.2.0 | 2026-02-04 | Payment handler fix, /admin, /user pagination, low balance alerts, scheduled reports |
 | v3.1.1 | 2026-02-04 | Documentation sync |
@@ -66,6 +67,7 @@
 | 2025-06-26-27 | Video support, Gen AI SDK |
 | 2025-07-04-05 | Architecture overhaul (-74% main.py) |
 | 2026-02-04 | Alibaba migration (-68% cost: $25→$8/mo) |
+| 2026-02-06 | UX overhaul: evolving progress, DB optimization |
 
 ---
 

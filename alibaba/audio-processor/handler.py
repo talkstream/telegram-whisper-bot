@@ -213,6 +213,11 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     chat_id = int(chat_id)
     file_id = str(file_id)
 
+    # Reuse status message from webhook-handler if available
+    status_message_id = job_data.get('status_message_id')
+    if status_message_id:
+        status_message_id = int(status_message_id)
+
     logger.info(f"Processing job {job_id} for user {user_id}")
 
     db = get_db_service()
@@ -223,7 +228,19 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         # Update job status
         db.update_job(job_id, {'status': 'processing'})
 
+        # Use existing status message or create new one for progress
+        if status_message_id:
+            progress_id = status_message_id
+            tg.edit_message_text(chat_id, progress_id, "🔄 Обработка началась...")
+        else:
+            progress_msg = tg.send_message(chat_id, "🔄 Обработка началась...")
+            progress_id = progress_msg['result']['message_id'] if progress_msg and progress_msg.get('ok') else None
+
         # Download file from Telegram
+        if progress_id:
+            tg.edit_message_text(chat_id, progress_id, "📥 Загружаю файл...")
+        tg.send_chat_action(chat_id, 'typing')
+
         telegram_file_path = tg.get_file_path(file_id)
         if not telegram_file_path:
             raise Exception("Failed to get file path from Telegram")
@@ -232,8 +249,10 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         if not local_path:
             raise Exception("Failed to download file from Telegram")
 
-        # Send progress message
-        tg.send_message(chat_id, "🔄 Транскрибирую...")
+        # Update progress: transcribing
+        if progress_id:
+            tg.edit_message_text(chat_id, progress_id, "🎙 Распознаю речь...")
+        tg.send_chat_action(chat_id, 'typing')
 
         # Convert audio
         converted_path = audio.convert_to_mp3(local_path)
@@ -243,43 +262,52 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         # Transcribe
         text = audio.transcribe_audio(converted_path)
 
-        if not text or text.strip() == "":
+        if not text or text.strip() == "" or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
+            if progress_id:
+                tg.delete_message(chat_id, progress_id)
             db.update_job(job_id, {'status': 'failed', 'error': 'no_speech'})
             return {'ok': True, 'result': 'no_speech'}
 
-        # Check for "continuation follows" phrase (indicates no speech detected)
-        if text.strip() == "Продолжение следует...":
-            tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
-            db.update_job(job_id, {'status': 'failed', 'error': 'no_speech'})
-            return {'ok': True, 'result': 'no_speech'}
-
-        # Get user settings BEFORE formatting
-        settings = db.get_user_settings(user_id_int) or {}
+        # Extract settings from user (avoid duplicate DB call via get_user_settings)
+        user = db.get_user(user_id_int)
+        settings_json = user.get('settings', '{}') if user else '{}'
+        settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
         # Format text (Qwen LLM with Gemini fallback)
-        if len(text) > 50:
+        if len(text) > 100:
+            if progress_id:
+                tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
+            tg.send_chat_action(chat_id, 'typing')
             formatted_text = audio.format_text_with_qwen(text, use_code_tags=use_code, use_yo=use_yo)
         else:
             formatted_text = text
-            # Apply yo setting for short text that wasn't formatted
             if not use_yo:
                 formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
 
-        # Send result
+        # Send result: edit progress message or send new one
         if use_code:
-            tg.send_message(chat_id, f"<code>{formatted_text}</code>", parse_mode='HTML')
+            result_text = f"<code>{formatted_text}</code>"
+            parse_mode = 'HTML'
         else:
-            tg.send_message(chat_id, formatted_text)
+            result_text = formatted_text
+            parse_mode = ''
+
+        if progress_id and len(result_text) <= 4000:
+            tg.edit_message_text(chat_id, progress_id, result_text, parse_mode=parse_mode)
+        else:
+            if progress_id:
+                tg.delete_message(chat_id, progress_id)
+            tg.send_message(chat_id, result_text, parse_mode=parse_mode)
 
         # Update balance
         duration_minutes = (duration + 59) // 60
+        balance = user.get('balance_minutes', 0) if user else 0
         balance_updated = db.update_user_balance(user_id_int, -duration_minutes)
         if not balance_updated:
             logger.error(f"CRITICAL: Failed to deduct {duration_minutes} min from user {user_id} balance!")
-            # Notify admin about the issue
             try:
                 owner_id = int(os.environ.get('OWNER_ID', 0))
                 if owner_id:
@@ -294,10 +322,9 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
-        # Check for low balance warning
+        # Check for low balance warning (calculate from known values)
         if balance_updated:
-            user = db.get_user(user_id_int)
-            new_balance = user.get('balance_minutes', 0) if user else 0
+            new_balance = max(0, int(balance) - duration_minutes)
             if 0 < new_balance < 5:
                 tg.send_message(
                     chat_id,
@@ -314,7 +341,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
                     parse_mode='HTML'
                 )
 
-        # Log transcription
+        # Log and update job status (after sending result to reduce perceived latency)
         db.log_transcription({
             'user_id': user_id,
             'duration': duration,
@@ -322,7 +349,6 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             'status': 'completed'
         })
 
-        # Update job status
         db.update_job(job_id, {
             'status': 'completed',
             'result': json.dumps({'text_length': len(formatted_text)})
@@ -346,6 +372,6 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         db.update_job(job_id, {'status': 'failed', 'error': str(e)[:200]})
 
         # Notify user
-        tg.send_message(chat_id, f"Произошла ошибка при обработке аудио. Попробуйте позже.")
+        tg.send_message(chat_id, "Произошла ошибка при обработке аудио. Попробуйте позже.")
 
         return {'ok': False, 'error': str(e)}

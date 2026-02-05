@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.3.0 |
+| **Version** | v3.4.0 |
 | **ASR** | `qwen3-asr-flash` (REST API) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS |
@@ -50,6 +50,7 @@ alibaba/
 - User balance system with trial access
 - Payment integration (Telegram Stars)
 - FFmpeg audio normalization
+- Evolving progress messages (edit_message_text through stages)
 
 ---
 
@@ -133,7 +134,7 @@ curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
 | Table | Primary Key | Fields |
 |-------|-------------|--------|
 | users | user_id | balance_minutes, trial_status, settings |
-| audio_jobs | job_id | user_id, status, result |
+| audio_jobs | job_id | user_id, status, result, status_message_id |
 | trial_requests | user_id | status, request_timestamp |
 | transcription_logs | log_id | user_id, timestamp, duration |
 | payment_logs | payment_id | user_id, amount, timestamp |
@@ -146,6 +147,14 @@ curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
 - All business logic in services (AudioService, TablestoreService, etc.)
 - Never call APIs directly in handlers
 - Pass API keys, not client objects
+
+### Progress Message Pattern (v3.4.0)
+- `status_message_id` captured in `handle_audio_message` and passed through entire pipeline
+- Sync: passed as parameter to `process_audio_sync`
+- Async: stored in `job_data['status_message_id']` → MNS → audio-processor reads it
+- Each stage: `edit_message_text` → `send_chat_action('typing')` → heavy work
+- Result replaces status message (or delete+send if >4000 chars)
+- LLM formatting skipped for text <= 100 chars
 
 ### Gemini Fallback (google-genai SDK)
 ```python
@@ -206,4 +215,4 @@ ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
 
 ---
 
-*Last updated: 2026-02-04*
+*Last updated: 2026-02-06*

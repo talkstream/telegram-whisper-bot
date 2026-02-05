@@ -213,7 +213,7 @@ def handler(event, context):
                     'status': 'ok',
                     'service': 'telegram-whisper-bot',
                     'region': REGION,
-                    'version': '3.3.0-alibaba',
+                    'version': '3.4.0-alibaba',
                     'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                     'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
                 }, ensure_ascii=False)
@@ -325,18 +325,20 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             )
             return 'insufficient_balance'
 
-    # Send processing notification
-    tg.send_message(chat_id, "🎙 Аудио получено. Обрабатываю...")
+    # Send processing notification and capture message_id for progress updates
+    status_msg = tg.send_message(chat_id, "🎙 Аудио получено. Обрабатываю...")
+    status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
 
-    # For short audio (< 30 sec), process synchronously
+    # For short audio (< 60 sec), process synchronously
     if duration < SYNC_PROCESSING_THRESHOLD:
-        return process_audio_sync(message, user, file_id, file_type, duration)
+        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
     else:
-        return queue_audio_async(message, user, file_id, file_type, duration)
+        return queue_audio_async(message, user, file_id, file_type, duration, status_message_id)
 
 
-def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
-                       file_id: str, _file_type: str, duration: int) -> str:
+def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
+                       file_id: str, _file_type: str, duration: int,
+                       status_message_id: Optional[int] = None) -> str:
     """Process audio synchronously (for short files)."""
     chat_id = message.get('chat', {}).get('id')
     user_id = message.get('from', {}).get('id')
@@ -345,23 +347,31 @@ def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
     db = get_db_service()
 
     try:
+        # Update progress: downloading
+        if status_message_id:
+            tg.edit_message_text(chat_id, status_message_id, "📥 Загружаю файл...")
+        tg.send_chat_action(chat_id, 'typing')
+
         # Download file from Telegram
         telegram_file_path = tg.get_file_path(file_id)
         if not telegram_file_path:
             tg.send_message(chat_id, "Не удалось получить файл. Попробуйте ещё раз.")
             return 'download_failed'
 
-        # download_file returns the local path where file was saved
         local_path = tg.download_file(telegram_file_path)
         if not local_path:
             tg.send_message(chat_id, "Не удалось скачать файл. Попробуйте ещё раз.")
             return 'download_failed'
 
+        # Update progress: transcribing
+        if status_message_id:
+            tg.edit_message_text(chat_id, status_message_id, "🎙 Распознаю речь...")
+        tg.send_chat_action(chat_id, 'typing')
+
         # Transcribe with Qwen-ASR
         from services.audio import AudioService
         audio_service = AudioService(whisper_backend='qwen-asr')
 
-        # Convert and transcribe
         converted_path = audio_service.convert_to_mp3(local_path)
         if not converted_path:
             tg.send_message(chat_id, "Не удалось обработать аудио. Попробуйте другой формат.")
@@ -373,31 +383,44 @@ def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
             return 'no_speech'
 
-        # Get user settings BEFORE formatting
-        settings = db.get_user_settings(user_id) or {}
+        # Extract settings from already-loaded user dict (avoid duplicate DB call)
+        settings_json = user.get('settings', '{}')
+        settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
         use_code_tags = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
         # Format text with Qwen LLM (with Gemini fallback)
-        if len(text) > 50:
+        if len(text) > 100:
+            if status_message_id:
+                tg.edit_message_text(chat_id, status_message_id, "✏️ Форматирую текст...")
+            tg.send_chat_action(chat_id, 'typing')
             formatted_text = audio_service.format_text_with_qwen(text, use_code_tags=use_code_tags, use_yo=use_yo)
         else:
             formatted_text = text
             if not use_yo:
                 formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
 
-        # Send result
+        # Send result: edit status message or send new one
         if use_code_tags:
-            tg.send_message(chat_id, f"<code>{formatted_text}</code>", parse_mode='HTML')
+            result_text = f"<code>{formatted_text}</code>"
+            parse_mode = 'HTML'
         else:
-            tg.send_message(chat_id, formatted_text)
+            result_text = formatted_text
+            parse_mode = ''
+
+        if status_message_id and len(result_text) <= 4000:
+            tg.edit_message_text(chat_id, status_message_id, result_text, parse_mode=parse_mode)
+        else:
+            if status_message_id:
+                tg.delete_message(chat_id, status_message_id)
+            tg.send_message(chat_id, result_text, parse_mode=parse_mode)
 
         # Update balance
         duration_minutes = (duration + 59) // 60
+        balance = user.get('balance_minutes', 0)
         balance_updated = db.update_user_balance(user_id, -duration_minutes)
         if not balance_updated:
             logger.error(f"CRITICAL: Failed to deduct {duration_minutes} min from user {user_id} balance!")
-            # Still continue - transcription was successful, but notify admin
             try:
                 owner_id = int(os.environ.get('OWNER_ID', 0))
                 if owner_id:
@@ -411,10 +434,9 @@ def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
-        # Check for low balance warning
+        # Check for low balance warning (calculate from known values)
         if balance_updated:
-            user = db.get_user(user_id)
-            new_balance = user.get('balance_minutes', 0) if user else 0
+            new_balance = max(0, int(balance) - duration_minutes)
             if 0 < new_balance < 5:
                 tg.send_message(
                     chat_id,
@@ -431,7 +453,7 @@ def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
                     parse_mode='HTML'
                 )
 
-        # Log transcription
+        # Log transcription (after sending result to reduce perceived latency)
         db.log_transcription({
             'user_id': str(user_id),
             'duration': duration,
@@ -456,7 +478,8 @@ def process_audio_sync(message: Dict[str, Any], _user: Dict[str, Any],
 
 
 def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
-                      file_id: str, file_type: str, duration: int) -> str:
+                      file_id: str, file_type: str, duration: int,
+                      status_message_id: Optional[int] = None) -> str:
     """Queue audio for async processing via MNS."""
     import uuid
 
@@ -467,7 +490,7 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     db = get_db_service()
     tg = get_telegram_service()
 
-    # Create job
+    # Create job (include status_message_id for progress updates by audio-processor)
     job_id = str(uuid.uuid4())
     job_data = {
         'job_id': job_id,
@@ -479,6 +502,8 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         'duration': duration,
         'status': 'pending'
     }
+    if status_message_id:
+        job_data['status_message_id'] = status_message_id
 
     db.create_job(job_data)
 
@@ -499,9 +524,13 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     except Exception as e:
         logger.error(f"Failed to publish to MNS: {e}")
         # Fallback: process sync even if long
-        return process_audio_sync(message, user, file_id, file_type, duration)
+        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
 
-    tg.send_message(chat_id, "⏳ Аудио в очереди на обработку...")
+    # Update status message instead of sending new one
+    if status_message_id:
+        tg.edit_message_text(chat_id, status_message_id, "⏳ Аудио в очереди на обработку...")
+    else:
+        tg.send_message(chat_id, "⏳ Аудио в очереди на обработку...")
     return 'queued'
 
 

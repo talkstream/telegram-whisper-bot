@@ -1,75 +1,64 @@
 # UI/UX Patterns
 
+## Evolving Progress Messages (v3.4.0)
+
+Single message that updates through stages via `edit_message_text`:
+
+### Sync Path (< 60 sec audio)
+
+```
+"🎙 Аудио получено. Обрабатываю..."   ← initial (webhook)
+  → "📥 Загружаю файл..."              ← edit + typing
+  → "🎙 Распознаю речь..."             ← edit + typing
+  → "✏️ Форматирую текст..."           ← edit + typing (if text > 100 chars)
+  → [result text]                       ← edit (or delete+send if > 4000 chars)
+```
+
+### Async Path (>= 60 sec audio)
+
+```
+"🎙 Аудио получено. Обрабатываю..."   ← initial (webhook)
+  → "⏳ Аудио в очереди..."            ← edit (webhook)
+  → "🔄 Обработка началась..."          ← edit (processor)
+  → "📥 Загружаю файл..."              ← edit + typing
+  → "🎙 Распознаю речь..."             ← edit + typing
+  → "✏️ Форматирую текст..."           ← edit + typing
+  → [result text]                       ← edit (or delete+send if > 4000 chars)
+```
+
+### Implementation Details
+
+- `status_message_id` flows: webhook → `job_data` → MNS → audio-processor
+- Pattern: `edit_message_text(stage)` → `send_chat_action('typing')` → heavy work
+- Typing indicator visible during heavy operations, not before edits
+- LLM formatting skipped for text <= 100 chars
+
 ## Progress Stages
 
-| Progress | Emoji | Stage |
-|----------|-------|-------|
-| 0-19% | 🔄 | Starting |
-| 20-34% | 📥 | Downloading |
-| 35-49% | 🔧 | Converting |
-| 50-79% | 🎙 | Transcribing |
-| 80-94% | ✨ | Formatting |
-| 95-99% | 📤 | Sending |
-| 100% | ✅ | Done |
+| Emoji | Stage | Duration |
+|-------|-------|----------|
+| 🎙 | Received | instant |
+| ⏳ | Queued | async only |
+| 🔄 | Processing started | async only |
+| 📥 | Downloading | 0.2-3s |
+| 🎙 | Transcribing (ASR) | 2-10s |
+| ✏️ | Formatting (LLM) | 2-5s |
 
-## Progress UI Template
+## Edge Cases
 
-```
-🎙 Распознавание...
-
-[▓▓▓▓▓▓░░░░] 60%
-
-⏱ Осталось: ~25 сек.
-```
-
----
-
-## Graceful Degradation Messages
-
-### Cold Start
-```
-🖥 Запускаю сервер...
-
-Это может занять до 1 минуты при первом запуске.
-Последующие запросы будут быстрее.
-```
-
-### Long Audio Warning
-```
-📢 Длинная запись (15 мин.)
-
-Обработка займёт ~22 мин.
-Вы получите результат, как только он будет готов.
-```
-
-### Fallback
-```
-🔄 Переключаюсь на быструю обработку...
-
-GPU-сервер занят, использую облачный API.
-```
-
-### Queue Position
-```
-📋 Ваш запрос в очереди
-
-Позиция: 3
-Ожидание: ~2 мин.
-```
-
----
+- **Text > 4000 chars:** delete status message, send new one
+- **No status_message_id:** create new progress message (backward compat)
+- **MNS fallback to sync:** status_message_id passed through
 
 ## Telegram API Limits
 
 - Message edits: ~30/min per chat
 - Update interval: 3 sec minimum
-- Max updates/min: 20 (safe margin)
-
----
+- `send_chat_action`: lasts 5 seconds, fire-and-forget (timeout=2s)
 
 ## Best Practices
 
-1. **Progress Indicators**: Visual bar + time estimate + stage name
-2. **Error Messages**: Clear, non-alarming, actionable
-3. **Immediate Acknowledgment**: Confirm file receipt instantly
-4. **Graceful Degradation**: Explain delays, offer alternatives
+1. **Immediate acknowledgment**: confirm file receipt instantly
+2. **Evolving messages**: one message, multiple edits (no chat spam)
+3. **Typing between stages**: fill silence during heavy operations
+4. **Graceful degradation**: if edit fails, send new message
