@@ -315,6 +315,21 @@ class TestUploadToOssWithUrl:
         assert key is None
         assert url is None
 
+    def test_oss_bucket_uses_https(self, audio_service):
+        """OSS bucket endpoint forced to HTTPS for DashScope compatibility."""
+        with patch('oss2.Auth') as mock_auth, \
+             patch('oss2.Bucket') as mock_bucket_cls:
+            mock_bucket_cls.return_value = MagicMock()
+            audio_service._oss_bucket = None  # Reset cached bucket
+
+            bucket = audio_service._get_oss_bucket()
+            assert bucket is not None
+            # Verify endpoint passed to oss2.Bucket starts with https://
+            call_args = mock_bucket_cls.call_args
+            endpoint_arg = call_args[0][1]  # Second positional arg
+            assert endpoint_arg.startswith('https://'), \
+                f"Expected HTTPS endpoint, got: {endpoint_arg}"
+
 
 # ============== Diarization Model Tests ==============
 
@@ -804,3 +819,167 @@ class TestMNSFallback:
             mock_db.return_value.create_job.assert_called_once()
             # Job should be marked as failed
             mock_db.return_value.update_job_status.assert_called_once()
+
+
+# ============== Diarization Debug Tests ==============
+
+class TestDiarizationDebug:
+    """Test _diarization_debug recording and get_diarization_debug() formatting."""
+
+    def _make_transcription_result(self, text="Hello"):
+        """Helper: create a valid transcription result dict."""
+        return {
+            'transcripts': [{
+                'sentences': [{
+                    'text': text,
+                    'speaker_id': 0,
+                    'begin_time': 0,
+                    'end_time': 1000,
+                }]
+            }]
+        }
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_diarization_debug_populated(self, mock_post, mock_get, audio_service):
+        """Both passes succeed — debug dict has pass1/pass2 entries."""
+        # Mock OSS upload
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://bucket.oss.com/key?sig=abc'
+        audio_service._oss_bucket = mock_bucket
+
+        # Submit responses (both succeed)
+        submit_resp = MagicMock()
+        submit_resp.status_code = 200
+        submit_resp.json.return_value = {'output': {'task_id': 'task-123'}}
+        mock_post.return_value = submit_resp
+
+        # Route GET requests by URL
+        trans_data = self._make_transcription_result()
+
+        def get_router(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if '/tasks/' in url:
+                resp.json.return_value = {
+                    'output': {
+                        'task_status': 'SUCCEEDED',
+                        'results': [{'transcription_url': 'https://result.com/data.json'}]
+                    }
+                }
+            else:
+                resp.json.return_value = trans_data
+            return resp
+
+        mock_get.side_effect = get_router
+
+        with patch('time.sleep'):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        dbg = audio_service._diarization_debug
+        assert 'pass1_result' in dbg
+        assert 'pass2_result' in dbg
+        assert dbg['pass1_result'] == 'ok'
+        assert dbg['pass2_result'] == 'ok'
+        assert 'pass1_submit_status' in dbg
+        assert 'pass2_submit_status' in dbg
+        assert dbg['pass1_submit_status'] == 200
+        assert 'spk_segments' in dbg
+        assert 'txt_segments' in dbg
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_diarization_debug_records_fallback(self, mock_post, mock_get, audio_service):
+        """Pass 2 task fails — fallback recorded in debug."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://bucket.oss.com/key?sig=abc'
+        audio_service._oss_bucket = mock_bucket
+
+        # Submit: assign different task IDs per model
+        call_count = [0]
+        def post_router(*args, **kwargs):
+            call_count[0] += 1
+            resp = MagicMock()
+            resp.status_code = 200
+            payload = kwargs.get('json', {})
+            model = payload.get('model', '')
+            if model == 'fun-asr-mtl':
+                resp.json.return_value = {'output': {'task_id': 'task-spk'}}
+            else:
+                resp.json.return_value = {'output': {'task_id': 'task-txt'}}
+            return resp
+        mock_post.side_effect = post_router
+
+        trans_data = self._make_transcription_result("Привет")
+
+        def get_router(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if 'task-spk' in url:
+                resp.json.return_value = {
+                    'output': {
+                        'task_status': 'SUCCEEDED',
+                        'results': [{'transcription_url': 'https://result.com/data.json'}]
+                    }
+                }
+            elif 'task-txt' in url:
+                resp.json.return_value = {
+                    'output': {'task_status': 'FAILED', 'message': 'Model not exist'}
+                }
+            else:
+                # transcription fetch
+                resp.json.return_value = trans_data
+            return resp
+
+        mock_get.side_effect = get_router
+
+        with patch('time.sleep'):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        dbg = audio_service._diarization_debug
+        assert dbg['pass2_result'] == 'task_failed: Model not exist'
+        assert dbg['fallback'] == 'pass2_failed_using_pass1_text'
+        assert 'pass2_poll_body' in dbg
+
+    def test_get_diarization_debug_format(self, audio_service):
+        """get_diarization_debug() returns formatted text with key sections."""
+        audio_service._diarization_debug = {
+            'pass1_result': 'ok',
+            'pass1_submit_status': 200,
+            'pass1_task_id': 'task-aaa',
+            'pass2_result': 'task_failed: Model not exist',
+            'pass2_submit_status': 200,
+            'pass2_task_id': 'task-bbb',
+            'spk_segments': 5,
+            'txt_segments': 0,
+            'fallback': 'pass2_failed_using_pass1_text',
+        }
+
+        text = audio_service.get_diarization_debug()
+        assert text is not None
+        assert 'DIARIZATION DEBUG' in text
+        assert 'Pass 1' in text
+        assert 'Pass 2' in text
+        assert 'task_failed: Model not exist' in text
+        assert 'pass2_failed_using_pass1_text' in text
+        assert 'spk_segments: 5' in text
+        assert len(text) <= 3900
+
+    def test_debug_html_escaped(self, audio_service):
+        """HTML special chars in API response are escaped."""
+        audio_service._diarization_debug = {
+            'pass1_result': 'ok',
+            'pass2_result': 'submit_failed',
+            'pass2_submit_body': '{"error": "<script>alert(1)</script>"}',
+            'fallback': 'both_empty',
+        }
+
+        text = audio_service.get_diarization_debug()
+        assert text is not None
+        assert '<script>' not in text
+        assert '&lt;script&gt;' in text
+
+    def test_get_diarization_debug_empty(self, audio_service):
+        """Returns None when no debug data."""
+        audio_service._diarization_debug = {}
+        assert audio_service.get_diarization_debug() is None

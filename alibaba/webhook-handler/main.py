@@ -466,6 +466,12 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
 
             text = audio_service.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
+        # Send diarization debug info to admin
+        if dialogue_mode and chat_id == OWNER_ID:
+            debug_text = audio_service.get_diarization_debug()
+            if debug_text:
+                tg.send_message(chat_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')
+
         if not text or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
             return 'no_speech'

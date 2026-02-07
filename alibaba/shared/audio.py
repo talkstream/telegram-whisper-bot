@@ -6,6 +6,7 @@ v2.1.0: Added Alibaba ASR backend option (requires OSS for local files)
 v2.0.0: Added faster-whisper GPU support as alternative backend
 """
 import os
+import json
 import logging
 import tempfile
 import subprocess
@@ -66,6 +67,7 @@ class AudioService:
         # Alibaba OSS configuration
         self.oss_config = oss_config or {}
         self._oss_bucket = None  # Lazy-loaded OSS bucket
+        self._diarization_debug = {}  # Debug info for admin diagnostics
 
         # Faster-whisper model (lazy-loaded)
         self._faster_whisper_model = None
@@ -492,6 +494,11 @@ class AudioService:
 
             bucket_name = self.oss_config.get('bucket')
             endpoint = self.oss_config.get('endpoint')
+
+            # Force HTTPS for signed URLs (DashScope async ASR requires HTTPS)
+            if endpoint and not endpoint.startswith('http'):
+                endpoint = f'https://{endpoint}'
+
             access_key_id = self.oss_config.get('access_key_id')
             access_key_secret = self.oss_config.get('access_key_secret')
 
@@ -616,6 +623,8 @@ class AudioService:
         """
         from concurrent.futures import ThreadPoolExecutor
 
+        self._diarization_debug = {}  # Reset for each call
+
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
         if not api_key:
             logging.warning("DASHSCOPE_API_KEY not configured for diarization")
@@ -645,10 +654,12 @@ class AudioService:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_spk = executor.submit(
                     self._submit_async_transcription,
-                    signed_url, 'fun-asr-mtl', spk_params, api_key)
+                    signed_url, 'fun-asr-mtl', spk_params, api_key,
+                    debug_prefix='pass1')
                 future_txt = executor.submit(
                     self._submit_async_transcription,
-                    signed_url, 'qwen3-asr-flash-filetrans', txt_params, api_key)
+                    signed_url, 'qwen3-asr-flash-filetrans', txt_params, api_key,
+                    debug_prefix='pass2')
 
                 try:
                     spk_result = future_spk.result()
@@ -667,14 +678,19 @@ class AudioService:
             speaker_segments = self._parse_speaker_segments(spk_result) if spk_result else []
             text_segments = self._parse_text_segments(txt_result) if txt_result else []
 
+            self._diarization_debug['spk_segments'] = len(speaker_segments)
+            self._diarization_debug['txt_segments'] = len(text_segments)
+
             # Fallback cascade
             if not text_segments and not speaker_segments:
                 logging.warning("Both diarization passes returned no data")
+                self._diarization_debug['fallback'] = 'both_empty'
                 return None, []
 
             if not text_segments:
                 # Pass 2 failed — use Pass 1 text (wrong language but has speakers)
                 logging.warning("Pass 2 failed, using Pass 1 text (may be inaccurate)")
+                self._diarization_debug['fallback'] = 'pass2_failed_using_pass1_text'
                 raw_texts = [s['text'] for s in speaker_segments if s.get('text')]
                 raw_text = ' '.join(raw_texts) if raw_texts else None
                 return raw_text, speaker_segments
@@ -682,6 +698,7 @@ class AudioService:
             if not speaker_segments:
                 # Pass 1 failed — return text without speaker labels
                 logging.warning("Pass 1 failed, returning text without speaker labels")
+                self._diarization_debug['fallback'] = 'pass1_failed_no_speakers'
                 raw_texts = [s['text'] for s in text_segments if s.get('text')]
                 raw_text = ' '.join(raw_texts) if raw_texts else None
                 return raw_text, []
@@ -692,6 +709,7 @@ class AudioService:
             raw_texts = [s['text'] for s in merged if s.get('text')]
             raw_text = ' '.join(raw_texts)
 
+            self._diarization_debug['fallback'] = 'none'
             logging.info(f"Two-pass diarization: {len(merged)} segments, "
                          f"{len(set(s['speaker_id'] for s in merged))} speakers, "
                          f"{len(raw_text)} chars")
@@ -700,6 +718,7 @@ class AudioService:
 
         except Exception as e:
             logging.warning(f"Diarization failed: {e}", exc_info=True)
+            self._diarization_debug['fallback'] = f'exception: {e}'
             return None, []
         finally:
             self._cleanup_oss_key(oss_key)
@@ -748,7 +767,8 @@ class AudioService:
     def _submit_async_transcription(self, signed_url: str, model: str,
                                       params: dict, api_key: str,
                                       poll_interval: int = 5,
-                                      max_wait: int = 240) -> Optional[dict]:
+                                      max_wait: int = 240,
+                                      debug_prefix: str = "") -> Optional[dict]:
         """Submit an async transcription job and poll until completion.
 
         Handles difference in input format:
@@ -762,11 +782,14 @@ class AudioService:
             api_key: DashScope API key
             poll_interval: Seconds between polls (default: 5)
             max_wait: Maximum wait time in seconds (default: 240)
+            debug_prefix: Prefix for debug keys in _diarization_debug (e.g. 'pass1', 'pass2')
 
         Returns:
             Parsed transcription data dict, or None on failure
         """
         import requests
+
+        pfx = debug_prefix  # shorthand
 
         url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
         headers = {
@@ -787,17 +810,38 @@ class AudioService:
             "parameters": params
         }
 
+        # Record request (strip signed URL query string for security)
+        if pfx:
+            safe_url = signed_url.split('?')[0] + '?...' if '?' in signed_url else signed_url
+            req_repr = json.dumps({**payload, "input": {k: safe_url if 'url' in k else v
+                                                         for k, v in input_data.items()}},
+                                   ensure_ascii=False)[:800]
+            self._diarization_debug[f'{pfx}_request'] = req_repr
+
         response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+        if pfx:
+            self._diarization_debug[f'{pfx}_submit_status'] = response.status_code
+
         if response.status_code != 200:
             error_data = response.json() if response.text else {}
             logging.warning(f"{model} submit failed: {response.status_code} - {error_data}")
+            if pfx:
+                self._diarization_debug[f'{pfx}_submit_body'] = str(error_data)[:500]
+                self._diarization_debug[f'{pfx}_result'] = 'submit_failed'
             return None
 
         task_data = response.json()
         task_id = task_data.get('output', {}).get('task_id')
         if not task_id:
             logging.warning(f"{model} returned no task_id: {task_data}")
+            if pfx:
+                self._diarization_debug[f'{pfx}_submit_body'] = str(task_data)[:500]
+                self._diarization_debug[f'{pfx}_result'] = 'submit_failed'
             return None
+
+        if pfx:
+            self._diarization_debug[f'{pfx}_task_id'] = task_id
 
         # Poll for completion
         poll_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
@@ -819,24 +863,42 @@ class AudioService:
             elif task_status == 'FAILED':
                 error_msg = poll_data.get('output', {}).get('message', 'unknown')
                 logging.warning(f"{model} task failed: {error_msg}")
+                if pfx:
+                    self._diarization_debug[f'{pfx}_poll_body'] = str(poll_data)[:500]
+                    self._diarization_debug[f'{pfx}_result'] = f'task_failed: {error_msg}'
                 return None
         else:
             logging.warning(f"{model} task timed out after {max_wait}s")
+            if pfx:
+                self._diarization_debug[f'{pfx}_result'] = f'timeout_{max_wait}s'
             return None
 
         # Fetch transcription results
         results = poll_data.get('output', {}).get('results', [])
         if not results:
             logging.warning(f"{model} returned empty results")
+            if pfx:
+                self._diarization_debug[f'{pfx}_poll_body'] = str(poll_data)[:500]
+                self._diarization_debug[f'{pfx}_result'] = 'empty_results'
             return None
 
         transcription_url = results[0].get('transcription_url')
         if not transcription_url:
             logging.warning(f"No transcription_url in {model} results")
+            if pfx:
+                self._diarization_debug[f'{pfx}_poll_body'] = str(poll_data)[:500]
+                self._diarization_debug[f'{pfx}_result'] = 'no_transcription_url'
             return None
 
         trans_response = requests.get(transcription_url, timeout=30)
-        return trans_response.json()
+        trans_data = trans_response.json()
+
+        if pfx:
+            self._diarization_debug[f'{pfx}_result'] = 'ok'
+            self._diarization_debug[f'{pfx}_transcription_len'] = len(
+                json.dumps(trans_data, ensure_ascii=False))
+
+        return trans_data
 
     def _align_speakers_with_text(self, speaker_segments: List[dict],
                                     text_segments: List[dict]) -> List[dict]:
@@ -935,6 +997,68 @@ class AudioService:
             lines.append(f"\u2014 {' '.join(current_texts)}")
 
         return "\n\n".join(lines)
+
+    def get_diarization_debug(self) -> Optional[str]:
+        """Format _diarization_debug dict into a human-readable text block for admin.
+
+        Returns:
+            Formatted debug text (HTML-safe, <=3900 chars) or None if no debug data
+        """
+        import html
+
+        dbg = self._diarization_debug
+        if not dbg:
+            return None
+
+        lines = ["DIARIZATION DEBUG", ""]
+
+        # Pass 1
+        lines.append("--- Pass 1 (fun-asr-mtl) ---")
+        lines.append(f"result: {dbg.get('pass1_result', 'n/a')}")
+        if 'pass1_submit_status' in dbg:
+            lines.append(f"http: {dbg['pass1_submit_status']}")
+        if 'pass1_task_id' in dbg:
+            lines.append(f"task_id: {dbg['pass1_task_id']}")
+        if 'pass1_transcription_len' in dbg:
+            lines.append(f"transcription_len: {dbg['pass1_transcription_len']}")
+        if 'pass1_submit_body' in dbg:
+            lines.append(f"response: {dbg['pass1_submit_body']}")
+        if 'pass1_poll_body' in dbg:
+            lines.append(f"poll_response: {dbg['pass1_poll_body']}")
+        if 'pass1_request' in dbg:
+            lines.append(f"request: {dbg['pass1_request']}")
+
+        lines.append("")
+
+        # Pass 2
+        lines.append("--- Pass 2 (qwen3-asr-flash-filetrans) ---")
+        lines.append(f"result: {dbg.get('pass2_result', 'n/a')}")
+        if 'pass2_submit_status' in dbg:
+            lines.append(f"http: {dbg['pass2_submit_status']}")
+        if 'pass2_task_id' in dbg:
+            lines.append(f"task_id: {dbg['pass2_task_id']}")
+        if 'pass2_transcription_len' in dbg:
+            lines.append(f"transcription_len: {dbg['pass2_transcription_len']}")
+        if 'pass2_submit_body' in dbg:
+            lines.append(f"response: {dbg['pass2_submit_body']}")
+        if 'pass2_poll_body' in dbg:
+            lines.append(f"poll_response: {dbg['pass2_poll_body']}")
+        if 'pass2_request' in dbg:
+            lines.append(f"request: {dbg['pass2_request']}")
+
+        lines.append("")
+
+        # Merge stats
+        lines.append("--- Merge ---")
+        if 'spk_segments' in dbg:
+            lines.append(f"spk_segments: {dbg['spk_segments']}")
+        if 'txt_segments' in dbg:
+            lines.append(f"txt_segments: {dbg['txt_segments']}")
+        if 'fallback' in dbg:
+            lines.append(f"fallback: {dbg['fallback']}")
+
+        text = html.escape('\n'.join(lines))
+        return text[:3900]
 
     def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru',
                                    progress_callback=None) -> str:

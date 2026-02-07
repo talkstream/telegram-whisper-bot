@@ -307,6 +307,14 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
             text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
+        # Send diarization debug info to admin
+        if dialogue_mode:
+            owner_id = int(os.environ.get('OWNER_ID', 0))
+            if owner_id and chat_id == owner_id:
+                debug_text = audio.get_diarization_debug()
+                if debug_text:
+                    tg.send_message(owner_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')
+
         if not text or text.strip() == "" or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
             if progress_id:
