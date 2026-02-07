@@ -2,16 +2,90 @@
 Utility Service - General utility functions for the Telegram Whisper Bot
 """
 
+import logging
 import re
+import time
+
 import pytz
 from datetime import datetime, timedelta
+
+
+MUTE_FILE = '/tmp/twbot_mute_until'
+
+
+class TelegramErrorHandler(logging.Handler):
+    """Logging handler that sends ERROR+ messages to Telegram owner.
+
+    Includes a cooldown to avoid flooding (default 60s).
+    Respects /mute command via a mute-file in /tmp.
+    Never raises — notification failure must not break the app.
+    """
+
+    def __init__(self, bot_token: str, owner_id: int, component: str = "app",
+                 cooldown: int = 60):
+        super().__init__(level=logging.ERROR)
+        self.bot_token = bot_token
+        self.owner_id = owner_id
+        self.component = component
+        self.cooldown = cooldown
+        self._last_sent = 0.0
+
+    @staticmethod
+    def is_muted() -> bool:
+        """Check if error notifications are muted via /mute command."""
+        import os
+        if not os.path.exists(MUTE_FILE):
+            return False
+        try:
+            with open(MUTE_FILE) as f:
+                mute_until = float(f.read().strip())
+            if time.time() < mute_until:
+                return True
+            os.unlink(MUTE_FILE)
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def set_mute(hours: float):
+        """Mute error notifications for N hours."""
+        mute_until = time.time() + hours * 3600
+        with open(MUTE_FILE, 'w') as f:
+            f.write(str(mute_until))
+
+    @staticmethod
+    def clear_mute():
+        """Remove mute."""
+        import os
+        if os.path.exists(MUTE_FILE):
+            os.unlink(MUTE_FILE)
+
+    def emit(self, record):
+        now = time.time()
+        if now - self._last_sent < self.cooldown:
+            return
+        if self.is_muted():
+            return
+        self._last_sent = now
+        try:
+            import requests
+            text = f"\U0001f6a8 {record.levelname} [{self.component}]\n{record.name}: {record.getMessage()}"
+            if len(text) > 4000:
+                text = text[:4000] + "..."
+            requests.post(
+                f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+                json={"chat_id": self.owner_id, "text": text},
+                timeout=3,
+            )
+        except Exception:
+            pass
 
 
 class UtilityService:
     """Service for general utility functions"""
     
     @staticmethod
-    def setup_logging(component_name="app"):
+    def setup_logging(component_name="app", bot_token=None, owner_id=None):
         """Configure structured JSON logging for Alibaba SLS.
 
         Respects LOG_LEVEL environment variable:
@@ -19,6 +93,9 @@ class UtilityService:
         - INFO: Info and above (default for development)
         - WARNING: Warnings and above (recommended for production)
         - ERROR: Errors only
+
+        If bot_token and owner_id are provided, ERROR+ logs are also
+        sent to the owner via Telegram (with 60s cooldown).
         """
         import sys
         import os
@@ -71,6 +148,11 @@ class UtilityService:
         logging.getLogger('google.cloud').setLevel(logging.WARNING)
         logging.getLogger('urllib3').setLevel(logging.WARNING)
         logging.getLogger('httpx').setLevel(logging.WARNING)
+
+        # Telegram error notifications
+        if bot_token and owner_id:
+            tg_handler = TelegramErrorHandler(bot_token, int(owner_id), component_name)
+            logger.addHandler(tg_handler)
 
     @staticmethod
     def format_duration(seconds):

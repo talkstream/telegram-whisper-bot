@@ -19,7 +19,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'telegram_bot_shared'
 
 # Configure structured JSON logging for SLS
 from services.utility import UtilityService
-UtilityService.setup_logging('webhook-handler')
+UtilityService.setup_logging(
+    'webhook-handler',
+    bot_token=os.environ.get('TELEGRAM_BOT_TOKEN'),
+    owner_id=os.environ.get('OWNER_ID'),
+)
 logger = logging.getLogger(__name__)
 
 # Environment variables
@@ -318,6 +322,26 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         file_type = 'document'
     else:
         return 'no_audio'
+
+    # Check if user is on hold (anti-abuse)
+    user_id = message.get('from', {}).get('id')
+    settings = get_db_service().get_user_settings(user_id) or {}
+    hold_until = settings.get('hold_until')
+    if hold_until:
+        hold_dt = datetime.fromisoformat(hold_until)
+        if datetime.now(pytz.utc) < hold_dt:
+            remaining = hold_dt - datetime.now(pytz.utc)
+            mins_left = max(1, int(remaining.total_seconds() / 60))
+            tg.send_message(
+                chat_id,
+                f"⏸ Ваш аккаунт временно приостановлен.\n"
+                f"Осталось: ~{mins_left} мин."
+            )
+            return 'user_on_hold'
+        else:
+            # Hold expired — clean up
+            del settings['hold_until']
+            get_db_service().update_user_settings(user_id, settings)
 
     # Check user balance
     balance = user.get('balance_minutes', 0)
@@ -768,7 +792,9 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "<b>Система:</b>\n"
             "/status — статус очереди MNS\n"
             "/flush — очистить зависшие задачи\n"
-            "/batch [user_id] — очередь пользователя\n\n"
+            "/batch [user_id] — очередь пользователя\n"
+            "/hold &lt;id&gt; &lt;10m|2h|1d|off&gt; — пауза\n"
+            "/mute [часы|off] — уведомления об ошибках\n\n"
             "<b>Отчёты:</b>\n"
             "/export [users|logs|payments] [дни] — экспорт CSV\n"
             "/report [daily|weekly] — отчёт"
@@ -831,9 +857,130 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             return 'unauthorized'
         return handle_batch_command(text, chat_id, tg, db)
 
+    elif command == '/mute':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_mute_command(text, chat_id, tg)
+
+    elif command == '/hold':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        return handle_hold_command(text, chat_id, tg, db)
+
     else:
         tg.send_message(chat_id, "Неизвестная команда. Используйте /help для справки.")
         return 'unknown_command'
+
+
+def handle_mute_command(text: str, chat_id: int, tg) -> str:
+    """Admin: /mute <hours> — mute error notifications. /mute off — unmute."""
+    from services.utility import TelegramErrorHandler
+
+    parts = text.split()
+
+    if len(parts) < 2:
+        muted = TelegramErrorHandler.is_muted()
+        status = "🔇 уведомления выключены" if muted else "🔔 уведомления включены"
+        tg.send_message(
+            chat_id,
+            f"{status}\n\n"
+            "Формат: /mute <часы> — выключить\n"
+            "/mute off — включить обратно",
+        )
+        return 'mute_status'
+
+    action = parts[1].lower()
+    if action == 'off':
+        TelegramErrorHandler.clear_mute()
+        tg.send_message(chat_id, "🔔 Уведомления об ошибках включены.")
+        return 'mute_off'
+
+    try:
+        hours = float(action)
+    except ValueError:
+        tg.send_message(chat_id, "Формат: /mute 8 (часов) или /mute off")
+        return 'mute_bad_format'
+
+    TelegramErrorHandler.set_mute(hours)
+    tg.send_message(chat_id, f"🔇 Уведомления об ошибках выключены на {hours}ч.")
+    return 'mute_set'
+
+
+def handle_hold_command(text: str, chat_id: int, tg, db) -> str:
+    """Admin: /hold <user_id> <duration> — temporarily suspend a user.
+
+    Duration format: 10m, 2h, 1d (minutes/hours/days).
+    /hold <user_id> off — remove hold immediately.
+    /hold <user_id>     — show current hold status.
+    """
+    parts = text.split()
+
+    if len(parts) < 2:
+        tg.send_message(
+            chat_id,
+            "Формат: /hold &lt;user_id&gt; &lt;время&gt;\n"
+            "Время: 10m, 2h, 1d\n"
+            "/hold &lt;user_id&gt; off — снять\n"
+            "/hold &lt;user_id&gt; — статус",
+            parse_mode='HTML',
+        )
+        return 'hold_usage'
+
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        tg.send_message(chat_id, "user_id должен быть числом.")
+        return 'hold_bad_id'
+
+    settings = db.get_user_settings(target_id) or {}
+
+    # Show status
+    if len(parts) == 2:
+        hold_until = settings.get('hold_until')
+        if hold_until:
+            hold_dt = datetime.fromisoformat(hold_until)
+            if datetime.now(pytz.utc) < hold_dt:
+                remaining = hold_dt - datetime.now(pytz.utc)
+                mins_left = max(1, int(remaining.total_seconds() / 60))
+                tg.send_message(chat_id, f"⏸ User {target_id}: на паузе ещё ~{mins_left} мин (до {hold_until})")
+            else:
+                tg.send_message(chat_id, f"User {target_id}: hold истёк.")
+        else:
+            tg.send_message(chat_id, f"User {target_id}: нет hold.")
+        return 'hold_status'
+
+    action = parts[2].lower()
+
+    # Remove hold
+    if action == 'off':
+        if 'hold_until' in settings:
+            del settings['hold_until']
+            db.update_user_settings(target_id, settings)
+        tg.send_message(chat_id, f"✅ Hold снят для user {target_id}")
+        return 'hold_removed'
+
+    # Parse duration: 10m, 2h, 1d
+    import re as _re
+    match = _re.match(r'^(\d+)([mhd])$', action)
+    if not match:
+        tg.send_message(chat_id, "Неверный формат. Примеры: 10m, 2h, 1d")
+        return 'hold_bad_duration'
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if unit == 'm':
+        delta = timedelta(minutes=amount)
+    elif unit == 'h':
+        delta = timedelta(hours=amount)
+    else:
+        delta = timedelta(days=amount)
+
+    hold_until = datetime.now(pytz.utc) + delta
+    settings['hold_until'] = hold_until.isoformat()
+    db.update_user_settings(target_id, settings)
+
+    tg.send_message(chat_id, f"⏸ User {target_id} на паузе на {parts[2]} (до {hold_until.strftime('%H:%M %d.%m')} UTC)")
+    return 'hold_set'
 
 
 # ==================== BUY COMMANDS ====================
