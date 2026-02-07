@@ -431,7 +431,9 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         is_dialogue = False
 
         if dialogue_mode:
-            # Diarization path (Fun-ASR, async, OSS)
+            # Diarization path (Fun-ASR-MTL, async, OSS)
+            # DEBUG: verbose diagnostics (temporary)
+            tg.send_message(chat_id, f"[DEBUG] dialogue_mode=True, starting diarization...")
             raw_text, segments = audio_service.transcribe_with_diarization(
                 converted_path,
                 progress_callback=lambda stage: (
@@ -439,11 +441,24 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                     if status_message_id else None
                 )
             )
+            tg.send_message(chat_id,
+                f"[DEBUG] diarization result: raw_text={len(raw_text) if raw_text else 'None'} chars, "
+                f"segments={len(segments)}, "
+                f"speakers={len(set(s.get('speaker_id') for s in segments)) if segments else 0}")
             if segments:
+                # DEBUG: show first 3 segments
+                for i, seg in enumerate(segments[:3]):
+                    tg.send_message(chat_id,
+                        f"[DEBUG] seg[{i}]: spk={seg.get('speaker_id')} text={seg.get('text', '')[:80]}")
                 text = audio_service.format_dialogue(segments)
                 is_dialogue = True
+                tg.send_message(chat_id,
+                    f"[DEBUG] format_dialogue: {len(text)} chars, is_dialogue=True\n"
+                    f"First 200: {text[:200]}")
             else:
                 # Fallback: regular transcription
+                tg.send_message(chat_id,
+                    f"[DEBUG] No segments, falling back to regular ASR. raw_text={'Yes' if raw_text else 'None'}")
                 def chunk_progress(current, total):
                     if status_message_id and total > 1:
                         tg.edit_message_text(chat_id, status_message_id,
@@ -473,6 +488,10 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             if status_message_id:
                 tg.edit_message_text(chat_id, status_message_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
+            # DEBUG
+            if dialogue_mode:
+                tg.send_message(chat_id,
+                    f"[DEBUG] LLM call: is_dialogue={is_dialogue}, is_chunked={is_chunked}, text={len(text)} chars")
             formatted_text = audio_service.format_text_with_qwen(
                 text, use_code_tags=use_code_tags, use_yo=use_yo,
                 is_chunked=is_chunked, is_dialogue=is_dialogue)
