@@ -1,116 +1,92 @@
 # Troubleshooting
 
-## ASR Errors
+## ASR
 
-| Ошибка | Причина | Решение |
-|--------|---------|---------|
-| Model not found | Deprecated model | Используйте `qwen3-asr-flash` |
-| Connection timeout | Wrong endpoint | Используйте `dashscope-intl.aliyuncs.com` |
-| 400 Bad Request | WebSocket вместо REST | REST API: `/api/v1/services/audio/asr/transcription` |
-| Audio too short | < 0.5 сек | Проверяйте длительность перед отправкой |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Model not found | Deprecated model | Use `qwen3-asr-flash` |
+| Connection timeout | Wrong endpoint | Use `dashscope-intl.aliyuncs.com` |
+| 400 Bad Request | WebSocket instead of REST | REST: `/api/v1/services/audio/asr/transcription` |
+| Audio too short | < 0.5 sec | Check duration before sending |
 
-**Correct ASR config:** см. [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md)
+## Diarization (Fun-ASR)
 
-## Tablestore Errors
+| Error | Cause | Fix |
+|-------|-------|-----|
+| OSS upload failed | Wrong credentials/bucket | Check `OSS_BUCKET`, `OSS_ENDPOINT`, access keys |
+| Diarization timeout | Audio too long / API slow | Max poll 5 min; fallback to Qwen3-ASR auto |
+| No speakers detected | Single speaker / noise | Expected — returns single segment |
+| `TASK_FAILED` | Unsupported format / corrupt | Check FFmpeg output, try re-encoding |
 
-| Ошибка | Причина | Решение |
-|--------|---------|---------|
-| OTSConditionCheckFail | Row exists/not exists mismatch | Используйте правильный Condition |
-| Invalid update_columns | `'PUT'` вместо `'put'` | **Всегда lowercase `'put'`** |
-| Primary key mismatch | int вместо str | `[('user_id', str(user_id))]` |
+## Tablestore
 
-**Паттерн update_row:**
-```python
-update_columns = {'put': [('balance_minutes', 100)]}  # lowercase!
-```
+| Error | Cause | Fix |
+|-------|-------|-----|
+| OTSConditionCheckFail | Row exists mismatch | Use correct Condition |
+| Invalid update_columns | `'PUT'` vs `'put'` | **Always lowercase `'put'`** |
+| Primary key mismatch | int vs str | `[('user_id', str(user_id))]` |
 
-**Conditions:**
-- `EXPECT_NOT_EXIST` — создание
-- `EXPECT_EXIST` — обновление
-- `IGNORE` — upsert
+Conditions: `EXPECT_NOT_EXIST` (create), `EXPECT_EXIST` (update), `IGNORE` (upsert)
 
-## MNS Errors
+## MNS
 
-| Ошибка | Причина | Решение |
-|--------|---------|---------|
-| Queue not found | Неправильное имя/регион | Проверьте MNS Console |
-| Message too large | > 64KB | Передавайте только metadata, не audio bytes |
-| Jobs stuck processing | Worker crashed | `/status` → `/flush` |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Queue not found | Wrong name/region | Check MNS Console |
+| Message too large | > 64KB | Pass metadata only, not audio bytes |
+| Jobs stuck | Worker crashed | `/status` → `/flush` |
 
-## Telegram Errors
+## Telegram
 
-| Ошибка | Причина | Решение |
-|--------|---------|---------|
-| Message too long | > 4096 chars | Разбивайте на chunks по 4000 |
-| Bot blocked by user | User blocked bot | Игнорируйте, не retry |
-| File too big | > 20MB | Показывайте ошибку пользователю |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Message too long | > 4096 chars | Split at 4000 chars or send as file |
+| Bot blocked | User blocked bot | Ignore, don't retry |
+| File too big | > 20MB | Show error to user |
 
-## FFmpeg Errors
+## FFmpeg
 
-| Ошибка | Причина | Решение |
-|--------|---------|---------|
-| No such file | FFmpeg не установлен | Добавьте layer с FFmpeg |
-| Invalid data | Повреждённый файл | `ffprobe -v error` перед обработкой |
-| Empty output | Неподдерживаемый кодек | `-b:a 32k -ar 16000 -ac 1` |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| No such file | FFmpeg not installed | Add FFmpeg layer |
+| Invalid data | Corrupt file | `ffprobe -v error` before processing |
+| Empty output | Unsupported codec | `-b:a 32k -ar 16000 -ac 1` |
 
-**FFmpeg commands:** см. [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md#ffmpeg)
+Config: see [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md#ffmpeg)
 
-## Deploy Errors
+## Deploy
 
-| Ошибка | Причина | Решение |
-|--------|---------|---------|
-| Function not found | Неправильное имя в s.yaml | Проверьте `services:` имена |
-| Timeout | Большой пакет | `.fcignore` или `--use-remote` |
-| Permission denied | Недостаточно прав | `AliyunFCFullAccess`, `AliyunOTSFullAccess`, `AliyunMNSFullAccess` |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Function not found | Wrong name in s.yaml | Check `resources:` names |
+| Timeout | Large package | Use `.fcignore` |
+| Permission denied | Missing policies | `AliyunFCFullAccess`, `AliyunOTSFullAccess`, `AliyunMNSFullAccess` |
+| 502 after deploy | Module import error | Check `pythonjsonlogger` fallback in utility.py |
 
-## Performance Issues
-
-| Проблема | Причины | Решения |
-|----------|---------|---------|
-| Cold start > 5s | Большой пакет, много imports | Минимизируйте deps, lazy imports |
-| Slow processing | Большой файл, сетевые задержки | Оптимизируйте FFmpeg, regional endpoints, больше memory |
-
-## Диагностика
-
-### Проверка конфигурации
+## Diagnostics
 
 ```bash
-# Переменные
-echo $DASHSCOPE_API_KEY && echo $TELEGRAM_BOT_TOKEN
-
 # Webhook
 curl "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"
 
-# DashScope
-curl -X POST "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription" \
-  -H "Authorization: Bearer ${DASHSCOPE_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "qwen3-asr-flash", "input": {"file_urls": ["test"]}}'
-```
-
-### Логи
-
-```bash
+# Logs
 s logs webhook-handler --tail
 s logs audio-processor --tail
-s logs webhook-handler --start-time "2026-02-04 10:00:00"
+
+# Admin
+/status   # queue
+/metrics  # performance
+/cost     # expenses
 ```
 
-### Админ-команды
+## Lessons Learned
 
-```
-/status   # Queue state
-/metrics  # Performance
-/cost     # Costs
-```
-
-## Lessons Learned (Migration)
-
-1. **REST > WebSocket для Serverless**: qwen3-asr-flash REST API проще и надёжнее WebSocket в FC
-2. **Всегда `-intl` endpoints**: `dashscope-intl.aliyuncs.com` для международного доступа
-3. **Не использовать deprecated models**: paraformer-v1/v2 устарели → `qwen3-asr-flash`
-4. **Memory optimization**: 512MB достаточно для webhook handler с lazy imports
+1. REST > WebSocket for serverless (qwen3-asr-flash)
+2. Always `-intl` endpoints
+3. `pythonjsonlogger` NOT available on FC runtime — use try/except fallback
+4. `logConfig: auto` works for initial SLS setup, then switch to explicit config
+5. 512MB sufficient for webhook with lazy imports
 
 ---
 
-*v3.4.0*
+*v3.6.0*

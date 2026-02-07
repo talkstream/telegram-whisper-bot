@@ -1,64 +1,65 @@
-# UI/UX Patterns
+# UX Patterns
 
-## Evolving Progress Messages (v3.4.0)
+## Progress Messages (v3.4.0)
 
-Single message that updates through stages via `edit_message_text`:
+Single message updated through stages via `edit_message_text`.
 
-### Sync Path (< 60 sec audio)
-
+### Sync (< 60s audio)
 ```
-"🎙 Аудио получено. Обрабатываю..."   ← initial (webhook)
-  → "📥 Загружаю файл..."              ← edit + typing
-  → "🎙 Распознаю речь..."             ← edit + typing
-  → "✏️ Форматирую текст..."           ← edit + typing (if text > 100 chars)
-  → [result text]                       ← edit (or delete+send if > 4000 chars)
-```
-
-### Async Path (>= 60 sec audio)
-
-```
-"🎙 Аудио получено. Обрабатываю..."   ← initial (webhook)
-  → "⏳ Аудио в очереди..."            ← edit (webhook)
-  → "🔄 Обработка началась..."          ← edit (processor)
-  → "📥 Загружаю файл..."              ← edit + typing
-  → "🎙 Распознаю речь..."             ← edit + typing
-  → "✏️ Форматирую текст..."           ← edit + typing
-  → [result text]                       ← edit (or delete+send if > 4000 chars)
+"🎙 Аудио получено..."
+  → "📥 Загружаю файл..."         + typing
+  → "🎙 Распознаю речь..."        + typing
+  → "✏️ Форматирую текст..."      + typing (if >100 chars)
+  → [result]                       edit or delete+send
 ```
 
-### Implementation Details
+### Async (≥ 60s audio)
+```
+"🎙 Аудио получено..."
+  → "⏳ В очереди..."              webhook
+  → "🔄 Обработка..."             processor
+  → "📥 Загружаю..."   → "🎙 Распознаю..."   → "✏️ Форматирую..."
+  → [result]
+```
 
-- `status_message_id` flows: webhook → `job_data` → MNS → audio-processor
-- Pattern: `edit_message_text(stage)` → `send_chat_action('typing')` → heavy work
-- Typing indicator visible during heavy operations, not before edits
-- LLM formatting skipped for text <= 100 chars
+### Diarization Path (v3.6.0)
+```
+"🎙 Аудио получено..."
+  → "📤 Загружаю для анализа..."   OSS upload
+  → "🔄 Распознаю с диаризацией..." poll every 5s (max 5min)
+  → "✏️ Форматирую текст..."
+  → [dialogue with em-dashes]
+```
 
-## Progress Stages
+Fallback: if diarization fails → regular ASR path (transparent to user).
 
-| Emoji | Stage | Duration |
-|-------|-------|----------|
-| 🎙 | Received | instant |
-| ⏳ | Queued | async only |
-| 🔄 | Processing started | async only |
-| 📥 | Downloading | 0.2-3s |
-| 🎙 | Transcribing (ASR) | 2-10s |
-| ✏️ | Formatting (LLM) | 2-5s |
+## Delivery Modes (v3.6.0)
 
-## Edge Cases
+| Condition | Action |
+|-----------|--------|
+| ≤4000 chars | Edit status message in place |
+| >4000, `long_text_mode: split` | Delete status → `send_long_message()` |
+| >4000, `long_text_mode: file` | Delete status → send .txt with caption |
 
-- **Text > 4000 chars:** delete status message, send new one
-- **No status_message_id:** create new progress message (backward compat)
-- **MNS fallback to sync:** status_message_id passed through
+## Implementation
+
+- `status_message_id` flows: webhook → `job_data` → MNS → processor
+- Pattern: `edit_message_text(stage)` → `send_chat_action('typing')` → work
+- Typing visible during heavy ops, not before edits
 
 ## Telegram API Limits
 
 - Message edits: ~30/min per chat
-- Update interval: 3 sec minimum
-- `send_chat_action`: lasts 5 seconds, fire-and-forget (timeout=2s)
+- Min edit interval: 3s
+- `send_chat_action`: 5s duration, fire-and-forget (2s timeout)
 
-## Best Practices
+## Principles
 
-1. **Immediate acknowledgment**: confirm file receipt instantly
-2. **Evolving messages**: one message, multiple edits (no chat spam)
-3. **Typing between stages**: fill silence during heavy operations
-4. **Graceful degradation**: if edit fails, send new message
+1. Immediate acknowledgment on file receipt
+2. Evolving single message (no chat spam)
+3. Typing between stages
+4. Graceful degradation: edit fails → send new
+
+---
+
+*v3.6.0*

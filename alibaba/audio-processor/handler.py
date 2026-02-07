@@ -13,7 +13,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Configure structured JSON logging for SLS
 from services.utility import UtilityService
-UtilityService.setup_logging('audio-processor')
+UtilityService.setup_logging(
+    'audio-processor',
+    bot_token=os.environ.get('TELEGRAM_BOT_TOKEN'),
+    owner_id=os.environ.get('OWNER_ID'),
+)
 logger = logging.getLogger(__name__)
 
 # Environment variables

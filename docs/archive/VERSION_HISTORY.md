@@ -1,74 +1,44 @@
-# Telegram Whisper Bot - Version History
+# Version History
 
-## Current Version: v3.4.0 (February 6, 2026)
+## Current: v3.6.0 (2026-02-07)
 
----
-
-## v3.x - Alibaba Cloud Era
+## v3.x — Alibaba Cloud
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v3.6.0 | 2026-02-07 | Diarization (Fun-ASR), `/output` `/dialogue` `/mute`, `_build_format_prompt()` DRY, proper noun/sibilant rules, SLS logging, TelegramErrorHandler, `send_as_file()`. 86 tests. |
+| v3.5.0 | 2026-02-07 | ASR chunking (>150s auto-split), document handler, adaptive compression, user-friendly errors. 55 tests. |
 | v3.4.0 | 2026-02-06 | Evolving progress messages, typing indicators, LLM threshold 100 chars, DB 6→4 calls |
-| v3.3.0 | 2026-02-04 | Shared services refactor (~2500 lines dedup), 'PUT'→'put' fix, pre-deploy actions |
-| v3.2.0 | 2026-02-04 | Payment handler fix, /admin, /user pagination, low balance alerts, scheduled reports |
-| v3.1.1 | 2026-02-04 | Documentation sync |
-| v3.1.0 | 2026-02-04 | Admin improvements, user search, data export |
-| v3.0.1 | 2026-02-04 | qwen-turbo LLM, formatting threshold 150 words |
-| v3.0.0 | 2026-02-04 | Complete Alibaba migration: FC 3.0, Tablestore, MNS, Qwen3-ASR-Flash REST |
+| v3.3.0 | 2026-02-04 | Shared services refactor (~2500 lines dedup), `'PUT'`→`'put'` fix, pre-deploy actions |
+| v3.2.0 | 2026-02-04 | Payment fix, `/admin`, `/user` pagination, low balance alerts, reports |
+| v3.1.x | 2026-02-04 | Admin improvements, user search, data export |
+| v3.0.x | 2026-02-04 | Alibaba migration: FC 3.0, Tablestore, MNS, Qwen3-ASR-Flash REST, qwen-turbo LLM |
 
-## v2.x - Multi-Backend ASR
+## v2.x — Multi-Backend ASR
 
 | Version | Date | Changes |
 |---------|------|---------|
 | v2.1.0 | 2026-02-04 | Multi-backend ASR (openai, faster-whisper, qwen-asr), FFmpeg multithreading |
-| v2.0.0 | 2026-02-04 | Cloud Logging exclusion filter, GPU Whisper support |
+| v2.0.0 | 2026-02-04 | Cloud Logging filter, GPU Whisper support |
 
-## v1.9.x - Cost Optimization
-
-| Version | Date | Changes |
-|---------|------|---------|
-| v1.9.0 | 2026-02-04 | Smart Cold Start UX, Cloud Logging optimization, warmup 10 min |
-
-## v1.8.x - Architecture Refactoring
+## v1.x — GCP Era
 
 | Version | Date | Changes |
 |---------|------|---------|
-| v1.8.2 | 2025-07-05 | Fixed fractional minute display |
-| v1.8.1 | 2025-07-04 | SDK migration vertexai → google-genai |
-| v1.8.0 | 2025-07-04 | Major refactoring: main.py 1369→356 lines (-74%) |
+| v1.9.0 | 2026-02-04 | Smart Cold Start UX, Cloud Logging optimization |
+| v1.8.x | 2025-07 | Architecture refactor: main.py -74%, SDK migration to google-genai |
+| v1.7.x | 2025-06-26 | Video support, `/yo`, `/code` |
+| v1.0–v1.6 | 2025-06-24–25 | Foundation: service architecture, tariffs, trials, monitoring, exports, reports |
 
-## v1.7.x - Video Support
+## Milestones
 
-| Version | Date | Changes |
-|---------|------|---------|
-| v1.7.5 | 2025-07-04 | /yo command, unified /code toggle |
-| v1.7.0-v1.7.4 | 2025-06-26-27 | Video transcription, Gen AI SDK migration, bug fixes |
-
-## v1.0.x-v1.6.x - Foundation
-
-| Version | Date | Changes |
-|---------|------|---------|
-| v1.6.x | 2025-06-25 | Automated reports, CSV export |
-| v1.5.x | 2025-06-25 | Export functionality |
-| v1.4.x | 2025-06-25 | Performance monitoring, /metrics |
-| v1.3.x | 2025-06-25 | Trial system, inline keyboards |
-| v1.2.x | 2025-06-25 | Tariff system (300% markup) |
-| v1.1.x | 2025-06-25 | Service-oriented architecture (-40% code) |
-| v1.0.x | 2025-06-24 | Initial stable release |
-
----
-
-## Key Milestones
-
-| Date | Milestone |
-|------|-----------|
-| 2025-06-24 | v1.0.0 Initial release |
-| 2025-06-25 | 7 releases (v1.1-v1.6), service architecture |
-| 2025-06-26-27 | Video support, Gen AI SDK |
-| 2025-07-04-05 | Architecture overhaul (-74% main.py) |
+| Date | Event |
+|------|-------|
+| 2025-06-24 | v1.0.0 initial release |
+| 2025-07-04 | Architecture overhaul (-74% main.py) |
 | 2026-02-04 | Alibaba migration (-68% cost: $25→$8/mo) |
-| 2026-02-06 | UX overhaul: evolving progress, DB optimization |
+| 2026-02-07 | v3.6.0 diarization, 86 tests |
 
 ---
 
-**Repository:** https://github.com/talkstream/telegram-whisper-bot (private)
+*v3.6.0*

@@ -1,88 +1,80 @@
 # Alibaba Cloud Critical Configuration
 
-**Version:** v3.4.0 | **Updated:** 2026-02-06
+**v3.6.0** | 2026-02-07
 
 ---
 
-## ASR Model (Speech Recognition)
+## ASR (Speech Recognition)
 
 | Parameter | Value |
 |-----------|-------|
-| **Model** | `qwen3-asr-flash` |
-| **Snapshot** | `qwen3-asr-flash-2025-09-08` |
-| **Languages** | 52 (including Russian) |
-| **Protocol** | REST API (NOT WebSocket) |
-| **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1` |
+| Model | `qwen3-asr-flash` (`qwen3-asr-flash-2025-09-08`) |
+| Languages | 52 (incl. Russian) |
+| Protocol | REST API (NOT WebSocket) |
+| Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1` |
+| Chunking | Auto-split audio >150s |
 
-### Python SDK Call
-```python
-import dashscope
-dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
-
-response = dashscope.MultiModalConversation.call(
-    api_key=api_key,
-    model="qwen3-asr-flash",
-    messages=[
-        {"role": "system", "content": [{"text": ""}]},
-        {"role": "user", "content": [{"audio": "data:audio/mpeg;base64,..."}]}
-    ],
-    result_format="message",
-    asr_options={"enable_itn": True}
-)
-```
-
-### DO NOT USE (Deprecated)
-- ~~paraformer-realtime-v2~~ (2024)
-- ~~paraformer-v1~~
-- ~~dashscope.aliyuncs.com~~ (Beijing, use `-intl`)
+**DO NOT USE:** ~~paraformer-v1/v2~~, ~~dashscope.aliyuncs.com~~ (Beijing)
 
 ---
 
-## LLM Model (Text Formatting)
+## Diarization (v3.6.0)
 
 | Parameter | Value |
 |-----------|-------|
-| **Model** | `qwen-turbo` (v3.0.1: 2x faster, 3x cheaper than qwen-plus) |
-| **Endpoint** | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
-| **Fallback** | Gemini 2.5 Flash |
-| **Threshold** | 100 chars (v3.4.0: skip LLM for short text) |
+| Model | `fun-asr` |
+| Protocol | Async API (`X-DashScope-Async: enable`) |
+| Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
+| Input | File URL (signed OSS URL, NOT base64) |
+| Poll interval | 5s, max 5 min |
 
-**Environment variables:** see [CLAUDE.md](/CLAUDE.md#environment-variables)
+Flow: upload to OSS → POST async → poll → fetch result → cleanup OSS
+
+Requires: `OSS_BUCKET`, `OSS_ENDPOINT`, `ALIBABA_ACCESS_KEY/SECRET_KEY`
 
 ---
 
-## Endpoints (International)
+## LLM (Text Formatting)
+
+| Parameter | Value |
+|-----------|-------|
+| Model | `qwen-turbo` (2x faster, 3x cheaper than qwen-plus) |
+| Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
+| Fallback | Gemini 2.5 Flash |
+| Threshold | Skip LLM for text ≤100 chars |
+
+---
+
+## All Endpoints
 
 | Service | Endpoint |
 |---------|----------|
-| DashScope ASR | `https://dashscope-intl.aliyuncs.com/api/v1` |
-| DashScope LLM | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
+| DashScope ASR/LLM | `https://dashscope-intl.aliyuncs.com/api/v1` |
 | Tablestore | `https://twbot-prod.eu-central-1.ots.aliyuncs.com` |
 | MNS | `https://5907469887573677.mns.eu-central-1.aliyuncs.com` |
+| OSS | `oss-eu-central-1.aliyuncs.com` |
 
 ---
 
-## FFmpeg Commands (v3.0.1)
+## FFmpeg
 
 ```bash
-# Standard (audio > 10 sec)
+# Standard (>10s)
 ffmpeg -y -i input.ogg -b:a 32k -ar 16000 -ac 1 -threads 4 output.mp3
 
-# Short audio (< 10 sec) - ultra-light settings
+# Short (<10s)
 ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
-
-# PCM for ASR (if needed)
-ffmpeg -y -i input.mp3 -ar 16000 -ac 1 -f s16le -acodec pcm_s16le output.wav
 ```
 
-**v3.0.1 optimizations:** bitrate 64k->32k, short audio 24k/8kHz, sync threshold 30->60 sec
-
-**Troubleshooting:** see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+Optimizations: bitrate 64k→32k, short audio 24k/8kHz, sync threshold 60s.
 
 ---
 
 ## Resources
 
-- [Qwen3-ASR Documentation](https://www.alibabacloud.com/help/en/model-studio/qwen-real-time-speech-recognition)
-- [DashScope API Reference](https://www.alibabacloud.com/help/en/model-studio/qwen-api-reference/)
-- [Qwen3-ASR GitHub](https://github.com/QwenLM/Qwen3-ASR)
+- [Qwen3-ASR Docs](https://www.alibabacloud.com/help/en/model-studio/qwen-real-time-speech-recognition)
+- [DashScope API](https://www.alibabacloud.com/help/en/model-studio/qwen-api-reference/)
+
+---
+
+*v3.6.0*

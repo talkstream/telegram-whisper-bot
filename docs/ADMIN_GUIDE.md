@@ -1,119 +1,90 @@
 # Admin Guide
 
-Админ-команды доступны только владельцу бота (`BOT_OWNER_ID`).
+Admin commands: OWNER_ID only.
 
-## Команды
+## Commands
 
-### Пользователи
+### Users
+| Command | Description |
+|---------|-------------|
+| `/user [search] [--page N]` | Search by username/name/ID |
+| `/credit <id> <min>` | Add/remove minutes |
 
-| Команда | Описание |
-|---------|----------|
-| `/user [search] [--page N]` | Поиск по username/имени/ID |
-| `/credit <id> <min>` | Добавить/вычесть минуты |
+### Trials
+| Command | Description |
+|---------|-------------|
+| `/review_trials` | Pending requests (inline ✅/❌) |
 
-**Примеры:**
-```
-/user john --page 2    # Поиск "john", страница 2
-/credit 123456789 30   # +30 минут
-/credit 123456789 -10  # -10 минут
-```
+Approve = 15 min + notification to user.
 
-### Trial
+### Statistics
+| Command | Description |
+|---------|-------------|
+| `/stat` | Users, transcriptions, duration |
+| `/cost` | ASR/LLM costs by period |
+| `/metrics [hours]` | Performance (TTFT, success rate, languages) |
 
-| Команда | Описание |
-|---------|----------|
-| `/review_trials` | Ожидающие запросы (inline кнопки ✅/❌) |
-
-Одобрение = 15 минут + уведомление пользователю.
-
-### Статистика
-
-| Команда | Описание |
-|---------|----------|
-| `/stat` | Пользователи, транскрипции, длительность |
-| `/cost` | Расходы ASR/LLM за период |
-| `/metrics [hours]` | Производительность (TTFT, успешность, языки) |
-
-### Очередь
-
-| Команда | Описание |
-|---------|----------|
+### Queue
+| Command | Description |
+|---------|-------------|
 | `/status` | Pending/processing/completed/failed |
-| `/flush` | Очистка зависших (>10 мин processing) |
-| `/batch [user_id]` | Задачи пользователя |
+| `/flush` | Clear stuck jobs (>10 min processing) |
+| `/batch [user_id]` | User's jobs |
 
-### Экспорт
+### Export & Reports
+| Command | Description |
+|---------|-------------|
+| `/export users\|logs\|payments <days>` | CSV export |
+| `/report daily\|weekly` | Summary report |
 
-| Команда | Описание |
-|---------|----------|
-| `/export users 30` | CSV пользователей за 30 дней |
-| `/export logs 7` | CSV транскрипций за 7 дней |
-| `/export payments 90` | CSV платежей за 90 дней |
+### System (v3.6.0)
+| Command | Description |
+|---------|-------------|
+| `/mute` | Show notification status |
+| `/mute <hours>` | Mute error notifications |
+| `/mute off` | Unmute |
 
-### Отчёты
+## Auto-notifications
 
-| Команда | Описание |
-|---------|----------|
-| `/report daily` | Дневной: новые, транскрипции, доходы, топ |
-| `/report weekly` | Недельный |
+| Event | Recipient |
+|-------|-----------|
+| Balance < 5 min | User |
+| New trial request | Admin |
+| >3 consecutive failures | Admin |
+| Queue > 100 pending | Admin |
+| Any ERROR log | Admin (via TelegramErrorHandler, 60s cooldown) |
 
-## Автоматические уведомления
-
-| Событие | Получатель |
-|---------|------------|
-| Баланс < 5 мин | Пользователь |
-| Новый trial запрос | Админ |
-| >3 failures подряд | Админ |
-| Queue > 100 pending | Админ |
-
-## Мониторинг
+## Monitoring
 
 ```bash
 s logs --tail webhook-handler
 s logs --tail audio-processor
 ```
 
-**Alibaba Console:** FC Metrics, Tablestore Monitoring, MNS Statistics
-
-| Метрика | Норма | Алерт |
-|---------|-------|-------|
+| Metric | Normal | Alert |
+|--------|--------|-------|
 | Cold start | < 3s | > 5s |
 | Processing | < 30s/min | > 60s/min |
 | Success rate | > 95% | < 90% |
 | Queue depth | < 10 | > 50 |
 
-## Типичные операции
+## Common Operations
 
-**Компенсация за баг:**
 ```
-/user <username> → /credit <id> <min>
-```
-
-**Проверка проблемы:**
-```
-/user <username> → /batch <id> → /export logs 1
+# Compensate user:       /user <name> → /credit <id> <min>
+# Debug user issue:      /user <name> → /batch <id> → /export logs 1
+# Stuck queue:           /status → /flush → /status
+# Emergency shutdown:    curl -X POST ".../deleteWebhook"
+# Restore:               curl -X POST ".../setWebhook" -d '{"url":"..."}'
 ```
 
-**Зависшая очередь:**
-```
-/status → /flush → /status
-```
+## Security
 
-**Экстренное отключение:**
-```bash
-curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook"
-# После исправления:
-curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
-  -d '{"url": "https://endpoint/webhook"}'
-```
-
-## Безопасность
-
-- Не `/credit` без причины
-- Не `/flush` без `/status`
-- Не экспорт на незащищённые устройства
-- Все действия логируются (user_id, action, params, timestamp)
+- Never `/credit` without reason
+- Never `/flush` without `/status`
+- No export to unsecured devices
+- All actions logged (user_id, action, params, timestamp)
 
 ---
 
-*v3.4.0*
+*v3.6.0*

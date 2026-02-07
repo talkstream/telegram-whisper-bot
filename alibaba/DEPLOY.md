@@ -1,65 +1,59 @@
-# Alibaba Cloud Deployment Guide
+# Deployment Guide
 
-## Quick Deploy
-
-### Option 1: Using Alibaba Console (Recommended)
-
-1. **Webhook Handler:**
-   - Go to: Function Compute → Services → telegram-whisper-bot-prod → Functions → webhook-handler
-   - Click "Code" tab → Upload → Select `alibaba/webhook-handler/code.zip`
-   - Click "Deploy"
-
-2. **Audio Processor:**
-   - Go to: Function Compute → Services → telegram-whisper-bot-prod → Functions → audio-processor
-   - Click "Code" tab → Upload → Select `alibaba/audio-processor/code.zip`
-   - Click "Deploy"
-
-3. **Set Environment Variables:**
-   - For both functions, go to Configuration → Environment Variables
-   - Add: `DASHSCOPE_API_KEY` = (your DashScope API key)
-
-### Option 2: Using aliyun CLI
+## Quick Deploy (Serverless Devs)
 
 ```bash
-./alibaba/scripts/deploy.sh
+cd alibaba && s deploy -y
 ```
 
-## Environment Variables Required
+Pre-deploy auto-copies `shared/` → `webhook-handler/services/` and `audio-processor/services/`.
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DASHSCOPE_API_KEY` | Alibaba DashScope API key for Qwen LLM | Yes |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token | Yes |
-| `TABLESTORE_ENDPOINT` | Tablestore endpoint URL | Yes |
-| `LOG_LEVEL` | Logging level (INFO, WARNING, ERROR) | No (default: WARNING) |
-| `GOOGLE_API_KEY` | Gemini API key (fallback) | No |
+### First-time Setup
+
+```bash
+npm install -g @serverless-devs/s
+s config add  # configure Alibaba Cloud credentials
+```
+
+### Set Webhook
+
+```bash
+curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://fc-endpoint/webhook"}'
+```
+
+### Verify
+
+```bash
+# Health check
+curl "https://fc-endpoint/"
+
+# Webhook info
+curl "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"
+
+# Logs
+s logs webhook-handler --tail
+```
 
 ## Architecture
 
 ```
-Telegram → Webhook Handler → MNS Queue → Audio Processor
-                ↓                              ↓
-          Tablestore                    Qwen ASR + LLM
-                                              ↓
-                                      Tablestore (results)
+Telegram → Webhook Handler (512MB, 60s) → MNS → Audio Processor (1024MB, 300s)
+                ↓                                        ↓
+          Tablestore                              Qwen ASR + LLM + OSS
+                                                         ↓
+                                                   Tablestore (results)
 ```
 
-## Testing
+## Environment Variables
 
-1. Send `/start` to the bot - should get welcome message
-2. Send `/balance` - should show user balance
-3. Send a voice message - should get transcription
+See [CLAUDE.md](../CLAUDE.md#environment-variables)
 
 ## Troubleshooting
 
-### "DASHSCOPE_API_KEY not set"
-- Add the environment variable in Function Compute console
+See [docs/TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md)
 
-### "Failed to connect to Tablestore"
-- Check STS credentials are automatically provided by FC runtime
-- Verify TABLESTORE_ENDPOINT is correct
+---
 
-### Transcription empty/failed
-- Check logs in Function Compute console
-- Verify audio file is not corrupted
-- Try sending a different voice message
+*v3.6.0*
