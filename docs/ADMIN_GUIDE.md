@@ -116,4 +116,4 @@ curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
 
 ---
 
-*v3.3.0*
+*v3.4.0*

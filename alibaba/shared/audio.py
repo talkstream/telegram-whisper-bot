@@ -17,7 +17,7 @@ class AudioService:
     """Service for all audio processing operations"""
 
     # Audio processing constants
-    AUDIO_BITRATE = '32k'  # Optimized: was 64k, 32k is sufficient for ASR (v3.0.1)
+    AUDIO_BITRATE = '48k'  # v3.5.0: increased from 32k for better ASR quality
     AUDIO_SAMPLE_RATE = '16000'  # 16kHz for ASR compatibility
     AUDIO_CHANNELS = '1'  # Mono for memory efficiency
     FFMPEG_THREADS = '4'  # Optimized for speed (was 1)
@@ -26,6 +26,10 @@ class AudioService:
     # File size limits
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
     MAX_DURATION_SECONDS = 3600  # 1 hour
+
+    # ASR chunking limits (DashScope API hard limit: 3 min per request)
+    ASR_MAX_DURATION = 180        # 3 min — DashScope API hard limit
+    ASR_MAX_CHUNK_DURATION = 150  # 2.5 min — safe chunk size with margin
 
     # Whisper backend options
     BACKEND_OPENAI = 'openai'
@@ -119,55 +123,71 @@ class AudioService:
             
         return True, warning, audio_info
         
+    # Adaptive bitrate tiers for ASR (v3.5.0)
+    # At 32kbps 16kHz mono MP3: ~87 min fits in 20MB (Telegram limit)
+    # At 48kbps 16kHz mono MP3: ~58 min fits in 20MB
+    # Below 32kbps ASR quality degrades significantly
+    BITRATE_TIERS = [
+        # (max_duration_sec, bitrate, sample_rate, label)
+        (10,   '24k', '16000', 'ultra-light'),  # <10s: fastest processing
+        (600,  '48k', '16000', 'standard'),      # <10min: high quality
+        (1800, '32k', '16000', 'compressed'),     # <30min: good balance, ~82 min in 20MB
+        (3600, '32k', '16000', 'compressed'),     # <60min: same bitrate, chunking handles ASR limit
+    ]
+
+    def _select_bitrate(self, duration: float) -> tuple:
+        """Select optimal bitrate/sample_rate based on audio duration."""
+        for max_dur, bitrate, sample_rate, label in self.BITRATE_TIERS:
+            if duration <= max_dur:
+                return bitrate, sample_rate, label
+        # Fallback for very long files: minimum acceptable for ASR
+        return '32k', '16000', 'compressed'
+
     def convert_to_mp3(self, input_path: str, output_path: Optional[str] = None) -> Optional[str]:
         """
-        Convert audio file to MP3 with smart settings based on duration.
-        Uses minimal settings for short audio (<10 sec) for faster processing.
-        Returns path to converted file or None on error
+        Convert audio file to MP3 with adaptive settings based on duration.
+        Automatically adjusts bitrate to optimize for ASR quality vs file size.
+        Returns path to converted file or None on error.
         """
         if not output_path:
             output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", dir='/tmp').name
 
-        # Smart settings based on audio duration (v3.0.1)
         duration = self.get_audio_duration(input_path)
-        if duration < 10:
-            # Ultra-light settings for short audio: 24kbps, 8kHz (still good enough for ASR)
-            bitrate = '24k'
-            sample_rate = '8000'
-            logging.info(f"Short audio ({duration:.1f}s) - using light settings: {bitrate}, {sample_rate}Hz")
-        else:
-            # Standard settings
-            bitrate = self.AUDIO_BITRATE
-            sample_rate = self.AUDIO_SAMPLE_RATE
+        bitrate, sample_rate, tier = self._select_bitrate(duration)
+        logging.info(f"Audio {duration:.1f}s - tier '{tier}': {bitrate} @ {sample_rate}Hz")
 
         ffmpeg_command = [
             'ffmpeg', '-y',
             '-i', input_path,
+            '-vn',                    # strip video/artwork (M4A from iOS often has cover art)
+            '-acodec', 'libmp3lame',  # explicit MP3 codec
             '-b:a', bitrate,
             '-ar', sample_rate,
             '-ac', self.AUDIO_CHANNELS,
             '-threads', self.FFMPEG_THREADS,
             output_path
         ]
-        
+
         try:
             logging.info(f"Converting audio: {input_path} -> {output_path}")
-            process = subprocess.run(
-                ffmpeg_command, 
-                check=True, 
-                capture_output=True, 
-                text=True, 
+            subprocess.run(
+                ffmpeg_command,
+                check=True,
+                capture_output=True,
+                text=True,
                 timeout=self.FFMPEG_TIMEOUT
             )
-            logging.info(f"FFmpeg conversion successful. Output: {output_path}")
+
+            output_size = os.path.getsize(output_path)
+            logging.info(f"FFmpeg conversion successful. Output: {output_path} ({output_size} bytes)")
             return output_path
-            
+
         except subprocess.TimeoutExpired:
             logging.error(f"FFmpeg conversion timed out after {self.FFMPEG_TIMEOUT} seconds")
             if os.path.exists(output_path):
                 os.remove(output_path)
             return None
-            
+
         except subprocess.CalledProcessError as e:
             logging.error(f"FFmpeg conversion failed. Error: {e.stderr}")
             if os.path.exists(output_path):
@@ -221,13 +241,115 @@ class AudioService:
                 os.remove(output_path)
             return None
             
-    def transcribe_audio(self, audio_path: str, language: str = 'ru') -> str:
+    def prepare_audio_for_asr(self, input_path: str) -> Optional[str]:
+        """
+        Prepare audio file for ASR: detect video, extract audio, convert to MP3.
+        Replaces direct convert_to_mp3() calls in handlers.
+
+        Args:
+            input_path: Path to input audio/video file
+
+        Returns:
+            Path to MP3 file ready for ASR, or None on error
+        """
+        processing_path = input_path
+        extracted_path = None
+        try:
+            if self.is_video_file(input_path):
+                logging.info("Video detected, extracting audio...")
+                extracted_path = self.extract_audio_from_video(input_path)
+                if not extracted_path:
+                    return None
+                processing_path = extracted_path
+
+            converted_path = self.convert_to_mp3(processing_path)
+
+            # Clean up intermediate extracted file
+            if extracted_path and os.path.exists(extracted_path) and extracted_path != converted_path:
+                os.remove(extracted_path)
+
+            return converted_path  # None if conversion failed
+        except Exception as e:
+            logging.error(f"Audio preparation failed: {e}")
+            if extracted_path and os.path.exists(extracted_path):
+                os.remove(extracted_path)
+            return None
+
+    def split_audio_chunks(self, audio_path: str, chunk_duration: int = None) -> list:
+        """
+        Split audio file into chunks for ASR processing.
+        Uses FFmpeg stream copy (no re-encoding) for speed.
+
+        Args:
+            audio_path: Path to MP3 audio file
+            chunk_duration: Chunk size in seconds (default: ASR_MAX_CHUNK_DURATION)
+
+        Returns:
+            List of chunk file paths. Returns [audio_path] if no splitting needed.
+        """
+        if chunk_duration is None:
+            chunk_duration = self.ASR_MAX_CHUNK_DURATION
+
+        total_duration = self.get_audio_duration(audio_path)
+        if total_duration <= chunk_duration:
+            return [audio_path]
+
+        chunks = []
+        offset = 0
+        chunk_index = 0
+
+        try:
+            while offset < total_duration:
+                chunk_path = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=f"_chunk{chunk_index}.mp3", dir='/tmp'
+                ).name
+
+                ffmpeg_command = [
+                    'ffmpeg', '-y',
+                    '-ss', str(offset),
+                    '-i', audio_path,
+                    '-t', str(chunk_duration),
+                    '-acodec', 'copy',  # stream copy, no re-encoding
+                    chunk_path
+                ]
+
+                subprocess.run(
+                    ffmpeg_command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.FFMPEG_TIMEOUT
+                )
+
+                # Verify chunk is not empty
+                if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
+                    chunks.append(chunk_path)
+                else:
+                    logging.warning(f"Chunk {chunk_index} is empty, skipping")
+
+                offset += chunk_duration
+                chunk_index += 1
+
+            logging.info(f"Split audio into {len(chunks)} chunks ({total_duration:.0f}s total)")
+            return chunks
+
+        except Exception as e:
+            logging.error(f"Audio splitting failed: {e}")
+            # Clean up created chunks on error
+            for chunk in chunks:
+                if os.path.exists(chunk):
+                    os.remove(chunk)
+            return [audio_path]  # Fallback: try with original file
+
+    def transcribe_audio(self, audio_path: str, language: str = 'ru',
+                         progress_callback=None) -> str:
         """
         Transcribe audio file using configured backend.
 
         Args:
             audio_path: Path to audio file
             language: Language code (default: 'ru' for Russian)
+            progress_callback: Optional callback(current_chunk, total_chunks) for progress
 
         Returns:
             Transcribed text
@@ -241,7 +363,7 @@ class AudioService:
 
         # Route to appropriate backend
         if self.whisper_backend == self.BACKEND_QWEN_ASR:
-            return self.transcribe_with_qwen_asr(audio_path, language)
+            return self.transcribe_with_qwen_asr(audio_path, language, progress_callback)
         elif self.whisper_backend == self.BACKEND_FASTER_WHISPER:
             return self.transcribe_with_faster_whisper(audio_path, language)
         elif self.whisper_backend == self.BACKEND_OPENAI and self.openai_client:
@@ -441,14 +563,85 @@ class AudioService:
         except Exception as e:
             logging.warning(f"Failed to delete from OSS: {e}")
 
-    def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
+    def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru',
+                                   progress_callback=None) -> str:
         """
-        Transcribe audio using Qwen3-ASR-Flash via DashScope REST API.
+        Transcribe audio using Qwen3-ASR-Flash. Auto-chunks if > ASR_MAX_CHUNK_DURATION.
 
-        Uses the modern Qwen3-ASR model (2026) with file-based transcription.
-        Model: qwen3-asr-flash (fast, multilingual, 52 languages)
+        Args:
+            audio_path: Path to audio file (MP3, WAV, etc.)
+            language: Language code (default: 'ru' for Russian)
+            progress_callback: Optional callback(current_chunk, total_chunks)
 
-        Uses pure requests - no dashscope SDK needed!
+        Returns:
+            Transcribed text
+        """
+        audio_duration = self.get_audio_duration(audio_path)
+        if audio_duration > self.ASR_MAX_CHUNK_DURATION:
+            logging.info(f"Audio {audio_duration:.0f}s exceeds chunk limit {self.ASR_MAX_CHUNK_DURATION}s, chunking...")
+            return self._transcribe_chunked(audio_path, language, audio_duration, progress_callback)
+        return self._transcribe_single_qwen_asr(audio_path, language)
+
+    def _transcribe_chunked(self, audio_path: str, language: str,
+                             audio_duration: float, progress_callback=None) -> str:
+        """
+        Transcribe long audio by splitting into chunks and concatenating results.
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code
+            audio_duration: Total duration in seconds
+            progress_callback: Optional callback(current_chunk, total_chunks)
+
+        Returns:
+            Concatenated transcribed text
+        """
+        chunks = self.split_audio_chunks(audio_path)
+        total_chunks = len(chunks)
+        logging.info(f"Transcribing {total_chunks} chunks for {audio_duration:.0f}s audio")
+
+        texts = []
+        failed_chunks = 0
+        try:
+            for i, chunk_path in enumerate(chunks):
+                if progress_callback and total_chunks > 1:
+                    progress_callback(i + 1, total_chunks)
+
+                try:
+                    text = self._transcribe_single_qwen_asr(chunk_path, language)
+                    if text:
+                        texts.append(text)
+                except Exception as chunk_err:
+                    failed_chunks += 1
+                    logging.warning(f"Chunk {i+1}/{total_chunks} failed: {chunk_err}")
+                    # Continue with remaining chunks instead of failing entirely
+                    if failed_chunks > total_chunks // 2:
+                        raise RuntimeError(
+                            f"Too many chunks failed ({failed_chunks}/{total_chunks})")
+
+            if not texts:
+                raise ValueError("Transcription empty")
+
+            full_text = " ".join(texts)
+            if failed_chunks:
+                logging.warning(
+                    f"Chunked transcription partial: {len(texts)}/{total_chunks} chunks, "
+                    f"{failed_chunks} failed, {len(full_text)} chars")
+            else:
+                logging.info(
+                    f"Chunked transcription complete: {len(texts)} chunks, {len(full_text)} chars")
+            return full_text
+
+        finally:
+            # Clean up chunk files (but not the original)
+            for chunk_path in chunks:
+                if chunk_path != audio_path and os.path.exists(chunk_path):
+                    os.remove(chunk_path)
+
+    def _transcribe_single_qwen_asr(self, audio_path: str, language: str = 'ru') -> str:
+        """
+        Transcribe a single audio segment using Qwen3-ASR-Flash via DashScope REST API.
+        Must be <= 3 min (ASR_MAX_DURATION).
 
         Args:
             audio_path: Path to audio file (MP3, WAV, etc.)
@@ -585,52 +778,6 @@ class AudioService:
                 self.metrics_service.log_api_call('qwen3-asr', duration, False, str(e))
             logging.error(f"Qwen3-ASR error: {e}")
             raise RuntimeError(f"Transcription failed: {e}")
-
-    def _convert_to_pcm(self, input_path: str) -> Optional[str]:
-        """
-        Convert audio file to PCM WAV format (16kHz, mono, 16-bit) for ASR.
-
-        Args:
-            input_path: Path to input audio file
-
-        Returns:
-            Path to converted PCM file or None on error
-        """
-        output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir='/tmp').name
-
-        ffmpeg_command = [
-            'ffmpeg', '-y',
-            '-i', input_path,
-            '-ar', '16000',      # 16kHz sample rate
-            '-ac', '1',          # Mono
-            '-f', 's16le',       # Raw PCM 16-bit little-endian
-            '-acodec', 'pcm_s16le',
-            output_path
-        ]
-
-        try:
-            logging.info(f"Converting to PCM: {input_path} -> {output_path}")
-            subprocess.run(
-                ffmpeg_command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=self.FFMPEG_TIMEOUT
-            )
-            logging.info(f"PCM conversion successful")
-            return output_path
-
-        except subprocess.TimeoutExpired:
-            logging.error(f"PCM conversion timed out")
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            return None
-
-        except subprocess.CalledProcessError as e:
-            logging.error(f"PCM conversion failed: {e.stderr}")
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            return None
 
     def _transcribe_with_fallback(self, audio_path: str, language: str = 'ru') -> str:
         """
@@ -855,7 +1002,8 @@ class AudioService:
             logging.warning(f"Could not get audio duration: {e}, using default 600s")
             return 600.0  # Default 10 minutes
             
-    def format_text_with_qwen(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
+    def format_text_with_qwen(self, text: str, use_code_tags: bool = False,
+                               use_yo: bool = True, is_chunked: bool = False) -> str:
         """
         Format transcribed text using Qwen LLM (Alibaba) via REST API.
         Falls back to Gemini if Qwen fails.
@@ -864,6 +1012,7 @@ class AudioService:
             text: Raw transcribed text
             use_code_tags: Whether to wrap text in <code> tags
             use_yo: Whether to preserve ё letters
+            is_chunked: Whether text was assembled from multiple ASR chunks
 
         Returns:
             Formatted text
@@ -889,7 +1038,14 @@ class AudioService:
             "Заменяй все буквы ё на е."
         )
 
-        # EXACT SAME PROMPT as Gemini (proven quality)
+        chunked_instruction = ""
+        if is_chunked:
+            chunked_instruction = (
+                "8. ВАЖНО: этот текст собран из нескольких последовательных фрагментов одной записи. "
+                "На стыках фрагментов могут быть оборванные предложения, повторы слов или неестественные "
+                "переходы — исправь эти артефакты склейки, обеспечив плавный непрерывный текст.\n"
+            )
+
         prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
 
 1. Исправь ошибки распознавания речи (артефакты, повторы, обрывки слов)
@@ -899,6 +1055,10 @@ class AudioService:
 5. {code_tag_instruction}
 6. {yo_instruction}
 7. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
+{chunked_instruction}Обрати особое внимание на корректное написание топонимов (географических названий). \
+Приоритет: топонимы Таиланда (Бангкок, Паттайя, Пхукет, Краби, Чиангмай, Ко Самуи, \
+Ко Панган, Ко Чанг, Хуа Хин, Районг и т.д.), затем России. \
+Не заменяй правильные топонимы на похожие по звучанию слова.
 
 Текст для форматирования:
 
@@ -910,7 +1070,7 @@ class AudioService:
             api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
             if not api_key:
                 logging.warning("DASHSCOPE_API_KEY not set, falling back to Gemini")
-                return self.format_text_with_gemini(text, use_code_tags, use_yo)
+                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
 
             logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
 
@@ -961,7 +1121,7 @@ class AudioService:
                 # Quality check
                 if len(formatted_text) < 5:
                     logging.warning("Qwen returned very short text, trying Gemini fallback")
-                    return self.format_text_with_gemini(text, use_code_tags, use_yo)
+                    return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
 
                 # Log API call metrics
                 if self.metrics_service:
@@ -971,11 +1131,11 @@ class AudioService:
                 return formatted_text
             else:
                 logging.warning(f"Qwen API error: {response.status_code} - {response.text}, trying Gemini fallback")
-                return self.format_text_with_gemini(text, use_code_tags, use_yo)
+                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
 
         except requests.RequestException as e:
             logging.warning(f"Qwen API request failed: {e}, falling back to Gemini")
-            return self.format_text_with_gemini(text, use_code_tags, use_yo)
+            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
 
         except Exception as e:
             api_duration = time.time() - api_start_time
@@ -983,9 +1143,10 @@ class AudioService:
                 self.metrics_service.log_api_call('qwen-llm', api_duration, False, str(e))
 
             logging.warning(f"Qwen LLM failed: {e}, falling back to Gemini")
-            return self.format_text_with_gemini(text, use_code_tags, use_yo)
+            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
 
-    def format_text_with_gemini(self, text: str, use_code_tags: bool = False, use_yo: bool = True) -> str:
+    def format_text_with_gemini(self, text: str, use_code_tags: bool = False,
+                                use_yo: bool = True, is_chunked: bool = False) -> str:
         """
         Format transcribed text using Gemini via HTTP API.
         Fallback method when Qwen LLM is unavailable.
@@ -1022,6 +1183,14 @@ class AudioService:
                 "Заменяй все буквы ё на е."
             )
 
+            chunked_instruction = ""
+            if is_chunked:
+                chunked_instruction = (
+                    "8. ВАЖНО: этот текст собран из нескольких последовательных фрагментов одной записи. "
+                    "На стыках фрагментов могут быть оборванные предложения, повторы слов или неестественные "
+                    "переходы — исправь эти артефакты склейки, обеспечив плавный непрерывный текст.\n"
+                )
+
             prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
 
 1. Исправь ошибки распознавания речи (артефакты, повторы, обрывки слов)
@@ -1031,6 +1200,10 @@ class AudioService:
 5. {code_tag_instruction}
 6. {yo_instruction}
 7. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
+{chunked_instruction}Обрати особое внимание на корректное написание топонимов (географических названий). \
+Приоритет: топонимы Таиланда (Бангкок, Паттайя, Пхукет, Краби, Чиангмай, Ко Самуи, \
+Ко Панган, Ко Чанг, Хуа Хин, Районг и т.д.), затем России. \
+Не заменяй правильные топонимы на похожие по звучанию слова.
 
 Текст для форматирования:
 
@@ -1098,61 +1271,6 @@ class AudioService:
         video_formats = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'matroska', 'mpeg', 'mpg']
         return any(fmt in format_name for fmt in video_formats)
         
-    def process_audio_pipeline(self, audio_path: str, cleanup_source: bool = True) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Full audio processing pipeline: convert -> transcribe -> format
-        Returns: (transcribed_text, formatted_text) or (None, None) on error
-        """
-        converted_path = None
-        extracted_audio_path = None
-        
-        try:
-            # Check if it's a video file
-            if self.is_video_file(audio_path):
-                logging.info("Detected video file, extracting audio...")
-                extracted_audio_path = self.extract_audio_from_video(audio_path)
-                if not extracted_audio_path:
-                    logging.error("Failed to extract audio from video")
-                    return None, None
-                # Use extracted audio for further processing
-                processing_path = extracted_audio_path
-            else:
-                # Regular audio file
-                processing_path = audio_path
-            
-            # Convert to MP3 (or ensure proper format)
-            converted_path = self.convert_to_mp3(processing_path)
-            if not converted_path:
-                return None, None
-                
-            # Clean up source if requested
-            if cleanup_source and os.path.exists(audio_path):
-                os.remove(audio_path)
-                
-            # Clean up extracted audio if it was created
-            if extracted_audio_path and os.path.exists(extracted_audio_path) and extracted_audio_path != converted_path:
-                os.remove(extracted_audio_path)
-                
-            # Transcribe
-            transcribed_text = self.transcribe_audio(converted_path)
-            if not transcribed_text:
-                return None, None
-                
-            # Check if Whisper returned the "continuation follows" phrase
-            if transcribed_text.strip() == "Продолжение следует...":
-                logging.warning("Whisper returned 'Продолжение следует...', indicating no speech detected")
-                return None, "На записи не обнаружено речи или текст не был распознан."
-                
-            # Format (Qwen LLM with Gemini fallback)
-            formatted_text = self.format_text_with_qwen(transcribed_text)
-            
-            return transcribed_text, formatted_text
-            
-        finally:
-            # Always clean up converted file
-            if converted_path and os.path.exists(converted_path):
-                os.remove(converted_path)
-                
     def get_audio_info(self, audio_path: str) -> Optional[dict]:
         """
         Get audio file information using ffprobe

@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.4.0 |
+| **Version** | v3.5.0 |
 | **ASR** | `qwen3-asr-flash` (REST API) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS |
@@ -68,32 +68,9 @@ alibaba/
 | `/code` | Toggle monospace output |
 | `/yo` | Toggle letter yo |
 
-### Admin Commands
-| Command | Description |
-|---------|-------------|
-| `/user [search]` | Search users |
-| `/export [type] [days]` | Export CSV (users/logs/payments) |
-| `/report [daily\|weekly]` | Trigger report |
-| `/review_trials` | Review pending trials |
-| `/credit <id> <min>` | Add minutes |
-| `/stat` | Usage statistics |
-| `/cost` | Processing costs |
-| `/status` | Queue status |
-| `/flush` | Clean stuck jobs |
-| `/metrics [hours]` | Performance metrics |
-| `/batch [user_id]` | Show user's job queue |
+**Admin commands:** see [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)
 
----
-
-## Tariff Structure (300% markup)
-
-| Package | Minutes | Price | Cost/min |
-|---------|---------|-------|----------|
-| Micro | 10 | 5 ⭐ | 0.50 ⭐ (promo, limit 3) |
-| Start | 50 | 35 ⭐ | 0.70 ⭐ |
-| Standard | 200 | 119 ⭐ | 0.60 ⭐ |
-| Profi | 1000 | 549 ⭐ | 0.55 ⭐ |
-| MAX | 8888 | 4444 ⭐ | 0.50 ⭐ |
+**Tariffs:** see [README.md](README.md#тарифы)
 
 ---
 
@@ -165,24 +142,9 @@ response = client.models.generate_content(model="gemini-2.5-flash", contents=pro
 
 **NEVER use deprecated `vertexai` imports.**
 
-### FFmpeg Settings (v3.0.1)
-```bash
-# Standard (>10 sec)
-ffmpeg -y -i input.ogg -b:a 32k -ar 16000 -ac 1 -threads 4 output.mp3
+**FFmpeg settings:** see [ALIBABA_CRITICAL_CONFIG.md](docs/ALIBABA_CRITICAL_CONFIG.md#ffmpeg)
 
-# Short audio (<10 sec)
-ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
-```
-
----
-
-## Troubleshooting
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| Model not found | Using deprecated model | Use `qwen3-asr-flash` |
-| Connection timeout | Wrong endpoint | Use `-intl` endpoint |
-| 400 Bad Request | Wrong API format | Use REST API, not WebSocket |
+**Troubleshooting:** see [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 ---
 
@@ -197,7 +159,6 @@ ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
 | [UX_IMPROVEMENTS.md](docs/UX_IMPROVEMENTS.md) | UI/UX patterns and templates |
 | [DEPLOY.md](alibaba/DEPLOY.md) | Deployment instructions |
 | [archive/VERSION_HISTORY.md](docs/archive/VERSION_HISTORY.md) | Full version history |
-| [archive/MIGRATION_COMPLETED.md](docs/archive/MIGRATION_COMPLETED.md) | GCP->Alibaba migration details |
 
 ---
 

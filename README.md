@@ -2,7 +2,7 @@
 
 **AI-бот для транскрипции голосовых сообщений в Telegram**
 
-[![Version](https://img.shields.io/badge/version-3.3.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
+[![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-@editorialsrobot-blue?logo=telegram)](https://t.me/editorialsrobot)
 
@@ -130,38 +130,38 @@
 
 ---
 
-## Чего бот НЕ делает
-
-Для управления ожиданиями:
-
-- **Real-time streaming** — обрабатываются только файлы
-- **Диаризация спикеров** — не определяет кто говорит
-- **Перевод** — только транскрипция на языке оригинала
-- **Синтез речи** — только speech-to-text
-- **Интеграция с Zoom/Meet** — не записывает конференции
-- **Enterprise SLA** — это pet-project без гарантий uptime
-- **HIPAA/GDPR сертификация** — не для медицинских данных
-
----
-
 ## Roadmap
 
-### v3.4.0 (планируется)
-- [ ] Inline-кнопки пагинации для админ-команд
-- [ ] Health endpoint для мониторинга
-- [ ] Rate limiting по пользователям
+### v3.4.0 ✅
+- [x] Evolving progress messages (один редактируемый статус)
+- [x] Typing indicators после каждого обновления
+- [x] DB optimization: 6 → 4 round-trips (-150ms)
+- [x] LLM skip для коротких текстов (≤100 символов)
 
 ### v3.5.0 (планируется)
+- [ ] Inline-кнопки пагинации для админ-команд
+- [ ] Health endpoint для мониторинга
 - [ ] Batch-транскрипция нескольких файлов
 
 ### Будущее
+- [ ] Rate limiting по пользователям
 - [ ] Мультиязычный интерфейс
-- [ ] Whisper fallback для редких языков
 - [ ] Open-source версия для self-hosting
 
 ---
 
 ## Changelog
+
+### [3.4.0] — 2026-02-06
+
+#### Добавлено
+- Evolving progress messages — один статус-мессадж редактируется на каждом этапе
+- Typing indicators для видимости обработки
+- LLM skip для текста ≤ 100 символов (экономия 2-5 сек)
+
+#### Улучшено
+- DB round-trips: 6 → 4 на запрос (-150 мс)
+- Логирование перенесено после доставки результата
 
 ### [3.3.0] — 2026-02-04
 

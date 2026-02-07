@@ -213,7 +213,7 @@ def handler(event, context):
                     'status': 'ok',
                     'service': 'telegram-whisper-bot',
                     'region': REGION,
-                    'version': '3.4.0-alibaba',
+                    'version': '3.5.0-alibaba',
                     'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                     'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
                 }, ensure_ascii=False)
@@ -277,6 +277,13 @@ def handle_message(message: Dict[str, Any]) -> str:
     if any(key in message for key in ['voice', 'audio', 'video', 'video_note']):
         return handle_audio_message(message, user)
 
+    # Check for documents with audio/video MIME types
+    if 'document' in message:
+        doc = message['document']
+        mime = doc.get('mime_type', '')
+        if mime.startswith('audio/') or mime.startswith('video/'):
+            return handle_audio_message(message, user)
+
     # Check for commands
     if text.startswith('/'):
         return handle_command(message, user)
@@ -307,6 +314,11 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         file_id = message['video_note']['file_id']
         duration = message['video_note'].get('duration', 0)
         file_type = 'video_note'
+    elif 'document' in message:
+        doc = message['document']
+        file_id = doc['file_id']
+        duration = doc.get('duration', 0)  # Telegram doesn't provide duration for documents
+        file_type = 'document'
     else:
         return 'no_audio'
 
@@ -363,21 +375,45 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             tg.send_message(chat_id, "Не удалось скачать файл. Попробуйте ещё раз.")
             return 'download_failed'
 
+        # Transcribe with Qwen-ASR
+        from services.audio import AudioService
+        audio_service = AudioService(whisper_backend='qwen-asr')
+
+        # For documents (duration=0), get actual duration via ffprobe
+        if duration == 0 and local_path:
+            actual_duration = audio_service.get_audio_duration(local_path)
+            duration = int(actual_duration)
+            duration_minutes = (duration + 59) // 60
+            # Re-check balance with actual duration
+            balance = user.get('balance_minutes', 0)
+            if balance < duration_minutes:
+                if status_message_id:
+                    tg.delete_message(chat_id, status_message_id)
+                tg.send_message(
+                    chat_id,
+                    f"Файл {duration // 60} мин {duration % 60} сек. "
+                    f"Недостаточно минут на балансе.\n/buy_minutes"
+                )
+                os.remove(local_path)
+                return 'insufficient_balance'
+
         # Update progress: transcribing
         if status_message_id:
             tg.edit_message_text(chat_id, status_message_id, "🎙 Распознаю речь...")
         tg.send_chat_action(chat_id, 'typing')
 
-        # Transcribe with Qwen-ASR
-        from services.audio import AudioService
-        audio_service = AudioService(whisper_backend='qwen-asr')
-
-        converted_path = audio_service.convert_to_mp3(local_path)
+        converted_path = audio_service.prepare_audio_for_asr(local_path)
         if not converted_path:
             tg.send_message(chat_id, "Не удалось обработать аудио. Попробуйте другой формат.")
             return 'conversion_failed'
 
-        text = audio_service.transcribe_audio(converted_path)
+        # Progress callback for chunked transcription
+        def chunk_progress(current, total):
+            if status_message_id and total > 1:
+                tg.edit_message_text(chat_id, status_message_id,
+                    f"🎙 Распознаю речь... (часть {current} из {total})")
+
+        text = audio_service.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
         if not text or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
@@ -389,12 +425,17 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         use_code_tags = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
+        # Determine if audio was chunked (for LLM prompt)
+        audio_duration = audio_service.get_audio_duration(converted_path)
+        is_chunked = audio_duration > audio_service.ASR_MAX_CHUNK_DURATION
+
         # Format text with Qwen LLM (with Gemini fallback)
         if len(text) > 100:
             if status_message_id:
                 tg.edit_message_text(chat_id, status_message_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
-            formatted_text = audio_service.format_text_with_qwen(text, use_code_tags=use_code_tags, use_yo=use_yo)
+            formatted_text = audio_service.format_text_with_qwen(
+                text, use_code_tags=use_code_tags, use_yo=use_yo, is_chunked=is_chunked)
         else:
             formatted_text = text
             if not use_yo:
@@ -473,7 +514,17 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
 
     except Exception as e:
         logger.error(f"Error in sync processing: {e}", exc_info=True)
-        tg.send_message(chat_id, f"Произошла ошибка при обработке: {str(e)[:100]}")
+        # User-friendly error messages
+        error_str = str(e).lower()
+        if 'invalidparameter' in error_str or 'duration' in error_str:
+            user_msg = "Аудио слишком длинное для обработки. Попробуйте отправить файл короче 60 минут."
+        elif 'timeout' in error_str:
+            user_msg = "Обработка заняла слишком много времени. Попробуйте файл поменьше."
+        elif 'transcription empty' in error_str or 'no speech' in error_str:
+            user_msg = "Не удалось распознать речь. Проверьте качество аудио."
+        else:
+            user_msg = "Произошла ошибка при обработке аудио. Попробуйте позже."
+        tg.send_message(chat_id, user_msg)
         return 'error'
 
 

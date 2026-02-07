@@ -254,13 +254,19 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             tg.edit_message_text(chat_id, progress_id, "🎙 Распознаю речь...")
         tg.send_chat_action(chat_id, 'typing')
 
-        # Convert audio
-        converted_path = audio.convert_to_mp3(local_path)
+        # Convert audio (with video detection)
+        converted_path = audio.prepare_audio_for_asr(local_path)
         if not converted_path:
             raise Exception("Failed to convert audio to MP3")
 
+        # Progress callback for chunked transcription
+        def chunk_progress(current, total):
+            if progress_id and total > 1:
+                tg.edit_message_text(chat_id, progress_id,
+                    f"🎙 Распознаю речь... (часть {current} из {total})")
+
         # Transcribe
-        text = audio.transcribe_audio(converted_path)
+        text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
         if not text or text.strip() == "" or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
@@ -276,12 +282,17 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
 
+        # Determine if audio was chunked (for LLM prompt)
+        audio_duration = audio.get_audio_duration(converted_path)
+        is_chunked = audio_duration > audio.ASR_MAX_CHUNK_DURATION
+
         # Format text (Qwen LLM with Gemini fallback)
         if len(text) > 100:
             if progress_id:
                 tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
-            formatted_text = audio.format_text_with_qwen(text, use_code_tags=use_code, use_yo=use_yo)
+            formatted_text = audio.format_text_with_qwen(
+                text, use_code_tags=use_code, use_yo=use_yo, is_chunked=is_chunked)
         else:
             formatted_text = text
             if not use_yo:
@@ -371,7 +382,16 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         # Update job status
         db.update_job(job_id, {'status': 'failed', 'error': str(e)[:200]})
 
-        # Notify user
-        tg.send_message(chat_id, "Произошла ошибка при обработке аудио. Попробуйте позже.")
+        # User-friendly error messages
+        error_str = str(e).lower()
+        if 'invalidparameter' in error_str or 'duration' in error_str:
+            user_msg = "Аудио слишком длинное для обработки. Попробуйте отправить файл короче 60 минут."
+        elif 'timeout' in error_str:
+            user_msg = "Обработка заняла слишком много времени. Попробуйте файл поменьше."
+        elif 'transcription empty' in error_str or 'no speech' in error_str:
+            user_msg = "Не удалось распознать речь. Проверьте качество аудио."
+        else:
+            user_msg = "Произошла ошибка при обработке аудио. Попробуйте позже."
+        tg.send_message(chat_id, user_msg)
 
         return {'ok': False, 'error': str(e)}

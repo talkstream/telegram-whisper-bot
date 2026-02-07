@@ -104,6 +104,13 @@ s logs webhook-handler --start-time "2026-02-04 10:00:00"
 /cost     # Costs
 ```
 
+## Lessons Learned (Migration)
+
+1. **REST > WebSocket для Serverless**: qwen3-asr-flash REST API проще и надёжнее WebSocket в FC
+2. **Всегда `-intl` endpoints**: `dashscope-intl.aliyuncs.com` для международного доступа
+3. **Не использовать deprecated models**: paraformer-v1/v2 устарели → `qwen3-asr-flash`
+4. **Memory optimization**: 512MB достаточно для webhook handler с lazy imports
+
 ---
 
-*v3.3.0*
+*v3.4.0*
