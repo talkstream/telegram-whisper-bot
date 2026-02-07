@@ -382,14 +382,18 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
 
         # Transcribe with Qwen-ASR
         from services.audio import AudioService
+        # Read credentials at call time (module-level vars may be empty on FC 3.0 cold start)
+        ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+        sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+        st = ALIBABA_SECURITY_TOKEN or os.environ.get('ALIBABA_CLOUD_SECURITY_TOKEN')
         audio_service = AudioService(
             whisper_backend='qwen-asr',
             oss_config={
                 'bucket': os.environ.get('OSS_BUCKET', 'twbot-prod-audio'),
                 'endpoint': os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com'),
-                'access_key_id': ALIBABA_ACCESS_KEY,
-                'access_key_secret': ALIBABA_SECRET_KEY,
-                'security_token': ALIBABA_SECURITY_TOKEN,
+                'access_key_id': ak,
+                'access_key_secret': sk,
+                'security_token': st,
             }
         )
 
@@ -621,12 +625,15 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     tg = get_telegram_service()
 
     # Validate MNS config BEFORE creating job (avoid orphaned DB records)
+    # Read credentials at call time (module-level vars may be empty on FC 3.0 cold start)
+    mns_ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+    mns_sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
     missing = []
     if not MNS_ENDPOINT:
         missing.append('MNS_ENDPOINT')
-    if not ALIBABA_ACCESS_KEY:
+    if not mns_ak:
         missing.append('ALIBABA_ACCESS_KEY')
-    if not ALIBABA_SECRET_KEY:
+    if not mns_sk:
         missing.append('ALIBABA_SECRET_KEY')
     if missing:
         logger.warning(f"MNS not available (missing: {', '.join(missing)}), using sync fallback")
@@ -655,8 +662,8 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         import json as json_module
         publisher = MNSPublisher(
             endpoint=MNS_ENDPOINT,
-            access_key_id=ALIBABA_ACCESS_KEY,
-            access_key_secret=ALIBABA_SECRET_KEY
+            access_key_id=mns_ak,
+            access_key_secret=mns_sk
         )
         publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
         logger.info(f"Published job {job_id} to MNS queue")
