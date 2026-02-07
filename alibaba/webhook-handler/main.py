@@ -433,7 +433,19 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         if dialogue_mode:
             # Diarization path (Fun-ASR-MTL, async, OSS)
             # DEBUG: verbose diagnostics (temporary)
-            tg.send_message(chat_id, f"[DEBUG] dialogue_mode=True, starting diarization...")
+            oss_cfg = audio_service.oss_config or {}
+            has_bucket = bool(oss_cfg.get('bucket'))
+            has_endpoint = bool(oss_cfg.get('endpoint'))
+            has_ak = bool(oss_cfg.get('access_key_id'))
+            has_sk = bool(oss_cfg.get('access_key_secret'))
+            has_token = bool(oss_cfg.get('security_token'))
+            tg.send_message(chat_id,
+                f"[DEBUG] OSS config: bucket={has_bucket}, endpoint={has_endpoint}, "
+                f"ak={has_ak}, sk={has_sk}, token={has_token}\n"
+                f"bucket={oss_cfg.get('bucket')}, endpoint={oss_cfg.get('endpoint')}")
+            # Test OSS bucket init
+            test_bucket = audio_service._get_oss_bucket()
+            tg.send_message(chat_id, f"[DEBUG] _get_oss_bucket() = {type(test_bucket).__name__} (truthy={bool(test_bucket)})")
             raw_text, segments = audio_service.transcribe_with_diarization(
                 converted_path,
                 progress_callback=lambda stage: (
