@@ -23,24 +23,6 @@ class UtilityService:
         import sys
         import os
         import logging
-        from pythonjsonlogger import jsonlogger
-
-        class SLSJsonFormatter(jsonlogger.JsonFormatter):
-            def add_fields(self, log_record, record, message_dict):
-                super(SLSJsonFormatter, self).add_fields(log_record, record, message_dict)
-
-                # Map standard python levels to SLS severity
-                if not log_record.get('severity'):
-                    log_record['severity'] = record.levelname
-
-                # Add timestamp if not present
-                if not log_record.get('timestamp'):
-                    now = datetime.utcnow().replace(tzinfo=pytz.utc)
-                    log_record['timestamp'] = now.isoformat()
-
-                # Add component
-                if not log_record.get('component'):
-                    log_record['component'] = component_name
 
         logger = logging.getLogger()
 
@@ -49,7 +31,34 @@ class UtilityService:
             logger.removeHandler(handler)
 
         handler = logging.StreamHandler(sys.stdout)
-        formatter = SLSJsonFormatter('%(timestamp)s %(severity)s %(name)s %(message)s %(component)s %(trace_id)s %(user_id)s')
+
+        try:
+            from pythonjsonlogger import jsonlogger
+
+            class SLSJsonFormatter(jsonlogger.JsonFormatter):
+                def add_fields(self, log_record, record, message_dict):
+                    super(SLSJsonFormatter, self).add_fields(log_record, record, message_dict)
+
+                    # Map standard python levels to SLS severity
+                    if not log_record.get('severity'):
+                        log_record['severity'] = record.levelname
+
+                    # Add timestamp if not present
+                    if not log_record.get('timestamp'):
+                        now = datetime.utcnow().replace(tzinfo=pytz.utc)
+                        log_record['timestamp'] = now.isoformat()
+
+                    # Add component
+                    if not log_record.get('component'):
+                        log_record['component'] = component_name
+
+            formatter = SLSJsonFormatter('%(timestamp)s %(severity)s %(name)s %(message)s %(component)s %(trace_id)s %(user_id)s')
+        except ImportError:
+            # Fallback to standard logging if python-json-logger not installed
+            formatter = logging.Formatter(
+                f'%(asctime)s [%(levelname)s] [{component_name}] %(name)s: %(message)s'
+            )
+
         handler.setFormatter(formatter)
         logger.handlers = [handler]
 
