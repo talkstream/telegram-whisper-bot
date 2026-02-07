@@ -94,6 +94,7 @@ def get_audio_service():
                 'endpoint': os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com'),
                 'access_key_id': ALIBABA_ACCESS_KEY,
                 'access_key_secret': ALIBABA_SECRET_KEY,
+                'security_token': ALIBABA_SECURITY_TOKEN,
             }
         )
     return _audio_service

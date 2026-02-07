@@ -499,7 +499,11 @@ class AudioService:
                 logging.warning("Incomplete OSS configuration")
                 return None
 
-            auth = oss2.Auth(access_key_id, access_key_secret)
+            security_token = self.oss_config.get('security_token')
+            if security_token:
+                auth = oss2.StsAuth(access_key_id, access_key_secret, security_token)
+            else:
+                auth = oss2.Auth(access_key_id, access_key_secret)
             self._oss_bucket = oss2.Bucket(auth, endpoint, bucket_name)
             logging.info(f"OSS bucket initialized: {bucket_name}")
             return self._oss_bucket
@@ -508,7 +512,7 @@ class AudioService:
             logging.warning("oss2 not installed")
             return None
         except Exception as e:
-            logging.error(f"Failed to initialize OSS bucket: {e}")
+            logging.warning(f"Failed to initialize OSS bucket: {e}")
             return None
 
     def _upload_to_oss(self, local_path: str) -> Optional[str]:
@@ -588,7 +592,7 @@ class AudioService:
             logging.info(f"Uploaded to OSS for diarization: {oss_key}")
             return oss_key, signed_url
         except Exception as e:
-            logging.error(f"OSS upload for diarization failed: {e}")
+            logging.warning(f"OSS upload for diarization failed: {e}")
             return None, None
 
     def transcribe_with_diarization(self, audio_path: str, language: str = 'ru',
@@ -620,7 +624,7 @@ class AudioService:
 
             oss_key, signed_url = self._upload_to_oss_with_url(audio_path)
             if not signed_url:
-                logging.error("Failed to upload to OSS for diarization")
+                logging.warning("Failed to upload to OSS for diarization")
                 return None, []
 
             # Step 2: Submit async transcription with diarization
@@ -651,14 +655,14 @@ class AudioService:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             if response.status_code != 200:
                 error_data = response.json() if response.text else {}
-                logging.error(f"Fun-ASR submit failed: {response.status_code} - {error_data}")
+                logging.warning(f"Fun-ASR submit failed: {response.status_code} - {error_data}")
                 self._cleanup_oss_key(oss_key)
                 return None, []
 
             task_data = response.json()
             task_id = task_data.get('output', {}).get('task_id')
             if not task_id:
-                logging.error(f"Fun-ASR returned no task_id: {task_data}")
+                logging.warning(f"Fun-ASR returned no task_id: {task_data}")
                 self._cleanup_oss_key(oss_key)
                 return None, []
 
@@ -682,7 +686,7 @@ class AudioService:
                     break
                 elif task_status == 'FAILED':
                     error_msg = poll_data.get('output', {}).get('message', 'unknown')
-                    logging.error(f"Fun-ASR task failed: {error_msg}")
+                    logging.warning(f"Fun-ASR task failed: {error_msg}")
                     self._cleanup_oss_key(oss_key)
                     return None, []
 
@@ -690,7 +694,7 @@ class AudioService:
                     elapsed = (attempt + 1) * 5
                     progress_callback(f"\U0001f504 Распознаю с диаризацией... ({elapsed}с)")
             else:
-                logging.error("Fun-ASR task timed out after 5 minutes")
+                logging.warning("Fun-ASR task timed out after 5 minutes")
                 self._cleanup_oss_key(oss_key)
                 return None, []
 

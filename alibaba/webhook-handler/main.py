@@ -389,6 +389,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                 'endpoint': os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com'),
                 'access_key_id': ALIBABA_ACCESS_KEY,
                 'access_key_secret': ALIBABA_SECRET_KEY,
+                'security_token': ALIBABA_SECURITY_TOKEN,
             }
         )
 
