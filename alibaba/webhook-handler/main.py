@@ -433,19 +433,19 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         if dialogue_mode:
             # Diarization path (Fun-ASR-MTL, async, OSS)
             # DEBUG: verbose diagnostics (temporary)
-            oss_cfg = audio_service.oss_config or {}
-            has_bucket = bool(oss_cfg.get('bucket'))
-            has_endpoint = bool(oss_cfg.get('endpoint'))
-            has_ak = bool(oss_cfg.get('access_key_id'))
-            has_sk = bool(oss_cfg.get('access_key_secret'))
-            has_token = bool(oss_cfg.get('security_token'))
+            # DEBUG: check env vars directly vs module-level
+            env_ak = os.environ.get('ALIBABA_ACCESS_KEY', '')
+            env_ak2 = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID', '')
+            env_sk = os.environ.get('ALIBABA_SECRET_KEY', '')
             tg.send_message(chat_id,
-                f"[DEBUG] OSS config: bucket={has_bucket}, endpoint={has_endpoint}, "
-                f"ak={has_ak}, sk={has_sk}, token={has_token}\n"
-                f"bucket={oss_cfg.get('bucket')}, endpoint={oss_cfg.get('endpoint')}")
-            # Test OSS bucket init
-            test_bucket = audio_service._get_oss_bucket()
-            tg.send_message(chat_id, f"[DEBUG] _get_oss_bucket() = {type(test_bucket).__name__} (truthy={bool(test_bucket)})")
+                f"[DEBUG] Module vars: AK={bool(ALIBABA_ACCESS_KEY)} SK={bool(ALIBABA_SECRET_KEY)} TOKEN={bool(ALIBABA_SECURITY_TOKEN)}\n"
+                f"Env ALIBABA_ACCESS_KEY={env_ak[:8]}... ({len(env_ak)}ch)\n"
+                f"Env CLOUD_ACCESS_KEY_ID={env_ak2[:8]}... ({len(env_ak2)}ch)\n"
+                f"Env ALIBABA_SECRET_KEY={env_sk[:4]}... ({len(env_sk)}ch)")
+            oss_cfg = audio_service.oss_config or {}
+            tg.send_message(chat_id,
+                f"[DEBUG] oss_config keys: {list(oss_cfg.keys())}\n"
+                f"ak_in_config={repr(oss_cfg.get('access_key_id'))[:20]}")
             raw_text, segments = audio_service.transcribe_with_diarization(
                 converted_path,
                 progress_callback=lambda stage: (
