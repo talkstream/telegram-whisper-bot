@@ -42,10 +42,10 @@ class MNSService:
             logger.info(f"MNSService initialized for queue: {queue_name}")
 
         except ImportError:
-            logger.error("aliyun-mns package not installed. Run: pip install aliyun-mns")
+            logger.warning("aliyun-mns package not installed. Run: pip install aliyun-mns")
             raise
         except Exception as e:
-            logger.error(f"Failed to initialize MNSService: {e}")
+            logger.warning(f"Failed to initialize MNSService: {e}")
             raise
 
     def publish_message(self, message_data: Dict[str, Any],
@@ -63,7 +63,11 @@ class MNSService:
         from mns.mns_exception import MNSExceptionBase
 
         try:
-            from mns.message import Message
+            # Try multiple import paths for Message (varies by aliyun-mns version)
+            try:
+                from mns.mns_common import Message
+            except ImportError:
+                from mns.message import Message
 
             # Serialize message to JSON
             message_body = json.dumps(message_data, default=str)
@@ -80,11 +84,11 @@ class MNSService:
             return send_msg.message_id
 
         except MNSExceptionBase as e:
-            logger.error(f"MNS error publishing message: {e}")
-            return None
+            logger.warning(f"MNS error publishing message: {e}")
+            raise
         except Exception as e:
-            logger.error(f"Error publishing message: {e}")
-            return None
+            logger.warning(f"Error publishing message: {e}")
+            raise
 
     def receive_message(self, wait_seconds: int = 10,
                        visibility_timeout: int = 60) -> Optional[Dict[str, Any]]:
@@ -118,10 +122,10 @@ class MNSService:
             if 'MessageNotExist' in str(e):
                 # No messages available (normal condition)
                 return None
-            logger.error(f"MNS error receiving message: {e}")
+            logger.warning(f"MNS error receiving message: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error receiving message: {e}")
+            logger.warning(f"Error receiving message: {e}")
             return None
 
     def delete_message(self, receipt_handle: str) -> bool:
@@ -142,10 +146,10 @@ class MNSService:
             return True
 
         except MNSExceptionBase as e:
-            logger.error(f"MNS error deleting message: {e}")
+            logger.warning(f"MNS error deleting message: {e}")
             return False
         except Exception as e:
-            logger.error(f"Error deleting message: {e}")
+            logger.warning(f"Error deleting message: {e}")
             return False
 
     def change_message_visibility(self, receipt_handle: str,
@@ -171,10 +175,10 @@ class MNSService:
             return new_handle
 
         except MNSExceptionBase as e:
-            logger.error(f"MNS error changing visibility: {e}")
+            logger.warning(f"MNS error changing visibility: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error changing visibility: {e}")
+            logger.warning(f"Error changing visibility: {e}")
             return None
 
     def get_queue_attributes(self) -> Optional[Dict[str, Any]]:
@@ -197,10 +201,10 @@ class MNSService:
             }
 
         except MNSExceptionBase as e:
-            logger.error(f"MNS error getting queue attributes: {e}")
+            logger.warning(f"MNS error getting queue attributes: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error getting queue attributes: {e}")
+            logger.warning(f"Error getting queue attributes: {e}")
             return None
 
     def process_messages(self, handler: Callable[[Dict[str, Any]], bool],
@@ -232,7 +236,7 @@ class MNSService:
                 else:
                     logger.warning(f"Handler returned False for message {msg['message_id']}")
             except Exception as e:
-                logger.error(f"Error processing message {msg['message_id']}: {e}")
+                logger.warning(f"Error processing message {msg['message_id']}: {e}")
                 # Message will become visible again after timeout
 
         return processed
