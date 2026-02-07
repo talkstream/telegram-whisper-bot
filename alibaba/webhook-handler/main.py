@@ -454,7 +454,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         else:
             if status_message_id:
                 tg.delete_message(chat_id, status_message_id)
-            tg.send_message(chat_id, result_text, parse_mode=parse_mode)
+            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
 
         # Update balance
         duration_minutes = (duration + 59) // 60

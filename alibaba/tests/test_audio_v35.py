@@ -647,5 +647,60 @@ class TestConvertToMp3Integration:
         os.unlink(result)
 
 
+# ============== send_long_message Tests ==============
+
+class TestSendLongMessage:
+    """Test TelegramService.send_long_message splitting."""
+
+    @pytest.fixture
+    def tg_service(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shared'))
+        from telegram import TelegramService
+        return TelegramService('fake-token')
+
+    @patch('requests.Session.post')
+    def test_short_message_no_split(self, mock_post, tg_service):
+        """Message <=4096 chars should be sent as single message."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'ok': True}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        tg_service.send_long_message(123, "Short text")
+        assert mock_post.call_count == 1
+
+    @patch('requests.Session.post')
+    def test_long_message_splits(self, mock_post, tg_service):
+        """Message >4096 chars should be split into multiple messages."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'ok': True}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        # Create text > 4096 chars with paragraph breaks
+        long_text = ("Абзац один. " * 50 + "\n\n") * 10  # ~6200 chars
+        tg_service.send_long_message(123, long_text)
+        assert mock_post.call_count >= 2
+
+    @patch('requests.Session.post')
+    def test_split_respects_4096_limit(self, mock_post, tg_service):
+        """Each split part must be <=4096 chars."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'ok': True}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        long_text = "Слово " * 2000  # ~12000 chars
+        tg_service.send_long_message(123, long_text)
+
+        for call_args in mock_post.call_args_list:
+            payload = call_args[1].get('json', call_args[0][1] if len(call_args[0]) > 1 else {})
+            if 'text' in payload:
+                assert len(payload['text']) <= 4096
+
+    def test_max_message_length_constant(self, tg_service):
+        assert tg_service.MAX_MESSAGE_LENGTH == 4096
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short'])

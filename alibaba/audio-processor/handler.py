@@ -311,7 +311,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             if progress_id:
                 tg.delete_message(chat_id, progress_id)
-            tg.send_message(chat_id, result_text, parse_mode=parse_mode)
+            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
 
         # Update balance
         duration_minutes = (duration + 59) // 60

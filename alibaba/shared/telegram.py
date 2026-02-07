@@ -99,6 +99,44 @@ class TelegramService:
             logger.error(f"Error deleting message: {e}")
             return False
             
+    # Telegram message length limit
+    MAX_MESSAGE_LENGTH = 4096
+
+    def send_long_message(self, chat_id: int, text: str, parse_mode: str = "",
+                          reply_markup: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+        """Send a message, splitting into multiple parts if >4096 chars."""
+        if len(text) <= self.MAX_MESSAGE_LENGTH:
+            return self.send_message(chat_id, text, parse_mode, reply_markup)
+
+        # Split at paragraph boundaries, then sentence boundaries
+        parts = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= self.MAX_MESSAGE_LENGTH:
+                parts.append(remaining)
+                break
+
+            # Find split point: prefer \n\n, then \n, then '. '
+            chunk = remaining[:self.MAX_MESSAGE_LENGTH]
+            split_pos = chunk.rfind('\n\n')
+            if split_pos < self.MAX_MESSAGE_LENGTH // 2:
+                split_pos = chunk.rfind('\n')
+            if split_pos < self.MAX_MESSAGE_LENGTH // 2:
+                split_pos = chunk.rfind('. ')
+                if split_pos > 0:
+                    split_pos += 1  # include the dot
+            if split_pos < self.MAX_MESSAGE_LENGTH // 4:
+                split_pos = self.MAX_MESSAGE_LENGTH  # hard cut
+
+            parts.append(remaining[:split_pos].rstrip())
+            remaining = remaining[split_pos:].lstrip()
+
+        last_result = None
+        for part in parts:
+            if part:
+                last_result = self.send_message(chat_id, part, parse_mode, reply_markup)
+        return last_result
+
     def send_document(self, chat_id: int, file_path: str, caption: str = "") -> Optional[Dict[str, Any]]:
         """Send a document to a Telegram chat"""
         url = f"{self.api_url}/sendDocument"
