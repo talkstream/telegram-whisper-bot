@@ -11,12 +11,9 @@ from typing import Any, Dict, Optional
 # Add services to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Configure logging
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
-)
+# Configure structured JSON logging for SLS
+from services.utility import UtilityService
+UtilityService.setup_logging('audio-processor')
 logger = logging.getLogger(__name__)
 
 # Environment variables
@@ -87,7 +84,13 @@ def get_audio_service():
         from services.audio import AudioService
         _audio_service = AudioService(
             whisper_backend=WHISPER_BACKEND,
-            alibaba_api_key=DASHSCOPE_API_KEY
+            alibaba_api_key=DASHSCOPE_API_KEY,
+            oss_config={
+                'bucket': os.environ.get('OSS_BUCKET', 'twbot-prod-audio'),
+                'endpoint': os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com'),
+                'access_key_id': ALIBABA_ACCESS_KEY,
+                'access_key_secret': ALIBABA_SECRET_KEY,
+            }
         )
     return _audio_service
 
@@ -259,14 +262,45 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         if not converted_path:
             raise Exception("Failed to convert audio to MP3")
 
-        # Progress callback for chunked transcription
-        def chunk_progress(current, total):
-            if progress_id and total > 1:
-                tg.edit_message_text(chat_id, progress_id,
-                    f"🎙 Распознаю речь... (часть {current} из {total})")
+        # Extract settings from user
+        user = db.get_user(user_id_int)
+        settings_json = user.get('settings', '{}') if user else '{}'
+        settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
+        use_code = settings.get('use_code_tags', False)
+        use_yo = settings.get('use_yo', True)
+        dialogue_mode = settings.get('dialogue_mode', False)
 
-        # Transcribe
-        text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
+        is_dialogue = False
+
+        if dialogue_mode:
+            # Diarization path (Fun-ASR, async, OSS)
+            raw_text, segments = audio.transcribe_with_diarization(
+                converted_path,
+                progress_callback=lambda stage: (
+                    tg.edit_message_text(chat_id, progress_id, stage)
+                    if progress_id else None
+                )
+            )
+            if segments:
+                text = audio.format_dialogue(segments)
+                is_dialogue = True
+            else:
+                # Fallback: regular transcription
+                def chunk_progress(current, total):
+                    if progress_id and total > 1:
+                        tg.edit_message_text(chat_id, progress_id,
+                            f"🎙 Распознаю речь... (часть {current} из {total})")
+
+                text = raw_text or audio.transcribe_audio(
+                    converted_path, progress_callback=chunk_progress)
+        else:
+            # Regular path (Qwen3-ASR)
+            def chunk_progress(current, total):
+                if progress_id and total > 1:
+                    tg.edit_message_text(chat_id, progress_id,
+                        f"🎙 Распознаю речь... (часть {current} из {total})")
+
+            text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
         if not text or text.strip() == "" or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
@@ -274,13 +308,6 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
                 tg.delete_message(chat_id, progress_id)
             db.update_job(job_id, {'status': 'failed', 'error': 'no_speech'})
             return {'ok': True, 'result': 'no_speech'}
-
-        # Extract settings from user (avoid duplicate DB call via get_user_settings)
-        user = db.get_user(user_id_int)
-        settings_json = user.get('settings', '{}') if user else '{}'
-        settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
-        use_code = settings.get('use_code_tags', False)
-        use_yo = settings.get('use_yo', True)
 
         # Determine if audio was chunked (for LLM prompt)
         audio_duration = audio.get_audio_duration(converted_path)
@@ -292,7 +319,8 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
                 tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
             formatted_text = audio.format_text_with_qwen(
-                text, use_code_tags=use_code, use_yo=use_yo, is_chunked=is_chunked)
+                text, use_code_tags=use_code, use_yo=use_yo,
+                is_chunked=is_chunked, is_dialogue=is_dialogue)
         else:
             formatted_text = text
             if not use_yo:
@@ -306,8 +334,16 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             result_text = formatted_text
             parse_mode = ''
 
+        long_text_mode = settings.get('long_text_mode', 'split')
+
         if progress_id and len(result_text) <= 4000:
             tg.edit_message_text(chat_id, progress_id, result_text, parse_mode=parse_mode)
+        elif long_text_mode == 'file':
+            if progress_id:
+                tg.delete_message(chat_id, progress_id)
+            first_dot = formatted_text.find('.')
+            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
+            tg.send_as_file(chat_id, formatted_text, caption=caption)
         else:
             if progress_id:
                 tg.delete_message(chat_id, progress_id)

@@ -137,6 +137,19 @@ class TelegramService:
                 last_result = self.send_message(chat_id, part, parse_mode, reply_markup)
         return last_result
 
+    def send_as_file(self, chat_id: int, text: str, caption: str = "") -> Optional[Dict[str, Any]]:
+        """Send text as .txt file with optional caption."""
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', delete=False, suffix='.txt',
+            encoding='utf-8', prefix='transcript_'
+        )
+        tmp.write(text)
+        tmp.close()
+        try:
+            return self.send_document(chat_id, tmp.name, caption=caption)
+        finally:
+            os.unlink(tmp.name)
+
     def send_document(self, chat_id: int, file_path: str, caption: str = "") -> Optional[Dict[str, Any]]:
         """Send a document to a Telegram chat"""
         url = f"{self.api_url}/sendDocument"

@@ -17,12 +17,9 @@ import pytz
 # Add shared services to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'telegram_bot_shared'))
 
-# Configure logging
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'WARNING')
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
-)
+# Configure structured JSON logging for SLS
+from services.utility import UtilityService
+UtilityService.setup_logging('webhook-handler')
 logger = logging.getLogger(__name__)
 
 # Environment variables
@@ -213,7 +210,7 @@ def handler(event, context):
                     'status': 'ok',
                     'service': 'telegram-whisper-bot',
                     'region': REGION,
-                    'version': '3.5.0-alibaba',
+                    'version': '3.6.0-alibaba',
                     'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                     'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
                 }, ensure_ascii=False)
@@ -377,7 +374,15 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
 
         # Transcribe with Qwen-ASR
         from services.audio import AudioService
-        audio_service = AudioService(whisper_backend='qwen-asr')
+        audio_service = AudioService(
+            whisper_backend='qwen-asr',
+            oss_config={
+                'bucket': os.environ.get('OSS_BUCKET', 'twbot-prod-audio'),
+                'endpoint': os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com'),
+                'access_key_id': ALIBABA_ACCESS_KEY,
+                'access_key_secret': ALIBABA_SECRET_KEY,
+            }
+        )
 
         # For documents (duration=0), get actual duration via ffprobe
         if duration == 0 and local_path:
@@ -407,23 +412,48 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             tg.send_message(chat_id, "Не удалось обработать аудио. Попробуйте другой формат.")
             return 'conversion_failed'
 
-        # Progress callback for chunked transcription
-        def chunk_progress(current, total):
-            if status_message_id and total > 1:
-                tg.edit_message_text(chat_id, status_message_id,
-                    f"🎙 Распознаю речь... (часть {current} из {total})")
-
-        text = audio_service.transcribe_audio(converted_path, progress_callback=chunk_progress)
-
-        if not text or text.strip() == "Продолжение следует...":
-            tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
-            return 'no_speech'
-
         # Extract settings from already-loaded user dict (avoid duplicate DB call)
         settings_json = user.get('settings', '{}')
         settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
         use_code_tags = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
+        dialogue_mode = settings.get('dialogue_mode', False)
+
+        is_dialogue = False
+
+        if dialogue_mode:
+            # Diarization path (Fun-ASR, async, OSS)
+            raw_text, segments = audio_service.transcribe_with_diarization(
+                converted_path,
+                progress_callback=lambda stage: (
+                    tg.edit_message_text(chat_id, status_message_id, stage)
+                    if status_message_id else None
+                )
+            )
+            if segments:
+                text = audio_service.format_dialogue(segments)
+                is_dialogue = True
+            else:
+                # Fallback: regular transcription
+                def chunk_progress(current, total):
+                    if status_message_id and total > 1:
+                        tg.edit_message_text(chat_id, status_message_id,
+                            f"🎙 Распознаю речь... (часть {current} из {total})")
+
+                text = raw_text or audio_service.transcribe_audio(
+                    converted_path, progress_callback=chunk_progress)
+        else:
+            # Regular path (Qwen3-ASR)
+            def chunk_progress(current, total):
+                if status_message_id and total > 1:
+                    tg.edit_message_text(chat_id, status_message_id,
+                        f"🎙 Распознаю речь... (часть {current} из {total})")
+
+            text = audio_service.transcribe_audio(converted_path, progress_callback=chunk_progress)
+
+        if not text or text.strip() == "Продолжение следует...":
+            tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
+            return 'no_speech'
 
         # Determine if audio was chunked (for LLM prompt)
         audio_duration = audio_service.get_audio_duration(converted_path)
@@ -435,7 +465,8 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                 tg.edit_message_text(chat_id, status_message_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
             formatted_text = audio_service.format_text_with_qwen(
-                text, use_code_tags=use_code_tags, use_yo=use_yo, is_chunked=is_chunked)
+                text, use_code_tags=use_code_tags, use_yo=use_yo,
+                is_chunked=is_chunked, is_dialogue=is_dialogue)
         else:
             formatted_text = text
             if not use_yo:
@@ -449,8 +480,16 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             result_text = formatted_text
             parse_mode = ''
 
+        long_text_mode = settings.get('long_text_mode', 'split')
+
         if status_message_id and len(result_text) <= 4000:
             tg.edit_message_text(chat_id, status_message_id, result_text, parse_mode=parse_mode)
+        elif long_text_mode == 'file':
+            if status_message_id:
+                tg.delete_message(chat_id, status_message_id)
+            first_dot = formatted_text.find('.')
+            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
+            tg.send_as_file(chat_id, formatted_text, caption=caption)
         else:
             if status_message_id:
                 tg.delete_message(chat_id, status_message_id)
@@ -604,7 +643,9 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "/help - Справка\n"
             "/balance - Проверить баланс\n"
             "/trial - Запросить пробный доступ\n"
-            "/settings - Настройки"
+            "/settings - Настройки\n"
+            "/dialogue - Режим диалога (разделение по спикерам)\n"
+            "/output - Формат длинного текста (файл / сообщения)"
         )
         return 'start'
 
@@ -619,7 +660,9 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "/buy_minutes - Купить минуты\n"
             "/settings - Показать настройки\n"
             "/code - Вкл/выкл моноширинный шрифт\n"
-            "/yo - Вкл/выкл букву ё"
+            "/yo - Вкл/выкл букву ё\n"
+            "/output - Формат длинного текста (файл / сообщения)\n"
+            "/dialogue - Режим диалога (разделение по спикерам)"
         )
         return 'help'
 
@@ -648,15 +691,24 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         settings = db.get_user_settings(user_id) or {}
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
+        long_text_mode = settings.get('long_text_mode', 'split')
+        dialogue_mode = settings.get('dialogue_mode', False)
+
+        long_text_label = '\U0001f4c4 файл .txt' if long_text_mode == 'file' else '\U0001f4ac несколько сообщений'
+        dialogue_label = '\u2705 Вкл (обработка дольше)' if dialogue_mode else '\u274c Выкл'
 
         tg.send_message(
             chat_id,
             f"⚙️ Ваши настройки:\n\n"
             f"Моноширинный шрифт: {'✅ Вкл' if use_code else '❌ Выкл'}\n"
-            f"Использование ё: {'✅ Вкл' if use_yo else '❌ Выкл (заменяется на е)'}\n\n"
+            f"Использование ё: {'✅ Вкл' if use_yo else '❌ Выкл (заменяется на е)'}\n"
+            f"Длинный текст: {long_text_label}\n"
+            f"Режим диалога: {dialogue_label}\n\n"
             f"Команды для изменения:\n"
             f"/code - переключить шрифт\n"
-            f"/yo - переключить букву ё"
+            f"/yo - переключить букву ё\n"
+            f"/output - формат длинного текста\n"
+            f"/dialogue - режим диалога"
         )
         return 'settings'
 
@@ -675,6 +727,25 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         status = 'включено' if settings['use_yo'] else 'замена на е'
         tg.send_message(chat_id, f"Использование буквы ё: {status}")
         return 'yo_toggle'
+
+    elif command == '/output':
+        settings = db.get_user_settings(user_id) or {}
+        current = settings.get('long_text_mode', 'split')
+        new_mode = 'file' if current == 'split' else 'split'
+        settings['long_text_mode'] = new_mode
+        db.update_user_settings(user_id, settings)
+        label = '\U0001f4c4 файл .txt' if new_mode == 'file' else '\U0001f4ac несколько сообщений'
+        tg.send_message(chat_id, f"Длинный текст: {label}")
+        return 'output_toggle'
+
+    elif command == '/dialogue':
+        settings = db.get_user_settings(user_id) or {}
+        settings['dialogue_mode'] = not settings.get('dialogue_mode', False)
+        db.update_user_settings(user_id, settings)
+        status = 'включён' if settings['dialogue_mode'] else 'выключен'
+        note = " (обработка дольше)" if settings['dialogue_mode'] else ""
+        tg.send_message(chat_id, f"Режим диалога: {status}{note}")
+        return 'dialogue_toggle'
 
     elif command == '/buy_minutes':
         return handle_buy_minutes(chat_id, user_id, tg)

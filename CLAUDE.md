@@ -4,8 +4,8 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.5.0 |
-| **ASR** | `qwen3-asr-flash` (REST API) |
+| **Version** | v3.6.0 |
+| **ASR** | `qwen3-asr-flash` (REST API), `fun-asr` (diarization) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS |
 | **Region** | eu-central-1 (Frankfurt) |
@@ -17,6 +17,7 @@
 | Service | Model | Endpoint |
 |---------|-------|----------|
 | ASR | `qwen3-asr-flash` | `https://dashscope-intl.aliyuncs.com/api/v1` |
+| Diarization | `fun-asr` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
 | LLM | `qwen-turbo` | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
 
 ### DO NOT USE
@@ -67,6 +68,8 @@ alibaba/
 | `/settings` | Show settings |
 | `/code` | Toggle monospace output |
 | `/yo` | Toggle letter yo |
+| `/output` | Toggle long text mode (split/file) |
+| `/dialogue` | Toggle diarization mode (Fun-ASR) |
 
 **Admin commands:** see [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)
 
@@ -85,6 +88,8 @@ alibaba/
 | `TABLESTORE_INSTANCE` | Instance name |
 | `MNS_ENDPOINT` | MNS endpoint |
 | `GOOGLE_API_KEY` | Gemini fallback (optional) |
+| `OSS_BUCKET` | OSS bucket for diarization |
+| `OSS_ENDPOINT` | OSS endpoint |
 
 ---
 
@@ -176,4 +181,4 @@ response = client.models.generate_content(model="gemini-2.5-flash", contents=pro
 
 ---
 
-*Last updated: 2026-02-06*
+*Last updated: 2026-02-07*

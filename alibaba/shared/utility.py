@@ -12,7 +12,7 @@ class UtilityService:
     
     @staticmethod
     def setup_logging(component_name="app"):
-        """Configure structured JSON logging for Google Cloud
+        """Configure structured JSON logging for Alibaba SLS.
 
         Respects LOG_LEVEL environment variable:
         - DEBUG: All messages (verbose)
@@ -25,11 +25,11 @@ class UtilityService:
         import logging
         from pythonjsonlogger import jsonlogger
 
-        class StackdriverJsonFormatter(jsonlogger.JsonFormatter):
+        class SLSJsonFormatter(jsonlogger.JsonFormatter):
             def add_fields(self, log_record, record, message_dict):
-                super(StackdriverJsonFormatter, self).add_fields(log_record, record, message_dict)
+                super(SLSJsonFormatter, self).add_fields(log_record, record, message_dict)
 
-                # Map standard python levels to Stackdriver severity
+                # Map standard python levels to SLS severity
                 if not log_record.get('severity'):
                     log_record['severity'] = record.levelname
 
@@ -49,7 +49,7 @@ class UtilityService:
             logger.removeHandler(handler)
 
         handler = logging.StreamHandler(sys.stdout)
-        formatter = StackdriverJsonFormatter('%(timestamp)s %(severity)s %(name)s %(message)s %(component)s %(trace_id)s %(user_id)s')
+        formatter = SLSJsonFormatter('%(timestamp)s %(severity)s %(name)s %(message)s %(component)s %(trace_id)s %(user_id)s')
         handler.setFormatter(formatter)
         logger.handlers = [handler]
 

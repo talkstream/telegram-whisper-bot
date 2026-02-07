@@ -10,7 +10,8 @@ import logging
 import tempfile
 import subprocess
 import time
-from typing import Optional, Tuple
+import uuid
+from typing import List, Optional, Tuple
 
 
 class AudioService:
@@ -563,6 +564,232 @@ class AudioService:
         except Exception as e:
             logging.warning(f"Failed to delete from OSS: {e}")
 
+    def _upload_to_oss_with_url(self, local_path: str, expiry: int = 3600) -> Tuple[Optional[str], Optional[str]]:
+        """Upload to OSS and return (oss_key, signed_https_url) for Fun-ASR.
+
+        Fun-ASR requires an HTTPS URL (not oss:// protocol).
+
+        Args:
+            local_path: Path to local file
+            expiry: URL expiration in seconds (default: 1 hour)
+
+        Returns:
+            (oss_key, signed_url) or (None, None) on failure
+        """
+        bucket = self._get_oss_bucket()
+        if not bucket:
+            return None, None
+
+        try:
+            file_ext = os.path.splitext(local_path)[1] or '.mp3'
+            oss_key = f"diarization/{uuid.uuid4().hex}{file_ext}"
+            bucket.put_object_from_file(oss_key, local_path)
+            signed_url = bucket.sign_url('GET', oss_key, expiry)
+            logging.info(f"Uploaded to OSS for diarization: {oss_key}")
+            return oss_key, signed_url
+        except Exception as e:
+            logging.error(f"OSS upload for diarization failed: {e}")
+            return None, None
+
+    def transcribe_with_diarization(self, audio_path: str, language: str = 'ru',
+                                     speaker_count: int = 0,
+                                     progress_callback=None) -> Tuple[Optional[str], List[dict]]:
+        """Transcribe with speaker diarization via Fun-ASR (async API).
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code (default: 'ru')
+            speaker_count: Expected number of speakers (0 = auto-detect)
+            progress_callback: Optional callback(stage_text) for progress updates
+
+        Returns:
+            (raw_text, segments) where segments = [{'speaker_id', 'text', 'begin_time', 'end_time'}]
+            Returns (None, []) on failure (caller should fallback to regular ASR)
+        """
+        import requests
+
+        api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
+        if not api_key:
+            logging.warning("DASHSCOPE_API_KEY not configured for diarization")
+            return None, []
+
+        try:
+            # Step 1: Upload to OSS
+            if progress_callback:
+                progress_callback("\U0001f4e4 Загружаю для анализа...")
+
+            oss_key, signed_url = self._upload_to_oss_with_url(audio_path)
+            if not signed_url:
+                logging.error("Failed to upload to OSS for diarization")
+                return None, []
+
+            # Step 2: Submit async transcription with diarization
+            if progress_callback:
+                progress_callback("\U0001f504 Распознаю с диаризацией...")
+
+            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "X-DashScope-Async": "enable"
+            }
+
+            payload = {
+                "model": "fun-asr",
+                "input": {
+                    "file_urls": [signed_url]
+                },
+                "parameters": {
+                    "language_hints": [language],
+                    "diarization_enabled": True
+                }
+            }
+
+            if speaker_count > 0:
+                payload["parameters"]["speaker_count"] = speaker_count
+
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            if response.status_code != 200:
+                error_data = response.json() if response.text else {}
+                logging.error(f"Fun-ASR submit failed: {response.status_code} - {error_data}")
+                self._cleanup_oss_key(oss_key)
+                return None, []
+
+            task_data = response.json()
+            task_id = task_data.get('output', {}).get('task_id')
+            if not task_id:
+                logging.error(f"Fun-ASR returned no task_id: {task_data}")
+                self._cleanup_oss_key(oss_key)
+                return None, []
+
+            logging.info(f"Fun-ASR task submitted: {task_id}")
+
+            # Step 3: Poll for completion
+            poll_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
+            poll_headers = {"Authorization": f"Bearer {api_key}"}
+
+            for attempt in range(60):  # Max 5 minutes (60 * 5s)
+                time.sleep(5)
+                poll_response = requests.get(poll_url, headers=poll_headers, timeout=15)
+                if poll_response.status_code != 200:
+                    continue
+
+                poll_data = poll_response.json()
+                task_status = poll_data.get('output', {}).get('task_status', '')
+
+                if task_status == 'SUCCEEDED':
+                    logging.info(f"Fun-ASR task completed after {(attempt + 1) * 5}s")
+                    break
+                elif task_status == 'FAILED':
+                    error_msg = poll_data.get('output', {}).get('message', 'unknown')
+                    logging.error(f"Fun-ASR task failed: {error_msg}")
+                    self._cleanup_oss_key(oss_key)
+                    return None, []
+
+                if progress_callback and attempt % 3 == 2:
+                    elapsed = (attempt + 1) * 5
+                    progress_callback(f"\U0001f504 Распознаю с диаризацией... ({elapsed}с)")
+            else:
+                logging.error("Fun-ASR task timed out after 5 minutes")
+                self._cleanup_oss_key(oss_key)
+                return None, []
+
+            # Step 4: Fetch transcription results
+            results = poll_data.get('output', {}).get('results', [])
+            if not results:
+                logging.warning("Fun-ASR returned empty results")
+                self._cleanup_oss_key(oss_key)
+                return None, []
+
+            # Parse transcription URL from results
+            transcription_url = results[0].get('transcription_url')
+            if not transcription_url:
+                logging.warning("No transcription_url in Fun-ASR results")
+                self._cleanup_oss_key(oss_key)
+                return None, []
+
+            trans_response = requests.get(transcription_url, timeout=30)
+            trans_data = trans_response.json()
+
+            # Parse sentences with speaker_id
+            transcripts = trans_data.get('transcripts', [])
+            segments = []
+            raw_texts = []
+
+            for transcript in transcripts:
+                sentences = transcript.get('sentences', [])
+                for sentence in sentences:
+                    seg = {
+                        'speaker_id': sentence.get('speaker_id', 0),
+                        'text': sentence.get('text', '').strip(),
+                        'begin_time': sentence.get('begin_time', 0),
+                        'end_time': sentence.get('end_time', 0)
+                    }
+                    if seg['text']:
+                        segments.append(seg)
+                        raw_texts.append(seg['text'])
+
+            raw_text = ' '.join(raw_texts)
+            logging.info(f"Fun-ASR diarization: {len(segments)} segments, "
+                         f"{len(set(s['speaker_id'] for s in segments))} speakers, "
+                         f"{len(raw_text)} chars")
+
+            # Step 5: Cleanup OSS
+            self._cleanup_oss_key(oss_key)
+
+            return raw_text, segments
+
+        except Exception as e:
+            logging.error(f"Diarization failed: {e}", exc_info=True)
+            if 'oss_key' in locals() and oss_key:
+                self._cleanup_oss_key(oss_key)
+            return None, []
+
+    def _cleanup_oss_key(self, oss_key: Optional[str]):
+        """Delete an OSS object by key."""
+        if not oss_key:
+            return
+        bucket = self._get_oss_bucket()
+        if bucket:
+            try:
+                bucket.delete_object(oss_key)
+                logging.info(f"Deleted from OSS: {oss_key}")
+            except Exception as e:
+                logging.warning(f"Failed to delete OSS key {oss_key}: {e}")
+
+    def format_dialogue(self, segments: List[dict]) -> str:
+        """Format diarized segments as Russian dialogue with em-dash.
+
+        Merges consecutive segments from the same speaker into one block.
+
+        Args:
+            segments: List of dicts with 'speaker_id' and 'text' keys
+
+        Returns:
+            Formatted dialogue text with em-dash separators
+        """
+        lines = []
+        current_speaker = None
+        current_texts = []
+
+        for seg in segments:
+            speaker = seg.get('speaker_id', 0)
+            text = seg.get('text', '').strip()
+            if not text:
+                continue
+            if speaker != current_speaker:
+                if current_texts:
+                    lines.append(f"\u2014 {' '.join(current_texts)}")
+                current_speaker = speaker
+                current_texts = [text]
+            else:
+                current_texts.append(text)
+
+        if current_texts:
+            lines.append(f"\u2014 {' '.join(current_texts)}")
+
+        return "\n\n".join(lines)
+
     def transcribe_with_qwen_asr(self, audio_path: str, language: str = 'ru',
                                    progress_callback=None) -> str:
         """
@@ -1002,30 +1229,9 @@ class AudioService:
             logging.warning(f"Could not get audio duration: {e}, using default 600s")
             return 600.0  # Default 10 minutes
             
-    def format_text_with_qwen(self, text: str, use_code_tags: bool = False,
-                               use_yo: bool = True, is_chunked: bool = False) -> str:
-        """
-        Format transcribed text using Qwen LLM (Alibaba) via REST API.
-        Falls back to Gemini if Qwen fails.
-
-        Args:
-            text: Raw transcribed text
-            use_code_tags: Whether to wrap text in <code> tags
-            use_yo: Whether to preserve ё letters
-            is_chunked: Whether text was assembled from multiple ASR chunks
-
-        Returns:
-            Formatted text
-        """
-        import requests
-
-        # Check if text is too short to format
-        word_count = len(text.split())
-        if word_count < 10:
-            logging.info(f"Text too short for LLM formatting ({word_count} words < 10), returning original")
-            return text
-
-        # Prepare instructions (same as Gemini for consistency)
+    def _build_format_prompt(self, text: str, use_code_tags: bool, use_yo: bool,
+                              is_chunked: bool, is_dialogue: bool) -> str:
+        """Single source of truth for LLM formatting prompt."""
         code_tag_instruction = (
             "Оберни ВЕСЬ текст в теги <code></code>."
             if use_code_tags else
@@ -1038,24 +1244,39 @@ class AudioService:
             "Заменяй все буквы ё на е."
         )
 
-        chunked_instruction = ""
+        extra_instructions = ""
+
         if is_chunked:
-            chunked_instruction = (
-                "8. ВАЖНО: этот текст собран из нескольких последовательных фрагментов одной записи. "
+            extra_instructions += (
+                "10. ВАЖНО: этот текст собран из нескольких последовательных фрагментов одной записи. "
                 "На стыках фрагментов могут быть оборванные предложения, повторы слов или неестественные "
                 "переходы — исправь эти артефакты склейки, обеспечив плавный непрерывный текст.\n"
             )
 
-        prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
+        if is_dialogue:
+            extra_instructions += (
+                "11. ФОРМАТ ДИАЛОГА: текст содержит реплики разных собеседников. "
+                "Каждая реплика начинается с тире (\u2014) на новой строке. "
+                "НЕ добавляй метки «Говорящий 1» — используй только тире. "
+                "Объединяй подряд идущие реплики одного собеседника в один блок.\n"
+            )
 
-1. Исправь ошибки распознавания речи (артефакты, повторы, обрывки слов)
+        return f"""Отформатируй транскрипцию аудиозаписи. Правила:
+
+1. Исправь ЯВНЫЕ ошибки распознавания речи (артефакты, повторы, обрывки слов)
 2. Расставь знаки препинания по правилам русского языка
 3. НЕ заменяй слова на синонимы, НЕ меняй формы слов — сохраняй именно те слова, которые произнёс автор
 4. Раздели на абзацы по смыслу и интонации (минимум 2-3 предложения в абзаце, не разбивай каждое предложение отдельно)
 5. {code_tag_instruction}
 6. {yo_instruction}
 7. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
-{chunked_instruction}Обрати особое внимание на корректное написание топонимов (географических названий). \
+8. ИМЕНА И ФАМИЛИИ: будь максимально консервативен с именами собственными. \
+Если слово похоже на фамилию/имя — НЕ заменяй его на похожее. \
+Не «исправляй» незнакомые фамилии на более распространённые.
+9. ШИПЯЩИЕ/СВИСТЯЩИЕ: ASR часто путает ш/щ/ч/ж/с/з/ц. \
+Исправляй только если результат явно не слово русского языка. \
+В сомнительных случаях — оставляй как распознал ASR.
+{extra_instructions}Обрати особое внимание на корректное написание топонимов (географических названий). \
 Приоритет: топонимы Таиланда (Бангкок, Паттайя, Пхукет, Краби, Чиангмай, Ко Самуи, \
 Ко Панган, Ко Чанг, Хуа Хин, Районг и т.д.), затем России. \
 Не заменяй правильные топонимы на похожие по звучанию слова.
@@ -1064,13 +1285,40 @@ class AudioService:
 
 {text}"""
 
+    def format_text_with_qwen(self, text: str, use_code_tags: bool = False,
+                               use_yo: bool = True, is_chunked: bool = False,
+                               is_dialogue: bool = False) -> str:
+        """
+        Format transcribed text using Qwen LLM (Alibaba) via REST API.
+        Falls back to Gemini if Qwen fails.
+
+        Args:
+            text: Raw transcribed text
+            use_code_tags: Whether to wrap text in <code> tags
+            use_yo: Whether to preserve ё letters
+            is_chunked: Whether text was assembled from multiple ASR chunks
+            is_dialogue: Whether text is a multi-speaker dialogue
+
+        Returns:
+            Formatted text
+        """
+        import requests
+
+        # Check if text is too short to format
+        word_count = len(text.split())
+        if word_count < 10:
+            logging.info(f"Text too short for LLM formatting ({word_count} words < 10), returning original")
+            return text
+
+        prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+
         api_start_time = time.time()
 
         try:
             api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
             if not api_key:
                 logging.warning("DASHSCOPE_API_KEY not set, falling back to Gemini")
-                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
+                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
 
             logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
 
@@ -1121,7 +1369,7 @@ class AudioService:
                 # Quality check
                 if len(formatted_text) < 5:
                     logging.warning("Qwen returned very short text, trying Gemini fallback")
-                    return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
+                    return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
 
                 # Log API call metrics
                 if self.metrics_service:
@@ -1131,11 +1379,11 @@ class AudioService:
                 return formatted_text
             else:
                 logging.warning(f"Qwen API error: {response.status_code} - {response.text}, trying Gemini fallback")
-                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
+                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
 
         except requests.RequestException as e:
             logging.warning(f"Qwen API request failed: {e}, falling back to Gemini")
-            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
+            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
 
         except Exception as e:
             api_duration = time.time() - api_start_time
@@ -1143,10 +1391,11 @@ class AudioService:
                 self.metrics_service.log_api_call('qwen-llm', api_duration, False, str(e))
 
             logging.warning(f"Qwen LLM failed: {e}, falling back to Gemini")
-            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked)
+            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
 
     def format_text_with_gemini(self, text: str, use_code_tags: bool = False,
-                                use_yo: bool = True, is_chunked: bool = False) -> str:
+                                use_yo: bool = True, is_chunked: bool = False,
+                                is_dialogue: bool = False) -> str:
         """
         Format transcribed text using Gemini via HTTP API.
         Fallback method when Qwen LLM is unavailable.
@@ -1170,44 +1419,7 @@ class AudioService:
                 logging.warning("No Gemini API key available, returning original text")
                 return text
 
-            # Prepare instructions
-            code_tag_instruction = (
-                "Оберни ВЕСЬ текст в теги <code></code>."
-                if use_code_tags else
-                "НЕ используй теги <code>."
-            )
-
-            yo_instruction = (
-                "Сохраняй букву ё где она есть."
-                if use_yo else
-                "Заменяй все буквы ё на е."
-            )
-
-            chunked_instruction = ""
-            if is_chunked:
-                chunked_instruction = (
-                    "8. ВАЖНО: этот текст собран из нескольких последовательных фрагментов одной записи. "
-                    "На стыках фрагментов могут быть оборванные предложения, повторы слов или неестественные "
-                    "переходы — исправь эти артефакты склейки, обеспечив плавный непрерывный текст.\n"
-                )
-
-            prompt = f"""Отформатируй транскрипцию аудиозаписи. Правила:
-
-1. Исправь ошибки распознавания речи (артефакты, повторы, обрывки слов)
-2. Расставь знаки препинания по правилам русского языка
-3. НЕ заменяй слова на синонимы, НЕ меняй формы слов — сохраняй именно те слова, которые произнёс автор
-4. Раздели на абзацы по смыслу и интонации (минимум 2-3 предложения в абзаце, не разбивай каждое предложение отдельно)
-5. {code_tag_instruction}
-6. {yo_instruction}
-7. ВАЖНО: НЕ добавляй свои комментарии, НЕ веди диалог с пользователем
-{chunked_instruction}Обрати особое внимание на корректное написание топонимов (географических названий). \
-Приоритет: топонимы Таиланда (Бангкок, Паттайя, Пхукет, Краби, Чиангмай, Ко Самуи, \
-Ко Панган, Ко Чанг, Хуа Хин, Районг и т.д.), затем России. \
-Не заменяй правильные топонимы на похожие по звучанию слова.
-
-Текст для форматирования:
-
-{text}"""
+            prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue)
 
             # Call Gemini API via REST
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
