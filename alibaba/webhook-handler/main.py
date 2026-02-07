@@ -435,46 +435,21 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         is_dialogue = False
 
         if dialogue_mode:
-            # Diarization path (Fun-ASR-MTL, async, OSS)
-            # DEBUG: verbose diagnostics (temporary)
-            # DEBUG: check env vars directly vs module-level
-            env_ak = os.environ.get('ALIBABA_ACCESS_KEY', '')
-            env_ak2 = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID', '')
-            env_sk = os.environ.get('ALIBABA_SECRET_KEY', '')
-            tg.send_message(chat_id,
-                f"[DEBUG] Module vars: AK={bool(ALIBABA_ACCESS_KEY)} SK={bool(ALIBABA_SECRET_KEY)} TOKEN={bool(ALIBABA_SECURITY_TOKEN)}\n"
-                f"Env ALIBABA_ACCESS_KEY={env_ak[:8]}... ({len(env_ak)}ch)\n"
-                f"Env CLOUD_ACCESS_KEY_ID={env_ak2[:8]}... ({len(env_ak2)}ch)\n"
-                f"Env ALIBABA_SECRET_KEY={env_sk[:4]}... ({len(env_sk)}ch)")
-            oss_cfg = audio_service.oss_config or {}
-            tg.send_message(chat_id,
-                f"[DEBUG] oss_config keys: {list(oss_cfg.keys())}\n"
-                f"ak_in_config={repr(oss_cfg.get('access_key_id'))[:20]}")
+            # Two-pass diarization: fun-asr-mtl (speakers) + qwen3-asr-flash-filetrans (text)
+            def _diar_progress(stage):
+                if status_message_id:
+                    tg.edit_message_text(chat_id, status_message_id, stage)
+
             raw_text, segments = audio_service.transcribe_with_diarization(
                 converted_path,
-                progress_callback=lambda stage: (
-                    tg.edit_message_text(chat_id, status_message_id, stage)
-                    if status_message_id else None
-                )
+                progress_callback=_diar_progress
             )
-            tg.send_message(chat_id,
-                f"[DEBUG] diarization result: raw_text={len(raw_text) if raw_text else 'None'} chars, "
-                f"segments={len(segments)}, "
-                f"speakers={len(set(s.get('speaker_id') for s in segments)) if segments else 0}")
+
             if segments:
-                # DEBUG: show first 3 segments
-                for i, seg in enumerate(segments[:3]):
-                    tg.send_message(chat_id,
-                        f"[DEBUG] seg[{i}]: spk={seg.get('speaker_id')} text={seg.get('text', '')[:80]}")
                 text = audio_service.format_dialogue(segments)
                 is_dialogue = True
-                tg.send_message(chat_id,
-                    f"[DEBUG] format_dialogue: {len(text)} chars, is_dialogue=True\n"
-                    f"First 200: {text[:200]}")
             else:
                 # Fallback: regular transcription
-                tg.send_message(chat_id,
-                    f"[DEBUG] No segments, falling back to regular ASR. raw_text={'Yes' if raw_text else 'None'}")
                 def chunk_progress(current, total):
                     if status_message_id and total > 1:
                         tg.edit_message_text(chat_id, status_message_id,
@@ -504,10 +479,6 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             if status_message_id:
                 tg.edit_message_text(chat_id, status_message_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
-            # DEBUG
-            if dialogue_mode:
-                tg.send_message(chat_id,
-                    f"[DEBUG] LLM call: is_dialogue={is_dialogue}, is_chunked={is_chunked}, text={len(text)} chars")
             formatted_text = audio_service.format_text_with_qwen(
                 text, use_code_tags=use_code_tags, use_yo=use_yo,
                 is_chunked=is_chunked, is_dialogue=is_dialogue)

@@ -5,7 +5,7 @@
 | Property | Value |
 |----------|-------|
 | **Version** | v3.6.0 |
-| **ASR** | `qwen3-asr-flash` (REST), `fun-asr-mtl` (diarization) |
+| **ASR** | `qwen3-asr-flash` (REST), `fun-asr-mtl` + `qwen3-asr-flash-filetrans` (two-pass diarization) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
 | **Region** | eu-central-1 (Frankfurt) |
@@ -15,10 +15,11 @@
 | Service | Model | Endpoint |
 |---------|-------|----------|
 | ASR | `qwen3-asr-flash` | `https://dashscope-intl.aliyuncs.com/api/v1` |
-| Diarization | `fun-asr-mtl` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
+| Diarization (speakers) | `fun-asr-mtl` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
+| Diarization (text) | `qwen3-asr-flash-filetrans` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
 | LLM | `qwen-turbo` | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
 
-**DO NOT USE:** ~~paraformer-v1/v2~~, ~~WebSocket ASR~~, ~~dashscope.aliyuncs.com~~ (use `-intl`)
+**DO NOT USE:** ~~paraformer-v1/v2~~ (China-only), ~~WebSocket ASR~~, ~~dashscope.aliyuncs.com~~ (use `-intl`)
 
 ---
 
@@ -106,10 +107,13 @@ alibaba/
 2. File mode (`long_text_mode: file`): delete status → send .txt with caption
 3. Split mode (default): delete status → `send_long_message()`
 
-### Diarization (v3.6.0)
-- Fun-ASR async API: OSS upload → POST → poll 5s (max 5min) → fetch → cleanup
+### Diarization (v3.6.0 — two-pass)
+- Pass 1: `fun-asr-mtl` — speaker labels + timestamps (no Russian)
+- Pass 2: `qwen3-asr-flash-filetrans` — accurate Russian text + timestamps
+- Both passes run in parallel via ThreadPoolExecutor, single OSS upload
+- `_align_speakers_with_text()` merges by timestamp overlap (sliding window)
 - `format_dialogue()` merges consecutive same-speaker segments, em-dash (—) format
-- Fallback: diarization fails → regular Qwen3-ASR path
+- Fallback cascade: Pass 1 fail → text without speakers; Pass 2 fail → Pass 1 text; Both fail → regular ASR
 
 ### Error Notifications (v3.6.0)
 - `TelegramErrorHandler` sends ERROR+ to OWNER_ID (60s cooldown)

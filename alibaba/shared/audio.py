@@ -569,9 +569,9 @@ class AudioService:
             logging.warning(f"Failed to delete from OSS: {e}")
 
     def _upload_to_oss_with_url(self, local_path: str, expiry: int = 3600) -> Tuple[Optional[str], Optional[str]]:
-        """Upload to OSS and return (oss_key, signed_https_url) for Fun-ASR.
+        """Upload to OSS and return (oss_key, signed_https_url) for async ASR.
 
-        Fun-ASR requires an HTTPS URL (not oss:// protocol).
+        Async ASR APIs require an HTTPS URL (not oss:// protocol).
 
         Args:
             local_path: Path to local file
@@ -598,7 +598,11 @@ class AudioService:
     def transcribe_with_diarization(self, audio_path: str, language: str = 'ru',
                                      speaker_count: int = 0,
                                      progress_callback=None) -> Tuple[Optional[str], List[dict]]:
-        """Transcribe with speaker diarization via Fun-ASR (async API).
+        """Two-pass diarization: fun-asr-mtl (speakers) + qwen3-asr-flash-filetrans (Russian text).
+
+        Pass 1 (fun-asr-mtl): speaker labels + timestamps (no Russian support)
+        Pass 2 (qwen3-asr-flash-filetrans): accurate Russian text + timestamps
+        Merge: align speaker labels with text segments by timestamp overlap.
 
         Args:
             audio_path: Path to audio file
@@ -610,144 +614,124 @@ class AudioService:
             (raw_text, segments) where segments = [{'speaker_id', 'text', 'begin_time', 'end_time'}]
             Returns (None, []) on failure (caller should fallback to regular ASR)
         """
-        import requests
+        from concurrent.futures import ThreadPoolExecutor
 
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
         if not api_key:
             logging.warning("DASHSCOPE_API_KEY not configured for diarization")
             return None, []
 
+        oss_key = None
         try:
-            # Step 1: Upload to OSS
-            if progress_callback:
-                progress_callback("\U0001f4e4 Загружаю для анализа...")
-
+            # Step 1: Upload to OSS (once, shared by both passes)
             oss_key, signed_url = self._upload_to_oss_with_url(audio_path)
             if not signed_url:
                 logging.warning("Failed to upload to OSS for diarization")
                 return None, []
 
-            # Step 2: Submit async transcription with diarization
             if progress_callback:
                 progress_callback("\U0001f504 Распознаю с диаризацией...")
 
-            url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "X-DashScope-Async": "enable"
-            }
-
-            payload = {
-                "model": "fun-asr-mtl",
-                "input": {
-                    "file_urls": [signed_url]
-                },
-                "parameters": {
-                    "language_hints": [language],
-                    "diarization_enabled": True
-                }
-            }
-
+            # Step 2: Launch both passes in parallel
+            spk_params: dict = {'diarization_enabled': True}
             if speaker_count > 0:
-                payload["parameters"]["speaker_count"] = speaker_count
+                spk_params['speaker_count'] = speaker_count
 
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            if response.status_code != 200:
-                error_data = response.json() if response.text else {}
-                logging.warning(f"Fun-ASR submit failed: {response.status_code} - {error_data}")
-                self._cleanup_oss_key(oss_key)
+            txt_params = {'language_hints': [language]}
+
+            spk_result = None
+            txt_result = None
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_spk = executor.submit(
+                    self._submit_async_transcription,
+                    signed_url, 'fun-asr-mtl', spk_params, api_key)
+                future_txt = executor.submit(
+                    self._submit_async_transcription,
+                    signed_url, 'qwen3-asr-flash-filetrans', txt_params, api_key)
+
+                try:
+                    spk_result = future_spk.result()
+                except Exception as e:
+                    logging.warning(f"Pass 1 (fun-asr-mtl) failed: {e}")
+
+                try:
+                    txt_result = future_txt.result()
+                except Exception as e:
+                    logging.warning(f"Pass 2 (qwen3-asr-flash-filetrans) failed: {e}")
+
+            if progress_callback:
+                progress_callback("\U0001f504 Объединяю результаты...")
+
+            # Step 3: Parse results
+            speaker_segments = self._parse_speaker_segments(spk_result) if spk_result else []
+            text_segments = self._parse_text_segments(txt_result) if txt_result else []
+
+            # Fallback cascade
+            if not text_segments and not speaker_segments:
+                logging.warning("Both diarization passes returned no data")
                 return None, []
 
-            task_data = response.json()
-            task_id = task_data.get('output', {}).get('task_id')
-            if not task_id:
-                logging.warning(f"Fun-ASR returned no task_id: {task_data}")
-                self._cleanup_oss_key(oss_key)
-                return None, []
+            if not text_segments:
+                # Pass 2 failed — use Pass 1 text (wrong language but has speakers)
+                logging.warning("Pass 2 failed, using Pass 1 text (may be inaccurate)")
+                raw_texts = [s['text'] for s in speaker_segments if s.get('text')]
+                raw_text = ' '.join(raw_texts) if raw_texts else None
+                return raw_text, speaker_segments
 
-            logging.info(f"Fun-ASR task submitted: {task_id}")
+            if not speaker_segments:
+                # Pass 1 failed — return text without speaker labels
+                logging.warning("Pass 1 failed, returning text without speaker labels")
+                raw_texts = [s['text'] for s in text_segments if s.get('text')]
+                raw_text = ' '.join(raw_texts) if raw_texts else None
+                return raw_text, []
 
-            # Step 3: Poll for completion
-            poll_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
-            poll_headers = {"Authorization": f"Bearer {api_key}"}
+            # Step 4: Merge — align speaker labels with accurate text
+            merged = self._align_speakers_with_text(speaker_segments, text_segments)
 
-            for attempt in range(60):  # Max 5 minutes (60 * 5s)
-                time.sleep(5)
-                poll_response = requests.get(poll_url, headers=poll_headers, timeout=15)
-                if poll_response.status_code != 200:
-                    continue
-
-                poll_data = poll_response.json()
-                task_status = poll_data.get('output', {}).get('task_status', '')
-
-                if task_status == 'SUCCEEDED':
-                    logging.info(f"Fun-ASR task completed after {(attempt + 1) * 5}s")
-                    break
-                elif task_status == 'FAILED':
-                    error_msg = poll_data.get('output', {}).get('message', 'unknown')
-                    logging.warning(f"Fun-ASR task failed: {error_msg}")
-                    self._cleanup_oss_key(oss_key)
-                    return None, []
-
-                if progress_callback and attempt % 3 == 2:
-                    elapsed = (attempt + 1) * 5
-                    progress_callback(f"\U0001f504 Распознаю с диаризацией... ({elapsed}с)")
-            else:
-                logging.warning("Fun-ASR task timed out after 5 minutes")
-                self._cleanup_oss_key(oss_key)
-                return None, []
-
-            # Step 4: Fetch transcription results
-            results = poll_data.get('output', {}).get('results', [])
-            if not results:
-                logging.warning("Fun-ASR returned empty results")
-                self._cleanup_oss_key(oss_key)
-                return None, []
-
-            # Parse transcription URL from results
-            transcription_url = results[0].get('transcription_url')
-            if not transcription_url:
-                logging.warning("No transcription_url in Fun-ASR results")
-                self._cleanup_oss_key(oss_key)
-                return None, []
-
-            trans_response = requests.get(transcription_url, timeout=30)
-            trans_data = trans_response.json()
-
-            # Parse sentences with speaker_id
-            transcripts = trans_data.get('transcripts', [])
-            segments = []
-            raw_texts = []
-
-            for transcript in transcripts:
-                sentences = transcript.get('sentences', [])
-                for sentence in sentences:
-                    seg = {
-                        'speaker_id': sentence.get('speaker_id', 0),
-                        'text': sentence.get('text', '').strip(),
-                        'begin_time': sentence.get('begin_time', 0),
-                        'end_time': sentence.get('end_time', 0)
-                    }
-                    if seg['text']:
-                        segments.append(seg)
-                        raw_texts.append(seg['text'])
-
+            raw_texts = [s['text'] for s in merged if s.get('text')]
             raw_text = ' '.join(raw_texts)
-            logging.info(f"Fun-ASR diarization: {len(segments)} segments, "
-                         f"{len(set(s['speaker_id'] for s in segments))} speakers, "
+
+            logging.info(f"Two-pass diarization: {len(merged)} segments, "
+                         f"{len(set(s['speaker_id'] for s in merged))} speakers, "
                          f"{len(raw_text)} chars")
 
-            # Step 5: Cleanup OSS
-            self._cleanup_oss_key(oss_key)
-
-            return raw_text, segments
+            return raw_text, merged
 
         except Exception as e:
-            logging.error(f"Diarization failed: {e}", exc_info=True)
-            if 'oss_key' in locals() and oss_key:
-                self._cleanup_oss_key(oss_key)
+            logging.warning(f"Diarization failed: {e}", exc_info=True)
             return None, []
+        finally:
+            self._cleanup_oss_key(oss_key)
+
+    def _parse_speaker_segments(self, trans_data: dict) -> List[dict]:
+        """Parse fun-asr-mtl transcription result into speaker segments."""
+        segments = []
+        for transcript in trans_data.get('transcripts', []):
+            for sentence in transcript.get('sentences', []):
+                seg = {
+                    'speaker_id': sentence.get('speaker_id', 0),
+                    'text': sentence.get('text', '').strip(),
+                    'begin_time': sentence.get('begin_time', 0),
+                    'end_time': sentence.get('end_time', 0)
+                }
+                if seg['begin_time'] is not None and seg['end_time'] is not None:
+                    segments.append(seg)
+        return segments
+
+    def _parse_text_segments(self, trans_data: dict) -> List[dict]:
+        """Parse qwen3-asr-flash-filetrans result into text segments."""
+        segments = []
+        for transcript in trans_data.get('transcripts', []):
+            for sentence in transcript.get('sentences', []):
+                text = sentence.get('text', '').strip()
+                if text:
+                    segments.append({
+                        'text': text,
+                        'begin_time': sentence.get('begin_time', 0),
+                        'end_time': sentence.get('end_time', 0)
+                    })
+        return segments
 
     def _cleanup_oss_key(self, oss_key: Optional[str]):
         """Delete an OSS object by key."""
@@ -760,6 +744,164 @@ class AudioService:
                 logging.info(f"Deleted from OSS: {oss_key}")
             except Exception as e:
                 logging.warning(f"Failed to delete OSS key {oss_key}: {e}")
+
+    def _submit_async_transcription(self, signed_url: str, model: str,
+                                      params: dict, api_key: str,
+                                      poll_interval: int = 5,
+                                      max_wait: int = 240) -> Optional[dict]:
+        """Submit an async transcription job and poll until completion.
+
+        Handles difference in input format:
+        - fun-asr-mtl: {"file_urls": [url]}  (plural, list)
+        - qwen3-asr-flash-filetrans: {"file_url": url}  (singular, string)
+
+        Args:
+            signed_url: HTTPS URL to the audio file
+            model: Model name (fun-asr-mtl or qwen3-asr-flash-filetrans)
+            params: Parameters dict (language_hints, diarization_enabled, etc.)
+            api_key: DashScope API key
+            poll_interval: Seconds between polls (default: 5)
+            max_wait: Maximum wait time in seconds (default: 240)
+
+        Returns:
+            Parsed transcription data dict, or None on failure
+        """
+        import requests
+
+        url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-DashScope-Async": "enable"
+        }
+
+        # Build input based on model
+        if model == 'qwen3-asr-flash-filetrans':
+            input_data = {"file_url": signed_url}
+        else:
+            input_data = {"file_urls": [signed_url]}
+
+        payload = {
+            "model": model,
+            "input": input_data,
+            "parameters": params
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        if response.status_code != 200:
+            error_data = response.json() if response.text else {}
+            logging.warning(f"{model} submit failed: {response.status_code} - {error_data}")
+            return None
+
+        task_data = response.json()
+        task_id = task_data.get('output', {}).get('task_id')
+        if not task_id:
+            logging.warning(f"{model} returned no task_id: {task_data}")
+            return None
+
+        # Poll for completion
+        poll_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
+        poll_headers = {"Authorization": f"Bearer {api_key}"}
+        max_attempts = max_wait // max(poll_interval, 1)
+
+        for attempt in range(max_attempts):
+            time.sleep(poll_interval)
+            poll_response = requests.get(poll_url, headers=poll_headers, timeout=15)
+            if poll_response.status_code != 200:
+                continue
+
+            poll_data = poll_response.json()
+            task_status = poll_data.get('output', {}).get('task_status', '')
+
+            if task_status == 'SUCCEEDED':
+                logging.info(f"{model} task completed after {(attempt + 1) * poll_interval}s")
+                break
+            elif task_status == 'FAILED':
+                error_msg = poll_data.get('output', {}).get('message', 'unknown')
+                logging.warning(f"{model} task failed: {error_msg}")
+                return None
+        else:
+            logging.warning(f"{model} task timed out after {max_wait}s")
+            return None
+
+        # Fetch transcription results
+        results = poll_data.get('output', {}).get('results', [])
+        if not results:
+            logging.warning(f"{model} returned empty results")
+            return None
+
+        transcription_url = results[0].get('transcription_url')
+        if not transcription_url:
+            logging.warning(f"No transcription_url in {model} results")
+            return None
+
+        trans_response = requests.get(transcription_url, timeout=30)
+        return trans_response.json()
+
+    def _align_speakers_with_text(self, speaker_segments: List[dict],
+                                    text_segments: List[dict]) -> List[dict]:
+        """Align speaker labels with text segments using timestamp overlap.
+
+        Both lists must be sorted by begin_time. Uses sliding window for O(n+m).
+
+        Args:
+            speaker_segments: [{'speaker_id', 'begin_time', 'end_time'}, ...]
+                              from fun-asr-mtl (times in milliseconds)
+            text_segments: [{'text', 'begin_time', 'end_time'}, ...]
+                           from qwen3-asr-flash-filetrans (times in milliseconds)
+
+        Returns:
+            Merged list: [{'speaker_id', 'text', 'begin_time', 'end_time'}, ...]
+        """
+        if not speaker_segments or not text_segments:
+            # No speaker info: assign all to speaker 0
+            return [
+                {'speaker_id': 0, 'text': seg['text'],
+                 'begin_time': seg['begin_time'], 'end_time': seg['end_time']}
+                for seg in text_segments
+            ]
+
+        merged = []
+        spk_idx = 0
+
+        for tseg in text_segments:
+            t_begin = tseg['begin_time']
+            t_end = tseg['end_time']
+            best_speaker = 0
+            best_overlap = 0
+
+            # Scan speaker segments starting from spk_idx
+            for i in range(spk_idx, len(speaker_segments)):
+                sseg = speaker_segments[i]
+                s_begin = sseg['begin_time']
+                s_end = sseg['end_time']
+
+                # No more overlap possible (speaker segment starts after text ends)
+                if s_begin >= t_end:
+                    break
+
+                # Calculate overlap
+                overlap_start = max(t_begin, s_begin)
+                overlap_end = min(t_end, s_end)
+                overlap = max(0, overlap_end - overlap_start)
+
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_speaker = sseg['speaker_id']
+
+            # Advance spk_idx: skip speakers that ended before this text began
+            while (spk_idx < len(speaker_segments) and
+                   speaker_segments[spk_idx]['end_time'] <= t_begin):
+                spk_idx += 1
+
+            merged.append({
+                'speaker_id': best_speaker,
+                'text': tseg['text'],
+                'begin_time': t_begin,
+                'end_time': t_end
+            })
+
+        return merged
 
     def format_dialogue(self, segments: List[dict]) -> str:
         """Format diarized segments as Russian dialogue with em-dash.

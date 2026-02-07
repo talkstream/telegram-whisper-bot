@@ -218,57 +218,11 @@ class TestSendAsFile:
 # ============== transcribe_with_diarization Tests ==============
 
 class TestTranscribeWithDiarization:
-    """Test Fun-ASR diarization (mocked API calls)."""
-
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_diarization_success(self, mock_post, mock_get, audio_service):
-        """Test successful diarization flow."""
-        # Mock OSS upload
-        mock_bucket = MagicMock()
-        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
-        audio_service._oss_bucket = mock_bucket
-
-        # Mock API responses
-        submit_response = MagicMock()
-        submit_response.status_code = 200
-        submit_response.json.return_value = {
-            'output': {'task_id': 'test-task-123'}
-        }
-
-        poll_response = MagicMock()
-        poll_response.status_code = 200
-        poll_response.json.return_value = {
-            'output': {
-                'task_status': 'SUCCEEDED',
-                'results': [{'transcription_url': 'https://example.com/result.json'}]
-            }
-        }
-
-        trans_response = MagicMock()
-        trans_response.json.return_value = {
-            'transcripts': [{
-                'sentences': [
-                    {'speaker_id': 0, 'text': 'Привет', 'begin_time': 0, 'end_time': 1000},
-                    {'speaker_id': 1, 'text': 'Привет, как дела?', 'begin_time': 1000, 'end_time': 3000},
-                ]
-            }]
-        }
-
-        mock_post.return_value = submit_response
-        mock_get.side_effect = [poll_response, trans_response]
-
-        raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
-
-        assert raw_text is not None
-        assert len(segments) == 2
-        assert segments[0]['speaker_id'] == 0
-        assert segments[1]['text'] == 'Привет, как дела?'
+    """Test two-pass diarization (mocked API calls)."""
 
     def test_diarization_no_api_key(self):
         """Test graceful failure when no API key."""
         svc = AudioService(whisper_backend='qwen-asr', alibaba_api_key=None)
-        # Clear env var to ensure no fallback
         with patch.dict(os.environ, {'DASHSCOPE_API_KEY': ''}, clear=False):
             raw_text, segments = svc.transcribe_with_diarization('/tmp/test.mp3')
         assert raw_text is None
@@ -276,9 +230,8 @@ class TestTranscribeWithDiarization:
 
     def test_diarization_oss_failure(self, audio_service):
         """Test fallback when OSS upload fails."""
-        audio_service._oss_bucket = None  # Force OSS failure
+        audio_service._oss_bucket = None
         audio_service.oss_config = {}
-
         raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
         assert raw_text is None
         assert segments == []
@@ -366,20 +319,16 @@ class TestUploadToOssWithUrl:
 # ============== Diarization Model Tests ==============
 
 class TestDiarizationModel:
-    """Verify diarization uses fun-asr-mtl (multilingual, incl. Russian)."""
+    """Verify two-pass diarization uses correct models."""
 
     @patch('requests.get')
     @patch('requests.post')
-    def test_diarization_uses_fun_asr_mtl(self, mock_post, mock_get, audio_service):
-        """Verify payload contains model=fun-asr-mtl, not fun-asr."""
-        mock_bucket = MagicMock()
-        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
-        audio_service._oss_bucket = mock_bucket
-
+    def test_submit_async_fun_asr_mtl_uses_file_urls(self, mock_post, mock_get, audio_service):
+        """Verify fun-asr-mtl payload uses file_urls (plural, list)."""
         submit_response = MagicMock()
         submit_response.status_code = 200
         submit_response.json.return_value = {
-            'output': {'task_id': 'test-task-456'}
+            'output': {'task_id': 'test-task-spk'}
         }
 
         poll_response = MagicMock()
@@ -387,29 +336,339 @@ class TestDiarizationModel:
         poll_response.json.return_value = {
             'output': {
                 'task_status': 'SUCCEEDED',
-                'results': [{'transcription_url': 'https://example.com/result.json'}]
+                'results': [{'transcription_url': 'https://example.com/spk.json'}]
             }
         }
 
         trans_response = MagicMock()
         trans_response.json.return_value = {
-            'transcripts': [{
-                'sentences': [
-                    {'speaker_id': 0, 'text': 'Тест', 'begin_time': 0, 'end_time': 1000},
-                ]
-            }]
+            'transcripts': [{'sentences': [
+                {'speaker_id': 0, 'text': 'test', 'begin_time': 0, 'end_time': 1000}
+            ]}]
         }
 
         mock_post.return_value = submit_response
         mock_get.side_effect = [poll_response, trans_response]
 
-        audio_service.transcribe_with_diarization('/tmp/test.mp3')
+        audio_service._submit_async_transcription(
+            'https://oss.example.com/file.mp3', 'fun-asr-mtl',
+            {'diarization_enabled': True}, 'test-key', poll_interval=1, max_wait=5)
 
-        # Verify the POST payload uses fun-asr-mtl
         post_call = mock_post.call_args
         payload = post_call[1]['json']
-        assert payload['model'] == 'fun-asr-mtl', \
-            f"Expected fun-asr-mtl, got {payload['model']}"
+        assert payload['model'] == 'fun-asr-mtl'
+        assert 'file_urls' in payload['input']
+        assert isinstance(payload['input']['file_urls'], list)
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_submit_async_qwen_filetrans_uses_file_url(self, mock_post, mock_get, audio_service):
+        """Verify qwen3-asr-flash-filetrans payload uses file_url (singular, string)."""
+        submit_response = MagicMock()
+        submit_response.status_code = 200
+        submit_response.json.return_value = {
+            'output': {'task_id': 'test-task-txt'}
+        }
+
+        poll_response = MagicMock()
+        poll_response.status_code = 200
+        poll_response.json.return_value = {
+            'output': {
+                'task_status': 'SUCCEEDED',
+                'results': [{'transcription_url': 'https://example.com/txt.json'}]
+            }
+        }
+
+        trans_response = MagicMock()
+        trans_response.json.return_value = {
+            'transcripts': [{'sentences': [
+                {'text': 'тестовый текст', 'begin_time': 0, 'end_time': 1000}
+            ]}]
+        }
+
+        mock_post.return_value = submit_response
+        mock_get.side_effect = [poll_response, trans_response]
+
+        audio_service._submit_async_transcription(
+            'https://oss.example.com/file.mp3', 'qwen3-asr-flash-filetrans',
+            {'language_hints': ['ru']}, 'test-key', poll_interval=1, max_wait=5)
+
+        post_call = mock_post.call_args
+        payload = post_call[1]['json']
+        assert payload['model'] == 'qwen3-asr-flash-filetrans'
+        assert 'file_url' in payload['input']
+        assert isinstance(payload['input']['file_url'], str)
+
+
+# ============== _align_speakers_with_text Tests ==============
+
+class TestAlignSpeakersWithText:
+    """Test timestamp-based alignment of speaker labels with text segments."""
+
+    def test_perfect_alignment(self, audio_service):
+        """Segments with matching timestamps align perfectly."""
+        speakers = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 2000},
+            {'speaker_id': 1, 'begin_time': 2000, 'end_time': 5000},
+        ]
+        texts = [
+            {'text': 'Привет', 'begin_time': 0, 'end_time': 2000},
+            {'text': 'Здравствуйте', 'begin_time': 2000, 'end_time': 5000},
+        ]
+        result = audio_service._align_speakers_with_text(speakers, texts)
+        assert len(result) == 2
+        assert result[0]['speaker_id'] == 0
+        assert result[0]['text'] == 'Привет'
+        assert result[1]['speaker_id'] == 1
+        assert result[1]['text'] == 'Здравствуйте'
+
+    def test_overlap_picks_best_match(self, audio_service):
+        """Text segment overlapping two speakers picks the one with more overlap."""
+        speakers = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 3000},
+            {'speaker_id': 1, 'begin_time': 3000, 'end_time': 6000},
+        ]
+        # Text spans 1000-4000: overlaps 2000ms with spk0, 1000ms with spk1
+        texts = [
+            {'text': 'Текст на границе', 'begin_time': 1000, 'end_time': 4000},
+        ]
+        result = audio_service._align_speakers_with_text(speakers, texts)
+        assert len(result) == 1
+        assert result[0]['speaker_id'] == 0  # More overlap
+
+    def test_no_speaker_segments(self, audio_service):
+        """Empty speaker list assigns all to speaker 0."""
+        texts = [
+            {'text': 'Текст', 'begin_time': 0, 'end_time': 1000},
+        ]
+        result = audio_service._align_speakers_with_text([], texts)
+        assert len(result) == 1
+        assert result[0]['speaker_id'] == 0
+
+    def test_no_text_segments(self, audio_service):
+        """Empty text list returns empty result."""
+        speakers = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 1000},
+        ]
+        result = audio_service._align_speakers_with_text(speakers, [])
+        assert result == []
+
+    def test_many_segments_alignment(self, audio_service):
+        """Multiple segments align correctly in sequence."""
+        speakers = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 2000},
+            {'speaker_id': 1, 'begin_time': 2000, 'end_time': 4000},
+            {'speaker_id': 0, 'begin_time': 4000, 'end_time': 6000},
+        ]
+        texts = [
+            {'text': 'Первый', 'begin_time': 100, 'end_time': 1900},
+            {'text': 'Второй', 'begin_time': 2100, 'end_time': 3900},
+            {'text': 'Третий', 'begin_time': 4100, 'end_time': 5900},
+        ]
+        result = audio_service._align_speakers_with_text(speakers, texts)
+        assert len(result) == 3
+        assert result[0]['speaker_id'] == 0
+        assert result[1]['speaker_id'] == 1
+        assert result[2]['speaker_id'] == 0
+
+
+# ============== _submit_async_transcription Tests ==============
+
+class TestSubmitAsyncTranscription:
+    """Test the shared async transcription helper."""
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_submit_timeout(self, mock_post, mock_get, audio_service):
+        """Timeout returns None."""
+        submit_response = MagicMock()
+        submit_response.status_code = 200
+        submit_response.json.return_value = {
+            'output': {'task_id': 'test-timeout'}
+        }
+        mock_post.return_value = submit_response
+
+        # Always return RUNNING status
+        poll_response = MagicMock()
+        poll_response.status_code = 200
+        poll_response.json.return_value = {
+            'output': {'task_status': 'RUNNING'}
+        }
+        mock_get.return_value = poll_response
+
+        result = audio_service._submit_async_transcription(
+            'https://example.com/file.mp3', 'fun-asr-mtl',
+            {'diarization_enabled': True}, 'test-key',
+            poll_interval=1, max_wait=2)
+
+        assert result is None
+
+    @patch('requests.post')
+    def test_submit_api_error(self, mock_post, audio_service):
+        """API error returns None."""
+        error_response = MagicMock()
+        error_response.status_code = 400
+        error_response.text = '{"code": "BadRequest"}'
+        error_response.json.return_value = {'code': 'BadRequest'}
+        mock_post.return_value = error_response
+
+        result = audio_service._submit_async_transcription(
+            'https://example.com/file.mp3', 'fun-asr-mtl',
+            {}, 'test-key')
+
+        assert result is None
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_submit_task_failed(self, mock_post, mock_get, audio_service):
+        """Task FAILED status returns None."""
+        submit_response = MagicMock()
+        submit_response.status_code = 200
+        submit_response.json.return_value = {
+            'output': {'task_id': 'test-fail'}
+        }
+        mock_post.return_value = submit_response
+
+        poll_response = MagicMock()
+        poll_response.status_code = 200
+        poll_response.json.return_value = {
+            'output': {'task_status': 'FAILED', 'message': 'Model error'}
+        }
+        mock_get.return_value = poll_response
+
+        result = audio_service._submit_async_transcription(
+            'https://example.com/file.mp3', 'fun-asr-mtl',
+            {}, 'test-key', poll_interval=1, max_wait=5)
+
+        assert result is None
+
+
+# ============== Two-pass Diarization Integration Tests ==============
+
+class TestTwoPassDiarization:
+    """Test the full two-pass diarization flow with mocked _submit_async_transcription."""
+
+    def test_both_passes_succeed(self, audio_service):
+        """Both passes succeed — merged result with speaker labels and Russian text."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
+        audio_service._oss_bucket = mock_bucket
+
+        spk_data = {
+            'transcripts': [{'sentences': [
+                {'speaker_id': 0, 'text': 'xx', 'begin_time': 0, 'end_time': 2000},
+                {'speaker_id': 1, 'text': 'yy', 'begin_time': 2000, 'end_time': 5000},
+            ]}]
+        }
+        txt_data = {
+            'transcripts': [{'sentences': [
+                {'text': 'Привет', 'begin_time': 0, 'end_time': 2000},
+                {'text': 'Как дела?', 'begin_time': 2000, 'end_time': 5000},
+            ]}]
+        }
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          side_effect=[spk_data, txt_data]):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        assert raw_text is not None
+        assert 'Привет' in raw_text
+        assert len(segments) == 2
+        assert segments[0]['speaker_id'] == 0
+        assert segments[0]['text'] == 'Привет'
+        assert segments[1]['speaker_id'] == 1
+        assert segments[1]['text'] == 'Как дела?'
+
+    def test_pass1_fails_pass2_ok(self, audio_service):
+        """Pass 1 (speakers) fails — return text without speaker labels."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
+        audio_service._oss_bucket = mock_bucket
+
+        txt_data = {
+            'transcripts': [{'sentences': [
+                {'text': 'Привет', 'begin_time': 0, 'end_time': 2000},
+            ]}]
+        }
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          side_effect=[None, txt_data]):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        assert raw_text is not None
+        assert 'Привет' in raw_text
+        assert segments == []  # No speaker info available
+
+    def test_pass2_fails_pass1_ok(self, audio_service):
+        """Pass 2 (text) fails — return Pass 1 text with speakers (wrong language)."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
+        audio_service._oss_bucket = mock_bucket
+
+        spk_data = {
+            'transcripts': [{'sentences': [
+                {'speaker_id': 0, 'text': 'スピーカー0', 'begin_time': 0, 'end_time': 2000},
+                {'speaker_id': 1, 'text': 'スピーカー1', 'begin_time': 2000, 'end_time': 5000},
+            ]}]
+        }
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          side_effect=[spk_data, None]):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        assert raw_text is not None
+        assert len(segments) == 2
+        assert segments[0]['speaker_id'] == 0
+
+    def test_both_passes_fail(self, audio_service):
+        """Both passes fail — return (None, [])."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
+        audio_service._oss_bucket = mock_bucket
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          side_effect=[None, None]):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        assert raw_text is None
+        assert segments == []
+
+
+# ============== _parse_speaker_segments / _parse_text_segments Tests ==============
+
+class TestParseSegments:
+    """Test parsing helpers for transcription results."""
+
+    def test_parse_speaker_segments(self, audio_service):
+        data = {
+            'transcripts': [{'sentences': [
+                {'speaker_id': 0, 'text': 'hello', 'begin_time': 0, 'end_time': 1000},
+                {'speaker_id': 1, 'text': 'world', 'begin_time': 1000, 'end_time': 2000},
+            ]}]
+        }
+        result = audio_service._parse_speaker_segments(data)
+        assert len(result) == 2
+        assert result[0]['speaker_id'] == 0
+        assert result[1]['speaker_id'] == 1
+
+    def test_parse_text_segments(self, audio_service):
+        data = {
+            'transcripts': [{'sentences': [
+                {'text': 'Привет', 'begin_time': 0, 'end_time': 1000},
+                {'text': '', 'begin_time': 1000, 'end_time': 2000},  # empty — skipped
+                {'text': 'Мир', 'begin_time': 2000, 'end_time': 3000},
+            ]}]
+        }
+        result = audio_service._parse_text_segments(data)
+        assert len(result) == 2
+        assert result[0]['text'] == 'Привет'
+        assert result[1]['text'] == 'Мир'
+
+    def test_parse_empty_data(self, audio_service):
+        assert audio_service._parse_speaker_segments({}) == []
+        assert audio_service._parse_text_segments({}) == []
+        assert audio_service._parse_speaker_segments({'transcripts': []}) == []
+        assert audio_service._parse_text_segments({'transcripts': []}) == []
 
 
 # ============== ASR language_hints Tests ==============

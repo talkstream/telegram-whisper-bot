@@ -18,17 +18,26 @@
 
 ---
 
-## Diarization (v3.6.0)
+## Diarization (v3.6.0 — two-pass)
+
+Two parallel async passes, single OSS upload:
+
+| Pass | Model | Purpose | Russian |
+|------|-------|---------|---------|
+| 1 (speakers) | `fun-asr-mtl` | Speaker labels + timestamps | No |
+| 2 (text) | `qwen3-asr-flash-filetrans` | Accurate text + timestamps | Yes |
 
 | Parameter | Value |
 |-----------|-------|
-| Model | `fun-asr-mtl` |
 | Protocol | Async API (`X-DashScope-Async: enable`) |
 | Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
-| Input | File URL (signed OSS URL, NOT base64) |
-| Poll interval | 5s, max 5 min |
+| Input (fun-asr-mtl) | `file_urls` (list) — signed OSS URL |
+| Input (qwen3-filetrans) | `file_url` (string) — signed OSS URL |
+| Poll interval | 5s, max 240s |
 
-Flow: upload to OSS → POST async → poll → fetch result → cleanup OSS
+Flow: upload to OSS → launch both passes in parallel → poll → merge by timestamps → cleanup OSS
+
+**DO NOT USE:** `paraformer-v2` (China-only, `"Model not exist"` on intl endpoint)
 
 Requires: `OSS_BUCKET`, `OSS_ENDPOINT`, `ALIBABA_ACCESS_KEY/SECRET_KEY`
 
