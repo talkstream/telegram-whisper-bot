@@ -33,6 +33,8 @@ Two parallel async passes, single OSS upload:
 | Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
 | Input (fun-asr-mtl) | `file_urls` (list) — signed OSS URL |
 | Input (qwen3-filetrans) | `file_url` (string) — signed OSS URL |
+| Language (fun-asr-mtl) | `language_hints: ["ru"]` (list) |
+| Language (qwen3-filetrans) | `language: "ru"` (string) |
 | Poll interval | 5s, max 240s |
 
 Flow: upload to OSS → launch both passes in parallel → poll → merge by timestamps → cleanup OSS

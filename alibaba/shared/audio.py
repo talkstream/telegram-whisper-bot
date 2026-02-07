@@ -637,7 +637,7 @@ class AudioService:
             if speaker_count > 0:
                 spk_params['speaker_count'] = speaker_count
 
-            txt_params = {'language_hints': [language]}
+            txt_params = {'language': language}
 
             spk_result = None
             txt_result = None

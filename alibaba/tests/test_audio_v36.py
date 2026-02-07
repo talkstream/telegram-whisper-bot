@@ -391,7 +391,7 @@ class TestDiarizationModel:
 
         audio_service._submit_async_transcription(
             'https://oss.example.com/file.mp3', 'qwen3-asr-flash-filetrans',
-            {'language_hints': ['ru']}, 'test-key', poll_interval=1, max_wait=5)
+            {'language': 'ru'}, 'test-key', poll_interval=1, max_wait=5)
 
         post_call = mock_post.call_args
         payload = post_call[1]['json']
@@ -632,6 +632,27 @@ class TestTwoPassDiarization:
 
         assert raw_text is None
         assert segments == []
+
+    def test_language_params_per_model(self, audio_service):
+        """Verify Pass 1 gets diarization_enabled, Pass 2 gets language (not language_hints)."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
+        audio_service._oss_bucket = mock_bucket
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          return_value=None) as mock_submit:
+            audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        assert mock_submit.call_count == 2
+        # Pass 1: fun-asr-mtl with diarization params
+        spk_call = mock_submit.call_args_list[0]
+        assert spk_call[0][1] == 'fun-asr-mtl'
+        assert 'diarization_enabled' in spk_call[0][2]
+        # Pass 2: qwen3-asr-flash-filetrans with language (string, not list)
+        txt_call = mock_submit.call_args_list[1]
+        assert txt_call[0][1] == 'qwen3-asr-flash-filetrans'
+        assert txt_call[0][2] == {'language': 'ru'}
+        assert 'language_hints' not in txt_call[0][2]
 
 
 # ============== _parse_speaker_segments / _parse_text_segments Tests ==============
