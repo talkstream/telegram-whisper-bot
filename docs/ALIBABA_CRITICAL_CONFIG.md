@@ -22,7 +22,7 @@
 
 | Parameter | Value |
 |-----------|-------|
-| Model | `fun-asr` |
+| Model | `fun-asr-mtl` |
 | Protocol | Async API (`X-DashScope-Async: enable`) |
 | Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
 | Input | File URL (signed OSS URL, NOT base64) |

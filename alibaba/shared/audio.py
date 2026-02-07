@@ -635,7 +635,7 @@ class AudioService:
             }
 
             payload = {
-                "model": "fun-asr",
+                "model": "fun-asr-mtl",
                 "input": {
                     "file_urls": [signed_url]
                 },
@@ -933,7 +933,8 @@ class AudioService:
                 "parameters": {
                     "result_format": "message",
                     "asr_options": {
-                        "enable_itn": True
+                        "enable_itn": True,
+                        "language_hints": ["ru"]
                     }
                 }
             }

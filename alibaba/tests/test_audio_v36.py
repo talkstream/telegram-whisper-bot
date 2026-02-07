@@ -361,3 +361,166 @@ class TestUploadToOssWithUrl:
         key, url = svc._upload_to_oss_with_url('/tmp/test.mp3')
         assert key is None
         assert url is None
+
+
+# ============== Diarization Model Tests ==============
+
+class TestDiarizationModel:
+    """Verify diarization uses fun-asr-mtl (multilingual, incl. Russian)."""
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_diarization_uses_fun_asr_mtl(self, mock_post, mock_get, audio_service):
+        """Verify payload contains model=fun-asr-mtl, not fun-asr."""
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed-url'
+        audio_service._oss_bucket = mock_bucket
+
+        submit_response = MagicMock()
+        submit_response.status_code = 200
+        submit_response.json.return_value = {
+            'output': {'task_id': 'test-task-456'}
+        }
+
+        poll_response = MagicMock()
+        poll_response.status_code = 200
+        poll_response.json.return_value = {
+            'output': {
+                'task_status': 'SUCCEEDED',
+                'results': [{'transcription_url': 'https://example.com/result.json'}]
+            }
+        }
+
+        trans_response = MagicMock()
+        trans_response.json.return_value = {
+            'transcripts': [{
+                'sentences': [
+                    {'speaker_id': 0, 'text': 'Тест', 'begin_time': 0, 'end_time': 1000},
+                ]
+            }]
+        }
+
+        mock_post.return_value = submit_response
+        mock_get.side_effect = [poll_response, trans_response]
+
+        audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        # Verify the POST payload uses fun-asr-mtl
+        post_call = mock_post.call_args
+        payload = post_call[1]['json']
+        assert payload['model'] == 'fun-asr-mtl', \
+            f"Expected fun-asr-mtl, got {payload['model']}"
+
+
+# ============== ASR language_hints Tests ==============
+
+class TestASRLanguageHints:
+    """Verify qwen3-asr-flash sends language_hints."""
+
+    @patch('requests.post')
+    def test_asr_payload_contains_language_hints(self, mock_post, audio_service):
+        """Verify qwen3-asr-flash payload includes language_hints: ['ru']."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'output': {
+                'choices': [{
+                    'message': {
+                        'content': [{'text': 'Тестовая транскрипция'}]
+                    }
+                }]
+            }
+        }
+        mock_post.return_value = mock_response
+
+        # Create a minimal fake audio file
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+            f.write(b'\xff\xfb\x90\x00' + b'\x00' * 100)  # Minimal MP3 header
+            tmp_path = f.name
+
+        try:
+            audio_service._transcribe_single_qwen_asr(tmp_path)
+
+            # Verify the POST payload
+            post_call = mock_post.call_args
+            payload = post_call[1]['json']
+            asr_options = payload['parameters']['asr_options']
+            assert asr_options.get('language_hints') == ['ru'], \
+                f"Expected language_hints=['ru'], got {asr_options}"
+        finally:
+            os.unlink(tmp_path)
+
+
+# ============== MNS Fallback Tests ==============
+
+class TestMNSFallback:
+    """Test queue_audio_async sync fallback when MNS is unavailable."""
+
+    def test_missing_mns_endpoint_uses_sync_fallback(self):
+        """When MNS_ENDPOINT is empty, should use sync fallback with warning (not error)."""
+        # Import the module-level variables and function
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
+
+        import main as webhook_main
+
+        message = {
+            'chat': {'id': 123},
+            'from': {'id': 456},
+            'message_id': 789,
+        }
+        user = {'user_id': '456', 'balance_minutes': 100}
+
+        with patch.object(webhook_main, 'MNS_ENDPOINT', None), \
+             patch.object(webhook_main, 'ALIBABA_ACCESS_KEY', 'test-key'), \
+             patch.object(webhook_main, 'ALIBABA_SECRET_KEY', 'test-secret'), \
+             patch.object(webhook_main, 'process_audio_sync', return_value='ok') as mock_sync, \
+             patch.object(webhook_main, 'get_db_service') as mock_db, \
+             patch.object(webhook_main, 'get_telegram_service') as mock_tg:
+
+            result = webhook_main.queue_audio_async(
+                message, user, 'file-id', 'voice', 30
+            )
+
+            # Should fall back to sync
+            mock_sync.assert_called_once()
+            assert result == 'ok'
+            # Should NOT create a job in DB (MNS check is before job creation)
+            mock_db.return_value.create_job.assert_not_called()
+
+    def test_mns_publish_failure_cleans_up_job(self):
+        """When MNS publish fails, should mark job failed and use sync fallback."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
+
+        import main as webhook_main
+
+        message = {
+            'chat': {'id': 123},
+            'from': {'id': 456},
+            'message_id': 789,
+        }
+        user = {'user_id': '456', 'balance_minutes': 100}
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.side_effect = ConnectionError("MNS unreachable")
+
+        with patch.object(webhook_main, 'MNS_ENDPOINT', 'https://mns.example.com'), \
+             patch.object(webhook_main, 'ALIBABA_ACCESS_KEY', 'test-key'), \
+             patch.object(webhook_main, 'ALIBABA_SECRET_KEY', 'test-secret'), \
+             patch.object(webhook_main, 'process_audio_sync', return_value='ok') as mock_sync, \
+             patch.object(webhook_main, 'get_db_service') as mock_db, \
+             patch.object(webhook_main, 'get_telegram_service') as mock_tg, \
+             patch('services.mns_service.MNSPublisher', return_value=mock_publisher):
+
+            result = webhook_main.queue_audio_async(
+                message, user, 'file-id', 'voice', 30
+            )
+
+            # Should fall back to sync
+            mock_sync.assert_called_once()
+            assert result == 'ok'
+            # Job was created (MNS config was valid)
+            mock_db.return_value.create_job.assert_called_once()
+            # Job should be marked as failed
+            mock_db.return_value.update_job_status.assert_called_once()

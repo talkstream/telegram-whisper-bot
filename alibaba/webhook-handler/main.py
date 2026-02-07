@@ -57,6 +57,10 @@ SYNC_PROCESSING_THRESHOLD = 60
 # Owner ID for admin commands
 OWNER_ID = int(os.environ.get('OWNER_ID', '0'))
 
+# Log MNS availability at startup
+if not MNS_ENDPOINT:
+    logger.warning("MNS_ENDPOINT not configured — async processing disabled, sync fallback will be used")
+
 # Trial minutes
 TRIAL_MINUTES = 15
 
@@ -584,7 +588,19 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     db = get_db_service()
     tg = get_telegram_service()
 
-    # Create job (include status_message_id for progress updates by audio-processor)
+    # Validate MNS config BEFORE creating job (avoid orphaned DB records)
+    missing = []
+    if not MNS_ENDPOINT:
+        missing.append('MNS_ENDPOINT')
+    if not ALIBABA_ACCESS_KEY:
+        missing.append('ALIBABA_ACCESS_KEY')
+    if not ALIBABA_SECRET_KEY:
+        missing.append('ALIBABA_SECRET_KEY')
+    if missing:
+        logger.warning(f"MNS not available (missing: {', '.join(missing)}), using sync fallback")
+        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
+
+    # Create job only after MNS validation passed
     job_id = str(uuid.uuid4())
     job_data = {
         'job_id': job_id,
@@ -605,9 +621,6 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     try:
         from services.mns_service import MNSPublisher
         import json as json_module
-        # Validate MNS config
-        if not MNS_ENDPOINT or not ALIBABA_ACCESS_KEY or not ALIBABA_SECRET_KEY:
-            raise ValueError("MNS configuration incomplete")
         publisher = MNSPublisher(
             endpoint=MNS_ENDPOINT,
             access_key_id=ALIBABA_ACCESS_KEY,
@@ -616,8 +629,12 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
         logger.info(f"Published job {job_id} to MNS queue")
     except Exception as e:
-        logger.error(f"Failed to publish to MNS: {e}")
-        # Fallback: process sync even if long
+        logger.warning(f"MNS publish failed ({type(e).__name__}: {e}), using sync fallback")
+        # Cleanup orphaned job
+        try:
+            db.update_job_status(job_id, 'failed', error=str(e))
+        except Exception:
+            pass
         return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
 
     # Update status message instead of sending new one

@@ -5,7 +5,7 @@
 | Property | Value |
 |----------|-------|
 | **Version** | v3.6.0 |
-| **ASR** | `qwen3-asr-flash` (REST), `fun-asr` (diarization) |
+| **ASR** | `qwen3-asr-flash` (REST), `fun-asr-mtl` (diarization) |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
 | **Region** | eu-central-1 (Frankfurt) |
@@ -15,7 +15,7 @@
 | Service | Model | Endpoint |
 |---------|-------|----------|
 | ASR | `qwen3-asr-flash` | `https://dashscope-intl.aliyuncs.com/api/v1` |
-| Diarization | `fun-asr` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
+| Diarization | `fun-asr-mtl` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
 | LLM | `qwen-turbo` | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
 
 **DO NOT USE:** ~~paraformer-v1/v2~~, ~~WebSocket ASR~~, ~~dashscope.aliyuncs.com~~ (use `-intl`)
