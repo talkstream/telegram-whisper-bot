@@ -148,9 +148,9 @@ class TestFormatDialogue:
         result = audio_service.format_dialogue(segments)
         lines = result.split('\n\n')
         assert len(lines) == 3
-        assert lines[0] == '\u2014 Привет!'
-        assert lines[1] == '\u2014 Привет, как дела?'
-        assert lines[2] == '\u2014 Хорошо, спасибо.'
+        assert lines[0] == 'Спикер 1:\n\u2014 Привет!'
+        assert lines[1] == 'Спикер 2:\n\u2014 Привет, как дела?'
+        assert lines[2] == 'Спикер 1:\n\u2014 Хорошо, спасибо.'
 
     def test_merge_consecutive_same_speaker(self, audio_service):
         segments = [
@@ -161,7 +161,8 @@ class TestFormatDialogue:
         result = audio_service.format_dialogue(segments)
         lines = result.split('\n\n')
         assert len(lines) == 2
-        assert 'Первая часть. Вторая часть.' in lines[0]
+        assert lines[0] == 'Спикер 1:\n\u2014 Первая часть.\nВторая часть.'
+        assert lines[1] == 'Спикер 2:\n\u2014 Ответ.'
 
     def test_skip_empty_text(self, audio_service):
         segments = [
@@ -173,6 +174,9 @@ class TestFormatDialogue:
         result = audio_service.format_dialogue(segments)
         lines = result.split('\n\n')
         assert len(lines) == 2
+        # speaker_id 1 has only empty text, so unique_speakers = {0, 2}
+        assert lines[0] == 'Спикер 1:\n\u2014 Текст'
+        assert lines[1] == 'Спикер 2:\n\u2014 Ответ'
 
     def test_empty_segments(self, audio_service):
         result = audio_service.format_dialogue([])
@@ -186,7 +190,69 @@ class TestFormatDialogue:
         result = audio_service.format_dialogue(segments)
         lines = result.split('\n\n')
         assert len(lines) == 1
-        assert '\u2014 Монолог часть 1. Монолог часть 2.' == lines[0]
+        assert '\u2014 Монолог часть 1.\nМонолог часть 2.' == lines[0]
+
+    def test_three_speakers(self, audio_service):
+        """Three speakers should get sequential labels by first appearance."""
+        segments = [
+            {'speaker_id': 5, 'text': 'Алло. Здравствуйте.'},
+            {'speaker_id': 10, 'text': 'А вы кто?'},
+            {'speaker_id': 10, 'text': 'Меня зовут Арсений.'},
+            {'speaker_id': 20, 'text': 'Здравствуйте.'},
+            {'speaker_id': 5, 'text': 'Я вас слушаю.'},
+        ]
+        result = audio_service.format_dialogue(segments)
+        lines = result.split('\n\n')
+        assert len(lines) == 4
+        # speaker_map by appearance: {5: 1, 10: 2, 20: 3}
+        assert lines[0] == 'Спикер 1:\n\u2014 Алло. Здравствуйте.'
+        assert lines[1] == 'Спикер 2:\n\u2014 А вы кто?\nМеня зовут Арсений.'
+        assert lines[2] == 'Спикер 3:\n\u2014 Здравствуйте.'
+        assert lines[3] == 'Спикер 1:\n\u2014 Я вас слушаю.'
+
+    def test_single_speaker_no_labels(self, audio_service):
+        """Single speaker should NOT get labels, just em-dash."""
+        segments = [
+            {'speaker_id': 3, 'text': 'Первое предложение.'},
+            {'speaker_id': 3, 'text': 'Второе предложение.'},
+            {'speaker_id': 3, 'text': 'Третье.'},
+        ]
+        result = audio_service.format_dialogue(segments)
+        assert result == '\u2014 Первое предложение.\nВторое предложение.\nТретье.'
+        assert 'Спикер' not in result
+
+    def test_punctuation_only_filtered(self, audio_service):
+        """Segments with only punctuation should be filtered out."""
+        segments = [
+            {'speaker_id': 0, 'text': 'Нормальный текст.'},
+            {'speaker_id': 1, 'text': '.'},
+            {'speaker_id': 1, 'text': '...'},
+            {'speaker_id': 2, 'text': 'Ответ.'},
+        ]
+        result = audio_service.format_dialogue(segments)
+        lines = result.split('\n\n')
+        assert len(lines) == 2
+        assert 'Нормальный текст' in lines[0]
+        assert 'Ответ' in lines[1]
+        # Punctuation-only segments from speaker 1 removed
+        assert '.' not in [l.strip() for l in lines]
+
+    def test_speaker_numbering_by_appearance(self, audio_service):
+        """Speaker IDs should be numbered by order of first appearance, not sorted."""
+        segments = [
+            {'speaker_id': 99, 'text': 'Первый говорящий.'},
+            {'speaker_id': 5, 'text': 'Второй говорящий.'},
+            {'speaker_id': 99, 'text': 'Снова первый.'},
+        ]
+        result = audio_service.format_dialogue(segments)
+        lines = result.split('\n\n')
+        assert len(lines) == 3
+        # speaker 99 appears first → Спикер 1
+        assert lines[0].startswith('Спикер 1:')
+        # speaker 5 appears second → Спикер 2
+        assert lines[1].startswith('Спикер 2:')
+        # speaker 99 again → Спикер 1
+        assert lines[2].startswith('Спикер 1:')
 
 
 # ============== send_as_file Tests ==============
@@ -390,7 +456,7 @@ class TestDiarizationModel:
         poll_response.json.return_value = {
             'output': {
                 'task_status': 'SUCCEEDED',
-                'results': [{'transcription_url': 'https://example.com/txt.json'}]
+                'result': {'transcription_url': 'https://example.com/txt.json'}
             }
         }
 
@@ -413,6 +479,78 @@ class TestDiarizationModel:
         assert payload['model'] == 'qwen3-asr-flash-filetrans'
         assert 'file_url' in payload['input']
         assert isinstance(payload['input']['file_url'], str)
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_submit_async_handles_singular_result(self, mock_post, mock_get, audio_service):
+        """Verify output.result (singular dict) is parsed correctly for qwen3-asr-flash-filetrans."""
+        submit_response = MagicMock()
+        submit_response.status_code = 200
+        submit_response.json.return_value = {
+            'output': {'task_id': 'task-singular'}
+        }
+
+        poll_response = MagicMock()
+        poll_response.status_code = 200
+        poll_response.json.return_value = {
+            'output': {
+                'task_status': 'SUCCEEDED',
+                'result': {'transcription_url': 'https://example.com/singular.json'}
+            }
+        }
+
+        trans_response = MagicMock()
+        trans_response.json.return_value = {
+            'transcripts': [{'sentences': [
+                {'text': 'результат singular', 'begin_time': 0, 'end_time': 2000}
+            ]}]
+        }
+
+        mock_post.return_value = submit_response
+        mock_get.side_effect = [poll_response, trans_response]
+
+        result = audio_service._submit_async_transcription(
+            'https://oss.example.com/file.mp3', 'qwen3-asr-flash-filetrans',
+            {'language': 'ru'}, 'test-key', poll_interval=1, max_wait=5)
+
+        assert result is not None
+        assert result['transcripts'][0]['sentences'][0]['text'] == 'результат singular'
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_submit_async_handles_plural_results(self, mock_post, mock_get, audio_service):
+        """Verify output.results (plural list) is parsed correctly for fun-asr-mtl."""
+        submit_response = MagicMock()
+        submit_response.status_code = 200
+        submit_response.json.return_value = {
+            'output': {'task_id': 'task-plural'}
+        }
+
+        poll_response = MagicMock()
+        poll_response.status_code = 200
+        poll_response.json.return_value = {
+            'output': {
+                'task_status': 'SUCCEEDED',
+                'results': [{'transcription_url': 'https://example.com/plural.json'}]
+            }
+        }
+
+        trans_response = MagicMock()
+        trans_response.json.return_value = {
+            'transcripts': [{'sentences': [
+                {'text': 'результат plural', 'begin_time': 0, 'end_time': 3000}
+            ]}]
+        }
+
+        mock_post.return_value = submit_response
+        mock_get.side_effect = [poll_response, trans_response]
+
+        result = audio_service._submit_async_transcription(
+            'https://oss.example.com/file.mp3', 'fun-asr-mtl',
+            {}, 'test-key', poll_interval=1, max_wait=5)
+
+        assert result is not None
+        assert result['transcripts'][0]['sentences'][0]['text'] == 'результат plural'
 
 
 # ============== _align_speakers_with_text Tests ==============
@@ -437,19 +575,21 @@ class TestAlignSpeakersWithText:
         assert result[1]['speaker_id'] == 1
         assert result[1]['text'] == 'Здравствуйте'
 
-    def test_overlap_picks_best_match(self, audio_service):
-        """Text segment overlapping two speakers picks the one with more overlap."""
+    def test_overlap_splits_across_speakers(self, audio_service):
+        """Text segment overlapping two speakers is split at word level."""
         speakers = [
             {'speaker_id': 0, 'begin_time': 0, 'end_time': 3000},
             {'speaker_id': 1, 'begin_time': 3000, 'end_time': 6000},
         ]
-        # Text spans 1000-4000: overlaps 2000ms with spk0, 1000ms with spk1
+        # Text spans 1000-4000: 3 words, word times ~1000, 2000, 3000
         texts = [
             {'text': 'Текст на границе', 'begin_time': 1000, 'end_time': 4000},
         ]
         result = audio_service._align_speakers_with_text(speakers, texts)
-        assert len(result) == 1
-        assert result[0]['speaker_id'] == 0  # More overlap
+        # Words should be split between speakers (not all to one)
+        assert len(result) >= 1
+        # First words should go to speaker 0, last to speaker 1
+        assert result[0]['speaker_id'] == 0
 
     def test_no_speaker_segments(self, audio_service):
         """Empty speaker list assigns all to speaker 0."""
@@ -481,10 +621,45 @@ class TestAlignSpeakersWithText:
             {'text': 'Третий', 'begin_time': 4100, 'end_time': 5900},
         ]
         result = audio_service._align_speakers_with_text(speakers, texts)
-        assert len(result) == 3
+        # Each single-word text segment maps to one speaker
         assert result[0]['speaker_id'] == 0
         assert result[1]['speaker_id'] == 1
         assert result[2]['speaker_id'] == 0
+
+    def test_align_multi_speaker_in_one_text_segment(self, audio_service):
+        """When one text segment spans multiple speakers, words should be split."""
+        speakers = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 5000},
+            {'speaker_id': 1, 'begin_time': 5000, 'end_time': 10000},
+        ]
+        texts = [
+            {'text': 'Первое слово второе слово третье слово четвёртое слово',
+             'begin_time': 0, 'end_time': 10000},
+        ]
+        result = audio_service._align_speakers_with_text(speakers, texts)
+        assert len(result) == 2  # Split into 2 segments
+        assert result[0]['speaker_id'] == 0
+        assert result[1]['speaker_id'] == 1
+        # Words should be roughly split in half
+        assert len(result[0]['text'].split()) >= 2
+        assert len(result[1]['text'].split()) >= 2
+
+    def test_align_three_speakers_in_one_text_segment(self, audio_service):
+        """One text segment spanning three speakers gets split into three."""
+        speakers = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 3000},
+            {'speaker_id': 1, 'begin_time': 3000, 'end_time': 6000},
+            {'speaker_id': 2, 'begin_time': 6000, 'end_time': 9000},
+        ]
+        texts = [
+            {'text': 'а б в г д е ж з и',
+             'begin_time': 0, 'end_time': 9000},
+        ]
+        result = audio_service._align_speakers_with_text(speakers, texts)
+        assert len(result) == 3
+        assert result[0]['speaker_id'] == 0
+        assert result[1]['speaker_id'] == 1
+        assert result[2]['speaker_id'] == 2
 
 
 # ============== _submit_async_transcription Tests ==============
@@ -983,3 +1158,376 @@ class TestDiarizationDebug:
         """Returns None when no debug data."""
         audio_service._diarization_debug = {}
         assert audio_service.get_diarization_debug() is None
+
+    def test_debug_assemblyai_backend(self, audio_service):
+        """Debug output for AssemblyAI backend."""
+        audio_service._diarization_debug = {
+            'backend': 'assemblyai',
+            'model': 'universal-3-pro',
+            'spk_segments': 3,
+            'unique_speakers': 2,
+            'transcript_id': 'tx_abc123',
+            'merged_detail': 'spk0:Привет; spk1:Здравствуйте',
+            'fallback': 'none',
+        }
+        text = audio_service.get_diarization_debug()
+        assert 'ASSEMBLYAI' in text
+        assert 'universal-3-pro' in text
+        assert 'segments: 3' in text
+        assert 'speakers: 2' in text
+        assert 'tx_abc123' in text
+        # Should NOT contain DashScope Pass 1/2 sections
+        assert 'fun-asr-mtl' not in text
+
+    def test_debug_gemini_backend(self, audio_service):
+        """Debug output for Gemini backend."""
+        audio_service._diarization_debug = {
+            'backend': 'gemini',
+            'model': 'gemini-3-flash-preview',
+            'spk_segments': 5,
+            'unique_speakers': 3,
+            'merged_detail': 'spk0:Привет; spk1:Да; spk2:Нет',
+            'fallback': 'none',
+        }
+        text = audio_service.get_diarization_debug()
+        assert 'GEMINI' in text
+        assert 'gemini-3-flash-preview' in text
+        assert 'segments: 5' in text
+        assert 'speakers: 3' in text
+
+
+# ============== AssemblyAI Backend ==============
+
+class TestDiarizeAssemblyAI:
+    """Tests for _diarize_assemblyai() method."""
+
+    @pytest.fixture
+    def audio_service(self):
+        return AudioService(
+            whisper_backend='qwen-asr',
+            alibaba_api_key='test-key',
+            oss_config={
+                'bucket': 'test-bucket',
+                'endpoint': 'oss-test.aliyuncs.com',
+                'access_key_id': 'test-ak',
+                'access_key_secret': 'test-sk',
+            }
+        )
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_success(self, mock_post, mock_get, mock_sleep, audio_service):
+        """Full success path: upload → submit → poll → parse utterances."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_123'}),
+        ]
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {
+            'status': 'completed',
+            'text': 'Привет. Здравствуйте.',
+            'utterances': [
+                {'speaker': 'A', 'text': 'Привет.', 'start': 0, 'end': 2000},
+                {'speaker': 'B', 'text': 'Здравствуйте.', 'start': 2000, 'end': 5000},
+            ]
+        })
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+
+        assert raw == 'Привет. Здравствуйте.'
+        assert len(segs) == 2
+        assert segs[0]['speaker_id'] == 0
+        assert segs[1]['speaker_id'] == 1
+        assert segs[0]['text'] == 'Привет.'
+        assert segs[1]['text'] == 'Здравствуйте.'
+        assert segs[0]['begin_time'] == 0
+        assert segs[1]['end_time'] == 5000
+        assert audio_service._diarization_debug['backend'] == 'assemblyai'
+        assert audio_service._diarization_debug['transcript_id'] == 'tx_123'
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_three_speakers(self, mock_post, mock_get, mock_sleep, audio_service):
+        """Three speakers mapped to speaker_id 0, 1, 2."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_456'}),
+        ]
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {
+            'status': 'completed',
+            'text': 'A B C',
+            'utterances': [
+                {'speaker': 'A', 'text': 'Hello', 'start': 0, 'end': 1000},
+                {'speaker': 'B', 'text': 'Hi', 'start': 1000, 'end': 2000},
+                {'speaker': 'C', 'text': 'Hey', 'start': 2000, 'end': 3000},
+            ]
+        })
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+
+        assert len(segs) == 3
+        assert segs[0]['speaker_id'] == 0
+        assert segs[1]['speaker_id'] == 1
+        assert segs[2]['speaker_id'] == 2
+        assert audio_service._diarization_debug['unique_speakers'] == 3
+
+    def test_no_api_key(self, audio_service):
+        """Returns (None, []) when ASSEMBLYAI_API_KEY not set."""
+        with patch.dict(os.environ, {}, clear=True):
+            # Ensure the key is not in env
+            os.environ.pop('ASSEMBLYAI_API_KEY', None)
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+        assert raw is None
+        assert segs == []
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('requests.post')
+    def test_upload_failure(self, mock_post, audio_service):
+        """Upload failure returns (None, [])."""
+        mock_post.return_value = MagicMock(status_code=500)
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+        assert raw is None
+        assert segs == []
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_transcription_error(self, mock_post, mock_get, mock_sleep, audio_service):
+        """AssemblyAI returns error status."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_err'}),
+        ]
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {
+            'status': 'error',
+            'error': 'Audio too short',
+        })
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+        assert raw is None
+        assert segs == []
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_progress_callback(self, mock_post, mock_get, mock_sleep, audio_service):
+        """Progress callback is called at each stage."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_123'}),
+        ]
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {
+            'status': 'completed', 'text': 'ok', 'utterances': []
+        })
+        callback = MagicMock()
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            audio_service._diarize_assemblyai('/tmp/test.mp3', progress_callback=callback)
+        assert callback.call_count == 2
+
+
+# ============== Gemini Backend ==============
+
+class TestDiarizeGemini:
+    """Tests for _diarize_gemini() method."""
+
+    @pytest.fixture
+    def audio_service(self):
+        return AudioService(
+            whisper_backend='qwen-asr',
+            alibaba_api_key='test-key',
+            oss_config={
+                'bucket': 'test-bucket',
+                'endpoint': 'oss-test.aliyuncs.com',
+                'access_key_id': 'test-ak',
+                'access_key_secret': 'test-sk',
+            }
+        )
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('requests.post')
+    def test_success(self, mock_post, audio_service):
+        """Full success path with structured output."""
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {
+            'candidates': [{'content': {'parts': [{'text': json.dumps({
+                'segments': [
+                    {'speaker': '1', 'text': 'Привет.'},
+                    {'speaker': '2', 'text': 'Здравствуйте.'},
+                    {'speaker': '1', 'text': 'Как дела?'},
+                ]
+            })}]}}]
+        })
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_gemini('/tmp/test.mp3')
+
+        assert len(segs) == 3
+        assert segs[0]['speaker_id'] == 0
+        assert segs[1]['speaker_id'] == 1
+        assert segs[2]['speaker_id'] == 0  # same speaker as first
+        assert segs[0]['text'] == 'Привет.'
+        assert 'Привет.' in raw
+        assert 'Здравствуйте.' in raw
+        assert audio_service._diarization_debug['backend'] == 'gemini'
+        assert audio_service._diarization_debug['unique_speakers'] == 2
+        # Gemini doesn't provide timestamps
+        assert segs[0]['begin_time'] == 0
+
+    def test_no_api_key(self, audio_service):
+        """Returns (None, []) when GOOGLE_API_KEY not set."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop('GOOGLE_API_KEY', None)
+            os.environ.pop('GEMINI_API_KEY', None)
+            raw, segs = audio_service._diarize_gemini('/tmp/test.mp3')
+        assert raw is None
+        assert segs == []
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('requests.post')
+    def test_api_failure(self, mock_post, audio_service):
+        """Gemini API returns non-200."""
+        mock_post.return_value = MagicMock(status_code=500, text='Internal Server Error')
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_gemini('/tmp/test.mp3')
+        assert raw is None
+        assert segs == []
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('requests.post')
+    def test_gemini_api_key_env(self, mock_post, audio_service):
+        """Accepts GEMINI_API_KEY as alternative env var."""
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {
+            'candidates': [{'content': {'parts': [{'text': json.dumps({
+                'segments': [{'speaker': '1', 'text': 'Тест.'}]
+            })}]}}]
+        })
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'alt-key'}, clear=True):
+            os.environ.pop('GOOGLE_API_KEY', None)
+            raw, segs = audio_service._diarize_gemini('/tmp/test.mp3')
+        assert len(segs) == 1
+        assert segs[0]['text'] == 'Тест.'
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('requests.post')
+    def test_empty_segments_filtered(self, mock_post, audio_service):
+        """Empty text segments are filtered out."""
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {
+            'candidates': [{'content': {'parts': [{'text': json.dumps({
+                'segments': [
+                    {'speaker': '1', 'text': 'Привет.'},
+                    {'speaker': '2', 'text': ''},
+                    {'speaker': '1', 'text': '  '},
+                ]
+            })}]}}]
+        })
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_gemini('/tmp/test.mp3')
+        assert len(segs) == 1  # only non-empty
+
+
+# ============== Backend Routing ==============
+
+class TestDiarizationRouting:
+    """Tests for DIARIZATION_BACKEND routing in transcribe_with_diarization()."""
+
+    @pytest.fixture
+    def audio_service(self):
+        return AudioService(
+            whisper_backend='qwen-asr',
+            alibaba_api_key='test-key',
+            oss_config={
+                'bucket': 'test-bucket',
+                'endpoint': 'oss-test.aliyuncs.com',
+                'access_key_id': 'test-ak',
+                'access_key_secret': 'test-sk',
+            }
+        )
+
+    @patch.object(AudioService, '_diarize_assemblyai')
+    def test_routing_assemblyai(self, mock_assemblyai, audio_service):
+        """DIARIZATION_BACKEND=assemblyai routes to _diarize_assemblyai."""
+        mock_assemblyai.return_value = ('text', [{'speaker_id': 0, 'text': 'hi'}])
+        with patch.dict(os.environ, {'DIARIZATION_BACKEND': 'assemblyai'}):
+            raw, segs = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+        mock_assemblyai.assert_called_once()
+        assert raw == 'text'
+        assert len(segs) == 1
+
+    @patch.object(AudioService, '_diarize_gemini')
+    def test_routing_gemini(self, mock_gemini, audio_service):
+        """DIARIZATION_BACKEND=gemini routes to _diarize_gemini."""
+        mock_gemini.return_value = ('text', [{'speaker_id': 0, 'text': 'hi'}])
+        with patch.dict(os.environ, {'DIARIZATION_BACKEND': 'gemini'}):
+            raw, segs = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+        mock_gemini.assert_called_once()
+        assert raw == 'text'
+        assert len(segs) == 1
+
+    @patch.object(AudioService, '_diarize_assemblyai')
+    @patch.object(AudioService, '_diarize_gemini')
+    @patch.object(AudioService, '_upload_to_oss_with_url')
+    def test_routing_default_dashscope(self, mock_oss, mock_gemini, mock_assemblyai, audio_service):
+        """Default (no env var) skips assemblyai/gemini, goes to dashscope."""
+        mock_oss.return_value = (None, None)  # will fail early in dashscope path
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop('DIARIZATION_BACKEND', None)
+            os.environ['DASHSCOPE_API_KEY'] = 'test'
+            raw, segs = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+        mock_assemblyai.assert_not_called()
+        mock_gemini.assert_not_called()
+
+    @patch.object(AudioService, '_upload_to_oss_with_url')
+    @patch.object(AudioService, '_diarize_assemblyai')
+    def test_fallback_to_dashscope(self, mock_assemblyai, mock_oss, audio_service):
+        """AssemblyAI returns empty segments → falls back to dashscope."""
+        mock_assemblyai.return_value = (None, [])
+        mock_oss.return_value = (None, None)  # dashscope path will fail at OSS
+        with patch.dict(os.environ, {'DIARIZATION_BACKEND': 'assemblyai',
+                                      'DASHSCOPE_API_KEY': 'test'}):
+            raw, segs = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+        mock_assemblyai.assert_called_once()
+        # Dashscope was attempted (OSS upload called)
+        mock_oss.assert_called_once()
+
+    @patch.object(AudioService, '_upload_to_oss_with_url')
+    @patch.object(AudioService, '_diarize_gemini')
+    def test_gemini_fallback_to_dashscope(self, mock_gemini, mock_oss, audio_service):
+        """Gemini returns empty segments → falls back to dashscope."""
+        mock_gemini.return_value = (None, [])
+        mock_oss.return_value = (None, None)
+        with patch.dict(os.environ, {'DIARIZATION_BACKEND': 'gemini',
+                                      'DASHSCOPE_API_KEY': 'test'}):
+            raw, segs = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+        mock_gemini.assert_called_once()
+        mock_oss.assert_called_once()

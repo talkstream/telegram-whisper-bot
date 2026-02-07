@@ -12,6 +12,7 @@ import tempfile
 import subprocess
 import time
 import uuid
+import base64
 from typing import List, Optional, Tuple
 
 
@@ -602,14 +603,225 @@ class AudioService:
             logging.warning(f"OSS upload for diarization failed: {e}")
             return None, None
 
+    def _diarize_assemblyai(self, audio_path: str, language: str = 'ru',
+                            progress_callback=None) -> Tuple[Optional[str], List[dict]]:
+        """Diarization via AssemblyAI Universal-3-Pro.
+
+        Workflow: upload file → submit transcription → poll until complete → parse utterances.
+        Returns (raw_text, segments) or (None, []) on failure.
+        """
+        import requests as req
+
+        api_key = os.environ.get('ASSEMBLYAI_API_KEY')
+        if not api_key:
+            logging.warning("ASSEMBLYAI_API_KEY not configured")
+            return None, []
+
+        self._diarization_debug = {'backend': 'assemblyai'}
+        headers = {'Authorization': api_key}
+
+        try:
+            if progress_callback:
+                progress_callback("\U0001f504 Загружаю аудио в AssemblyAI...")
+
+            # Step 1: Upload file
+            with open(audio_path, 'rb') as f:
+                upload_resp = req.post(
+                    'https://api.assemblyai.com/v2/upload',
+                    headers=headers, data=f, timeout=60)
+            if upload_resp.status_code != 200:
+                logging.warning(f"AssemblyAI upload failed: {upload_resp.status_code}")
+                return None, []
+            upload_url = upload_resp.json()['upload_url']
+
+            if progress_callback:
+                progress_callback("\U0001f504 Распознаю с диаризацией (AssemblyAI)...")
+
+            # Step 2: Submit transcription
+            submit_resp = req.post(
+                'https://api.assemblyai.com/v2/transcript',
+                headers={**headers, 'Content-Type': 'application/json'},
+                json={
+                    'audio_url': upload_url,
+                    'speaker_labels': True,
+                    'language_code': language,
+                },
+                timeout=30)
+            transcript_id = submit_resp.json()['id']
+            self._diarization_debug['transcript_id'] = transcript_id
+
+            # Step 3: Poll until completed
+            poll_url = f'https://api.assemblyai.com/v2/transcript/{transcript_id}'
+            for _ in range(60):  # max 5 minutes (60 x 5s)
+                time.sleep(5)
+                poll_resp = req.get(poll_url, headers=headers, timeout=15)
+                data = poll_resp.json()
+                status = data.get('status')
+                if status == 'completed':
+                    break
+                if status == 'error':
+                    logging.warning(f"AssemblyAI error: {data.get('error')}")
+                    return None, []
+            else:
+                logging.warning("AssemblyAI polling timeout")
+                return None, []
+
+            # Step 4: Parse utterances
+            raw_text = data.get('text', '')
+            utterances = data.get('utterances', [])
+            speaker_ids = {}
+            segments = []
+            for utt in utterances:
+                speaker_label = utt.get('speaker', 'A')
+                if speaker_label not in speaker_ids:
+                    speaker_ids[speaker_label] = len(speaker_ids)
+                segments.append({
+                    'speaker_id': speaker_ids[speaker_label],
+                    'text': utt.get('text', '').strip(),
+                    'begin_time': utt.get('start', 0),
+                    'end_time': utt.get('end', 0),
+                })
+
+            self._diarization_debug.update({
+                'model': 'universal-3-pro',
+                'spk_segments': len(segments),
+                'unique_speakers': len(speaker_ids),
+                'fallback': 'none',
+            })
+            if segments:
+                self._diarization_debug['merged_detail'] = '; '.join(
+                    f"spk{s['speaker_id']}:{s['text'][:20]}" for s in segments[:8])
+
+            return raw_text, segments
+
+        except Exception as e:
+            logging.warning(f"AssemblyAI diarization failed: {e}", exc_info=True)
+            self._diarization_debug['fallback'] = f'exception: {e}'
+            return None, []
+
+    def _diarize_gemini(self, audio_path: str, language: str = 'ru',
+                        progress_callback=None) -> Tuple[Optional[str], List[dict]]:
+        """Diarization via Gemini 3 Flash with audio input and structured output.
+
+        Sends base64-encoded audio to Gemini with a JSON schema for structured diarization output.
+        Returns (raw_text, segments) or (None, []) on failure.
+        """
+        import requests as req
+
+        api_key = os.environ.get('GOOGLE_API_KEY') or os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            logging.warning("GOOGLE_API_KEY not configured for diarization")
+            return None, []
+
+        self._diarization_debug = {'backend': 'gemini'}
+
+        try:
+            if progress_callback:
+                progress_callback("\U0001f504 Распознаю с диаризацией (Gemini)...")
+
+            # Read and base64 encode audio
+            with open(audio_path, 'rb') as f:
+                audio_b64 = base64.b64encode(f.read()).decode('utf-8')
+
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"gemini-3-flash-preview:generateContent?key={api_key}")
+
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"inlineData": {"mimeType": "audio/mpeg", "data": audio_b64}},
+                        {"text": (
+                            "Transcribe this Russian audio conversation with speaker diarization. "
+                            "Identify each unique speaker by voice and label them as \"1\", \"2\", \"3\", etc. "
+                            "Return JSON with a \"segments\" array. Each segment has \"speaker\" (string) "
+                            "and \"text\" (string). "
+                            "Rules: transcribe in Russian, keep original words accurately, "
+                            "each segment = one continuous speech from one speaker, "
+                            "start new segment when speaker changes, do NOT merge different speakers."
+                        )}
+                    ]
+                }],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "responseSchema": {
+                        "type": "object",
+                        "properties": {
+                            "segments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "speaker": {"type": "string"},
+                                        "text": {"type": "string"}
+                                    },
+                                    "required": ["speaker", "text"]
+                                }
+                            }
+                        },
+                        "required": ["segments"]
+                    }
+                }
+            }
+
+            response = req.post(url, json=payload, timeout=120)
+            if response.status_code != 200:
+                logging.warning(f"Gemini diarization failed: {response.status_code} "
+                                f"{response.text[:200]}")
+                return None, []
+
+            # Parse structured JSON response
+            result = response.json()
+            text_content = result['candidates'][0]['content']['parts'][0]['text']
+            parsed = json.loads(text_content)
+            gemini_segments = parsed.get('segments', [])
+
+            # Convert to our format
+            speaker_ids = {}
+            segments = []
+            for seg in gemini_segments:
+                speaker_label = str(seg.get('speaker', '1'))
+                if speaker_label not in speaker_ids:
+                    speaker_ids[speaker_label] = len(speaker_ids)
+                text = seg.get('text', '').strip()
+                if text:
+                    segments.append({
+                        'speaker_id': speaker_ids[speaker_label],
+                        'text': text,
+                        'begin_time': 0,
+                        'end_time': 0,
+                    })
+
+            raw_text = ' '.join(s['text'] for s in segments)
+
+            self._diarization_debug.update({
+                'model': 'gemini-3-flash-preview',
+                'spk_segments': len(segments),
+                'unique_speakers': len(speaker_ids),
+                'fallback': 'none',
+            })
+            if segments:
+                self._diarization_debug['merged_detail'] = '; '.join(
+                    f"spk{s['speaker_id']}:{s['text'][:20]}" for s in segments[:8])
+
+            return raw_text, segments
+
+        except Exception as e:
+            logging.warning(f"Gemini diarization failed: {e}", exc_info=True)
+            self._diarization_debug['fallback'] = f'exception: {e}'
+            return None, []
+
     def transcribe_with_diarization(self, audio_path: str, language: str = 'ru',
                                      speaker_count: int = 0,
                                      progress_callback=None) -> Tuple[Optional[str], List[dict]]:
-        """Two-pass diarization: fun-asr-mtl (speakers) + qwen3-asr-flash-filetrans (Russian text).
+        """Diarization with configurable backend (DIARIZATION_BACKEND env var).
 
-        Pass 1 (fun-asr-mtl): speaker labels + timestamps (no Russian support)
-        Pass 2 (qwen3-asr-flash-filetrans): accurate Russian text + timestamps
-        Merge: align speaker labels with text segments by timestamp overlap.
+        Backends:
+          - 'assemblyai': AssemblyAI Universal-3-Pro (best Russian diarization)
+          - 'gemini': Gemini 3 Flash with structured output
+          - 'dashscope' (default): fun-asr-mtl + qwen3-asr-flash-filetrans two-pass
+
+        All backends return the same format. If selected backend fails,
+        falls back to dashscope automatically.
 
         Args:
             audio_path: Path to audio file
@@ -625,6 +837,26 @@ class AudioService:
 
         self._diarization_debug = {}  # Reset for each call
 
+        # Backend routing
+        backend = os.environ.get('DIARIZATION_BACKEND', 'dashscope')
+
+        if backend == 'assemblyai':
+            result = self._diarize_assemblyai(audio_path, language,
+                                               progress_callback=progress_callback)
+            if result[1]:  # segments not empty
+                return result
+            logging.warning("AssemblyAI returned no segments, falling back to dashscope")
+            self._diarization_debug = {}  # Reset for dashscope path
+
+        elif backend == 'gemini':
+            result = self._diarize_gemini(audio_path, language,
+                                           progress_callback=progress_callback)
+            if result[1]:
+                return result
+            logging.warning("Gemini returned no segments, falling back to dashscope")
+            self._diarization_debug = {}  # Reset for dashscope path
+
+        # Default: DashScope two-pass diarization
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
         if not api_key:
             logging.warning("DASHSCOPE_API_KEY not configured for diarization")
@@ -681,6 +913,18 @@ class AudioService:
             self._diarization_debug['spk_segments'] = len(speaker_segments)
             self._diarization_debug['txt_segments'] = len(text_segments)
 
+            # Debug: segment details (first 5 of each)
+            if speaker_segments:
+                self._diarization_debug['spk_detail'] = '; '.join(
+                    f"spk{s['speaker_id']}[{s['begin_time']}-{s['end_time']}]"
+                    for s in speaker_segments[:5]
+                )
+            if text_segments:
+                self._diarization_debug['txt_detail'] = '; '.join(
+                    f"[{s['begin_time']}-{s['end_time']}]{s['text'][:30]}"
+                    for s in text_segments[:5]
+                )
+
             # Fallback cascade
             if not text_segments and not speaker_segments:
                 logging.warning("Both diarization passes returned no data")
@@ -705,6 +949,12 @@ class AudioService:
 
             # Step 4: Merge — align speaker labels with accurate text
             merged = self._align_speakers_with_text(speaker_segments, text_segments)
+
+            # Debug: merged segment details (first 8)
+            self._diarization_debug['merged_detail'] = '; '.join(
+                f"spk{s['speaker_id']}:{s['text'][:20]}"
+                for s in merged[:8]
+            )
 
             raw_texts = [s['text'] for s in merged if s.get('text')]
             raw_text = ' '.join(raw_texts)
@@ -874,17 +1124,22 @@ class AudioService:
             return None
 
         # Fetch transcription results
-        results = poll_data.get('output', {}).get('results', [])
-        if not results:
-            logging.warning(f"{model} returned empty results")
-            if pfx:
-                self._diarization_debug[f'{pfx}_poll_body'] = str(poll_data)[:500]
-                self._diarization_debug[f'{pfx}_result'] = 'empty_results'
-            return None
+        # DashScope returns different formats per model:
+        #   fun-asr-mtl: output.results = [{transcription_url: ...}]
+        #   qwen3-asr-flash-filetrans: output.result = {transcription_url: ...}
+        output = poll_data.get('output', {})
+        results = output.get('results', [])
+        result_obj = output.get('result', {})
 
-        transcription_url = results[0].get('transcription_url')
+        if results:
+            transcription_url = results[0].get('transcription_url')
+        elif result_obj:
+            transcription_url = result_obj.get('transcription_url')
+        else:
+            transcription_url = None
+
         if not transcription_url:
-            logging.warning(f"No transcription_url in {model} results")
+            logging.warning(f"{model} returned no transcription_url")
             if pfx:
                 self._diarization_debug[f'{pfx}_poll_body'] = str(poll_data)[:500]
                 self._diarization_debug[f'{pfx}_result'] = 'no_transcription_url'
@@ -902,9 +1157,11 @@ class AudioService:
 
     def _align_speakers_with_text(self, speaker_segments: List[dict],
                                     text_segments: List[dict]) -> List[dict]:
-        """Align speaker labels with text segments using timestamp overlap.
+        """Align speaker labels with text using word-level timestamp estimation.
 
-        Both lists must be sorted by begin_time. Uses sliding window for O(n+m).
+        Builds a word stream from text segments (linear interpolation for word times),
+        then assigns each word to the speaker segment that contains its estimated time.
+        Consecutive same-speaker words are merged into segments.
 
         Args:
             speaker_segments: [{'speaker_id', 'begin_time', 'end_time'}, ...]
@@ -923,44 +1180,77 @@ class AudioService:
                 for seg in text_segments
             ]
 
-        merged = []
-        spk_idx = 0
-
+        # Step 1: Build word stream with estimated timestamps
+        word_stream = []  # [(estimated_time_ms, word), ...]
         for tseg in text_segments:
+            words = tseg['text'].split()
+            if not words:
+                continue
             t_begin = tseg['begin_time']
             t_end = tseg['end_time']
-            best_speaker = 0
-            best_overlap = 0
+            duration = max(t_end - t_begin, 1)
+            for i, word in enumerate(words):
+                word_time = t_begin + (i * duration) / len(words)
+                word_stream.append((word_time, word))
 
-            # Scan speaker segments starting from spk_idx
-            for i in range(spk_idx, len(speaker_segments)):
-                sseg = speaker_segments[i]
-                s_begin = sseg['begin_time']
-                s_end = sseg['end_time']
+        if not word_stream:
+            return []
 
-                # No more overlap possible (speaker segment starts after text ends)
-                if s_begin >= t_end:
-                    break
+        # Step 2: Assign each word to a speaker
+        # Use pointer into sorted speaker_segments for O(n+m)
+        spk_idx = 0
+        merged = []
+        current_speaker = None
+        current_words = []
+        current_begin = 0
+        current_end = 0
 
-                # Calculate overlap
-                overlap_start = max(t_begin, s_begin)
-                overlap_end = min(t_end, s_end)
-                overlap = max(0, overlap_end - overlap_start)
-
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_speaker = sseg['speaker_id']
-
-            # Advance spk_idx: skip speakers that ended before this text began
-            while (spk_idx < len(speaker_segments) and
-                   speaker_segments[spk_idx]['end_time'] <= t_begin):
+        for word_time, word in word_stream:
+            # Advance pointer past speaker segments that ended before this word
+            while (spk_idx < len(speaker_segments) - 1 and
+                   speaker_segments[spk_idx]['end_time'] <= word_time):
                 spk_idx += 1
 
+            # Find best speaker: check nearby segments for overlap
+            best_speaker = speaker_segments[0]['speaker_id']
+            best_dist = float('inf')
+            for i in range(max(0, spk_idx - 1),
+                           min(spk_idx + 2, len(speaker_segments))):
+                sseg = speaker_segments[i]
+                if sseg['begin_time'] <= word_time < sseg['end_time']:
+                    best_speaker = sseg['speaker_id']
+                    best_dist = 0
+                    break
+                # In gap: use nearest segment boundary
+                dist = min(abs(word_time - sseg['begin_time']),
+                           abs(word_time - sseg['end_time']))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_speaker = sseg['speaker_id']
+
+            # Accumulate or flush
+            if best_speaker != current_speaker:
+                if current_words:
+                    merged.append({
+                        'speaker_id': current_speaker,
+                        'text': ' '.join(current_words),
+                        'begin_time': current_begin,
+                        'end_time': current_end
+                    })
+                current_speaker = best_speaker
+                current_words = [word]
+                current_begin = word_time
+                current_end = word_time
+            else:
+                current_words.append(word)
+                current_end = word_time
+
+        if current_words:
             merged.append({
-                'speaker_id': best_speaker,
-                'text': tseg['text'],
-                'begin_time': t_begin,
-                'end_time': t_end
+                'speaker_id': current_speaker,
+                'text': ' '.join(current_words),
+                'begin_time': current_begin,
+                'end_time': current_end
             })
 
         return merged
@@ -969,13 +1259,29 @@ class AudioService:
         """Format diarized segments as Russian dialogue with em-dash.
 
         Merges consecutive segments from the same speaker into one block.
+        Shows "Спикер N:" labels when 2+ speakers are present.
+        Filters punctuation-only segments. Numbers speakers by first appearance.
 
         Args:
             segments: List of dicts with 'speaker_id' and 'text' keys
 
         Returns:
-            Formatted dialogue text with em-dash separators
+            Formatted dialogue text with em-dash separators and speaker labels
         """
+        import re
+
+        # Filter punctuation-only segments (e.g. ".", ",", "...")
+        segments = [seg for seg in segments
+                    if re.search(r'[\w]', seg.get('text', ''))]
+
+        # Map speaker IDs to sequential 1-based numbers by first appearance
+        speaker_map = {}
+        for seg in segments:
+            sid = seg.get('speaker_id', 0)
+            if sid not in speaker_map:
+                speaker_map[sid] = len(speaker_map) + 1
+        use_labels = len(speaker_map) > 1
+
         lines = []
         current_speaker = None
         current_texts = []
@@ -987,14 +1293,24 @@ class AudioService:
                 continue
             if speaker != current_speaker:
                 if current_texts:
-                    lines.append(f"\u2014 {' '.join(current_texts)}")
+                    joined = '\n'.join(current_texts)
+                    if use_labels:
+                        label = f"Спикер {speaker_map.get(current_speaker, '?')}"
+                        lines.append(f"{label}:\n\u2014 {joined}")
+                    else:
+                        lines.append(f"\u2014 {joined}")
                 current_speaker = speaker
                 current_texts = [text]
             else:
                 current_texts.append(text)
 
         if current_texts:
-            lines.append(f"\u2014 {' '.join(current_texts)}")
+            joined = '\n'.join(current_texts)
+            if use_labels:
+                label = f"Спикер {speaker_map.get(current_speaker, '?')}"
+                lines.append(f"{label}:\n\u2014 {joined}")
+            else:
+                lines.append(f"\u2014 {joined}")
 
         return "\n\n".join(lines)
 
@@ -1012,6 +1328,22 @@ class AudioService:
 
         lines = ["DIARIZATION DEBUG", ""]
 
+        # AssemblyAI / Gemini backends (return early)
+        if dbg.get('backend') in ('assemblyai', 'gemini'):
+            lines.append(f"--- {dbg['backend'].upper()} ---")
+            lines.append(f"model: {dbg.get('model', 'n/a')}")
+            lines.append(f"segments: {dbg.get('spk_segments', 0)}")
+            lines.append(f"speakers: {dbg.get('unique_speakers', 0)}")
+            if 'transcript_id' in dbg:
+                lines.append(f"transcript_id: {dbg['transcript_id']}")
+            if 'merged_detail' in dbg:
+                lines.append(f"detail: {dbg['merged_detail']}")
+            if 'fallback' in dbg:
+                lines.append(f"fallback: {dbg['fallback']}")
+            text = html.escape('\n'.join(lines))
+            return text[:3900]
+
+        # DashScope two-pass (legacy)
         # Pass 1
         lines.append("--- Pass 1 (fun-asr-mtl) ---")
         lines.append(f"result: {dbg.get('pass1_result', 'n/a')}")
@@ -1054,6 +1386,12 @@ class AudioService:
             lines.append(f"spk_segments: {dbg['spk_segments']}")
         if 'txt_segments' in dbg:
             lines.append(f"txt_segments: {dbg['txt_segments']}")
+        if 'spk_detail' in dbg:
+            lines.append(f"spk_detail: {dbg['spk_detail']}")
+        if 'txt_detail' in dbg:
+            lines.append(f"txt_detail: {dbg['txt_detail']}")
+        if 'merged_detail' in dbg:
+            lines.append(f"merged: {dbg['merged_detail']}")
         if 'fallback' in dbg:
             lines.append(f"fallback: {dbg['fallback']}")
 

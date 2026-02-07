@@ -327,7 +327,12 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         is_chunked = audio_duration > audio.ASR_MAX_CHUNK_DURATION
 
         # Format text (Qwen LLM with Gemini fallback)
-        if len(text) > 100:
+        # Dialogue already formatted by format_dialogue() — skip LLM to preserve speaker order
+        if is_dialogue:
+            formatted_text = text
+            if not use_yo:
+                formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
+        elif len(text) > 100:
             if progress_id:
                 tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
