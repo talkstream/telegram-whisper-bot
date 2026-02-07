@@ -71,7 +71,24 @@ alibaba/
 | `/output` | Toggle long text mode (split/file) |
 | `/dialogue` | Toggle diarization mode (Fun-ASR) |
 
-**Admin commands:** see [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)
+### Admin Commands
+| Command | Description |
+|---------|-------------|
+| `/admin` | Show admin help |
+| `/user [search]` | Search users |
+| `/credit <id> <min>` | Add minutes |
+| `/review_trials` | Review trial requests |
+| `/stat` | Statistics |
+| `/cost` | Processing costs |
+| `/metrics [hours]` | Performance metrics |
+| `/status` | MNS queue status |
+| `/flush` | Clear stuck jobs |
+| `/batch [user_id]` | User queue |
+| `/mute [hours\|off]` | Mute error notifications |
+| `/export` | Export CSV |
+| `/report` | Daily/weekly report |
+
+**Full admin guide:** see [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)
 
 **Tariffs:** see [README.md](README.md#тарифы)
 
@@ -137,6 +154,12 @@ curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
 - Each stage: `edit_message_text` → `send_chat_action('typing')` → heavy work
 - Result replaces status message (or delete+send if >4000 chars)
 - LLM formatting skipped for text <= 100 chars
+
+### Error Notifications (v3.6.0)
+- `TelegramErrorHandler` in `utility.py` sends ERROR+ logs to OWNER_ID
+- 60s cooldown between messages; `/mute <hours>` to silence
+- Mute stored in `/tmp/twbot_mute_until` (resets on cold start)
+- `pythonjsonlogger` not on FC runtime — fallback to stdlib formatter
 
 ### Gemini Fallback (google-genai SDK)
 ```python
