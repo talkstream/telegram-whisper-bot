@@ -347,11 +347,15 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     status_msg = tg.send_message(chat_id, "🎙 Аудио получено. Обрабатываю...")
     status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
 
-    # For short audio (< 60 sec), process synchronously
-    if duration < SYNC_PROCESSING_THRESHOLD:
-        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
-    else:
+    # Diarization requires async (two-pass API polling can exceed webhook 60s timeout)
+    settings_json = user.get('settings', '{}')
+    settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
+    dialogue_mode = settings.get('dialogue_mode', False)
+
+    if dialogue_mode or duration >= SYNC_PROCESSING_THRESHOLD:
         return queue_audio_async(message, user, file_id, file_type, duration, status_message_id)
+    else:
+        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
 
 
 def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
