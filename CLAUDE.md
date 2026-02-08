@@ -161,7 +161,8 @@ Full guide: [alibaba/DEPLOY.md](alibaba/DEPLOY.md)
 | [UX_IMPROVEMENTS.md](docs/UX_IMPROVEMENTS.md) | UX patterns |
 | [DEPLOY.md](alibaba/DEPLOY.md) | Deployment |
 | [VERSION_HISTORY.md](docs/archive/VERSION_HISTORY.md) | Full changelog |
-| [pitch.html](pitch.html) | Investment pitch deck |
+| [pitch.html](pitch.html) | Investment pitch deck (18 slides) |
+| [market-strategy.md](docs/plans/2026-02-09-market-strategy.md) | Market capture & exit strategy |
 
 ## Cost: ~$8/mo
 
