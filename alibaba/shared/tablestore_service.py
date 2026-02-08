@@ -398,7 +398,7 @@ class TablestoreService:
 
     def update_trial_request(self, user_id: int, updates: Dict[str, Any]) -> bool:
         """Update trial request status."""
-        from tablestore import Condition, RowExistenceExpectation
+        from tablestore import Row, Condition, RowExistenceExpectation
 
         try:
             primary_key = [('user_id', str(user_id))]
@@ -408,8 +408,9 @@ class TablestoreService:
             for key, value in updates.items():
                 update_columns['put'].append((key, self._serialize_value(value)))
 
+            row = Row(primary_key, update_columns)
             condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
-            self.client.update_row('trial_requests', primary_key, update_columns, condition)
+            self.client.update_row('trial_requests', row, condition)
             return True
 
         except Exception as e:
@@ -479,7 +480,7 @@ class TablestoreService:
 
     def update_job(self, job_id: str, updates: Dict[str, Any]) -> bool:
         """Update a job."""
-        from tablestore import Condition, RowExistenceExpectation
+        from tablestore import Row, Condition, RowExistenceExpectation
 
         try:
             primary_key = [('job_id', job_id)]
@@ -489,8 +490,9 @@ class TablestoreService:
             for key, value in updates.items():
                 update_columns['put'].append((key, self._serialize_value(value)))
 
+            row = Row(primary_key, update_columns)
             condition = Condition(RowExistenceExpectation.EXPECT_EXIST)
-            self.client.update_row('audio_jobs', primary_key, update_columns, condition)
+            self.client.update_row('audio_jobs', row, condition)
 
             return True
 
