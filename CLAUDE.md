@@ -161,6 +161,7 @@ Full guide: [alibaba/DEPLOY.md](alibaba/DEPLOY.md)
 | [UX_IMPROVEMENTS.md](docs/UX_IMPROVEMENTS.md) | UX patterns |
 | [DEPLOY.md](alibaba/DEPLOY.md) | Deployment |
 | [VERSION_HISTORY.md](docs/archive/VERSION_HISTORY.md) | Full changelog |
+| [pitch.html](pitch.html) | Investment pitch deck |
 
 ## Cost: ~$8/mo
 
