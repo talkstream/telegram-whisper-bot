@@ -154,15 +154,18 @@ Full guide: [alibaba/DEPLOY.md](alibaba/DEPLOY.md)
 
 | Document | Description |
 |----------|-------------|
-| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Architecture, setup, forking |
+| [README.md](README.md) | Public: features, tariffs, commands (RU) |
+| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Setup, fork, testing |
 | [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | Admin commands, monitoring |
-| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues |
-| [ALIBABA_CRITICAL_CONFIG.md](docs/ALIBABA_CRITICAL_CONFIG.md) | API config, FFmpeg |
-| [UX_IMPROVEMENTS.md](docs/UX_IMPROVEMENTS.md) | UX patterns |
-| [DEPLOY.md](alibaba/DEPLOY.md) | Deployment |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Error → cause → fix tables |
+| [ALIBABA_CRITICAL_CONFIG.md](docs/ALIBABA_CRITICAL_CONFIG.md) | Endpoints, models, FFmpeg |
+| [UX_IMPROVEMENTS.md](docs/UX_IMPROVEMENTS.md) | Progress messages, delivery modes |
+| [DEPLOY.md](alibaba/DEPLOY.md) | Deploy + webhook setup |
 | [VERSION_HISTORY.md](docs/archive/VERSION_HISTORY.md) | Full changelog |
-| [pitch.html](pitch.html) | Investment pitch deck (18 slides) |
+| [pitch.html](pitch.html) | Investment pitch (18 slides) |
 | [market-strategy.md](docs/plans/2026-02-09-market-strategy.md) | Market capture & exit strategy |
+
+**Archive** (GCP era, obsolete): `docs/archive/FFMPEG_BUILD.md`, `docs/archive/TERRAFORM_GCP.md`
 
 ## Cost: ~$8/mo
 

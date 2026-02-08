@@ -1,57 +1,63 @@
 # UX Patterns
 
-## Progress Messages (v3.4.0)
+Delivery logic summary: see [CLAUDE.md#key-patterns](../CLAUDE.md#key-patterns)
+
+## Progress Messages
 
 Single message updated through stages via `edit_message_text`.
 
 ### Sync (< 60s audio)
+
 ```
-"🎙 Аудио получено..."
-  → "📥 Загружаю файл..."         + typing
-  → "🎙 Распознаю речь..."        + typing
-  → "✏️ Форматирую текст..."      + typing (if >100 chars)
-  → [result]                       edit or delete+send
+"Аудио получено..."
+  → "Загружаю файл..."         + typing
+  → "Распознаю речь..."        + typing
+  → "Форматирую текст..."      + typing (if >100 chars)
+  → [result]                    edit | delete+send
 ```
 
-### Async (≥ 60s audio)
+### Async (>= 60s audio)
+
 ```
-"🎙 Аудио получено..."
-  → "⏳ В очереди..."              webhook
-  → "🔄 Обработка..."             processor
-  → "📥 Загружаю..."   → "🎙 Распознаю..."   → "✏️ Форматирую..."
+"Аудио получено..."
+  → "В очереди..."              webhook
+  → "Обработка..."              processor
+  → "Загружаю..." → "Распознаю..." → "Форматирую..."
   → [result]
 ```
 
-### Diarization Path (v3.6.0)
+### Diarization Path
+
 ```
-"🎙 Аудио получено..."
-  → "📤 Загружаю для анализа..."   OSS upload
-  → "🔄 Распознаю с диаризацией..." poll every 5s (max 5min)
-  → "✏️ Форматирую текст..."
+"Аудио получено..."
+  → "Загружаю для анализа..."   OSS upload
+  → "Распознаю с диаризацией..." poll 5s (max 5min)
+  → "Форматирую текст..."
   → [dialogue with em-dashes]
 ```
 
-Fallback: if diarization fails → regular ASR path (transparent to user).
+Fallback: diarization fail → regular ASR (transparent to user).
 
-## Delivery Modes (v3.6.0)
+## Delivery Modes
 
 | Condition | Action |
 |-----------|--------|
-| ≤4000 chars | Edit status message in place |
-| >4000, `long_text_mode: split` | Delete status → `send_long_message()` |
-| >4000, `long_text_mode: file` | Delete status → send .txt with caption |
+| <=4000 chars | Edit status message in place |
+| >4000, split mode | Delete status → `send_long_message()` |
+| >4000, file mode | Delete status → send .txt with caption |
 
 ## Implementation
 
 - `status_message_id` flows: webhook → `job_data` → MNS → processor
 - Pattern: `edit_message_text(stage)` → `send_chat_action('typing')` → work
-- Typing visible during heavy ops, not before edits
 
 ## Telegram API Limits
 
-- Message edits: ~30/min per chat
-- Min edit interval: 3s
-- `send_chat_action`: 5s duration, fire-and-forget (2s timeout)
+| Limit | Value |
+|-------|-------|
+| Message edits | ~30/min per chat |
+| Min edit interval | 3s |
+| `send_chat_action` | 5s duration, fire-and-forget (2s timeout) |
 
 ## Principles
 

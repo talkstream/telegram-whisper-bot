@@ -2,23 +2,25 @@
 
 **v4.0.0** | 2026-02-09
 
+Env vars & architecture: see [CLAUDE.md](../CLAUDE.md)
+
 ---
 
-## ASR (Speech Recognition)
+## ASR
 
 | Parameter | Value |
 |-----------|-------|
-| Model | `qwen3-asr-flash` (`qwen3-asr-flash-2025-09-08`) |
+| Model | `qwen3-asr-flash` |
 | Languages | 52 (incl. Russian) |
-| Protocol | REST API (NOT WebSocket) |
+| Protocol | REST (NOT WebSocket) |
 | Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1` |
-| Chunking | Auto-split audio >150s |
+| Chunking | Auto-split >150s |
 
-**DO NOT USE:** ~~paraformer-v1/v2~~, ~~dashscope.aliyuncs.com~~ (Beijing)
+**Never use:** ~~paraformer-v1/v2~~, ~~dashscope.aliyuncs.com~~ (Beijing)
 
 ---
 
-## Diarization (v4.0.0 — multi-backend)
+## Diarization (multi-backend)
 
 Two parallel async passes, single OSS upload:
 
@@ -31,38 +33,36 @@ Two parallel async passes, single OSS upload:
 |-----------|-------|
 | Protocol | Async API (`X-DashScope-Async: enable`) |
 | Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
-| Input (fun-asr-mtl) | `file_urls` (list) — signed OSS URL |
-| Input (qwen3-filetrans) | `file_url` (string) — signed OSS URL |
+| Input (fun-asr-mtl) | `file_urls` (list) |
+| Input (qwen3-filetrans) | `file_url` (string) |
 | Language (fun-asr-mtl) | `language_hints: ["ru"]` (list) |
 | Language (qwen3-filetrans) | `language: "ru"` (string) |
-| Poll interval | 5s, max 240s |
+| Poll | 5s interval, 240s max |
 
-Flow: upload to OSS → launch both passes in parallel → poll → merge by timestamps → cleanup OSS
+Flow: OSS upload → parallel passes → poll → merge by timestamps → OSS cleanup
 
-**DO NOT USE:** `paraformer-v2` (China-only, `"Model not exist"` on intl endpoint)
+**Never use:** `paraformer-v2` (China-only, "Model not exist" on intl)
 
-Requires: `OSS_BUCKET`, `OSS_ENDPOINT`, `ALIBABA_ACCESS_KEY/SECRET_KEY`
+### Backend Routing
 
-### Backend Routing (v4.0.0)
-
-| Backend | Model | Env Variable | Fallback |
-|---------|-------|-------------|----------|
+| Backend | Model | Env | Fallback |
+|---------|-------|-----|----------|
 | `dashscope` (default) | fun-asr-mtl + qwen3-asr-flash-filetrans | `DASHSCOPE_API_KEY` | — |
 | `assemblyai` | Universal-2 | `ASSEMBLYAI_API_KEY` | → dashscope |
 | `gemini` | Gemini 2.5 Flash | `GOOGLE_API_KEY` | → dashscope |
 
-Set via `DIARIZATION_BACKEND` env var. All backends produce the same segment format.
+Set via `DIARIZATION_BACKEND` env var. All backends → same segment format.
 
 ---
 
-## LLM (Text Formatting)
+## LLM
 
 | Parameter | Value |
 |-----------|-------|
-| Model | `qwen-turbo` (2x faster, 3x cheaper than qwen-plus) |
+| Model | `qwen-turbo` |
 | Endpoint | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
 | Fallback | Gemini 2.5 Flash |
-| Threshold | Skip LLM for text ≤100 chars |
+| Skip threshold | text <=100 chars |
 
 ---
 
@@ -86,8 +86,6 @@ ffmpeg -y -i input.ogg -b:a 32k -ar 16000 -ac 1 -threads 4 output.mp3
 # Short (<10s)
 ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
 ```
-
-Optimizations: bitrate 64k→32k, short audio 24k/8kHz, sync threshold 60s.
 
 ---
 

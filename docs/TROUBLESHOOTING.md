@@ -1,5 +1,7 @@
 # Troubleshooting
 
+Endpoints & models: see [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md)
+
 ## ASR
 
 | Error | Cause | Fix |
@@ -9,12 +11,12 @@
 | 400 Bad Request | WebSocket instead of REST | REST: `/api/v1/services/audio/asr/transcription` |
 | Audio too short | < 0.5 sec | Check duration before sending |
 
-## Diarization (Fun-ASR)
+## Diarization
 
 | Error | Cause | Fix |
 |-------|-------|-----|
 | OSS upload failed | Wrong credentials/bucket | Check `OSS_BUCKET`, `OSS_ENDPOINT`, access keys |
-| Diarization timeout | Audio too long / API slow | Max poll 5 min; fallback to Qwen3-ASR auto |
+| Diarization timeout | Audio too long / API slow | Max poll 5 min; fallback to regular ASR |
 | No speakers detected | Single speaker / noise | Expected — returns single segment |
 | `TASK_FAILED` | Unsupported format / corrupt | Check FFmpeg output, try re-encoding |
 
@@ -52,7 +54,7 @@ Conditions: `EXPECT_NOT_EXIST` (create), `EXPECT_EXIST` (update), `IGNORE` (upse
 | Invalid data | Corrupt file | `ffprobe -v error` before processing |
 | Empty output | Unsupported codec | `-b:a 32k -ar 16000 -ac 1` |
 
-Config: see [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md#ffmpeg)
+Config: see [ALIBABA_CRITICAL_CONFIG.md#ffmpeg](ALIBABA_CRITICAL_CONFIG.md#ffmpeg)
 
 ## Deploy
 
@@ -66,25 +68,17 @@ Config: see [ALIBABA_CRITICAL_CONFIG.md](ALIBABA_CRITICAL_CONFIG.md#ffmpeg)
 ## Diagnostics
 
 ```bash
-# Webhook
-curl "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"
-
-# Logs
-s logs webhook-handler --tail
-s logs audio-processor --tail
-
-# Admin
-/status   # queue
-/metrics  # performance
-/cost     # expenses
+curl "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"  # webhook
+s logs webhook-handler --tail                                    # logs
+/status   # queue    /metrics  # performance    /cost  # expenses
 ```
 
 ## Lessons Learned
 
-1. REST > WebSocket for serverless (qwen3-asr-flash)
-2. Always `-intl` endpoints
-3. `pythonjsonlogger` NOT available on FC runtime — use try/except fallback
-4. `logConfig: auto` works for initial SLS setup, then switch to explicit config
+1. REST > WebSocket for serverless (`qwen3-asr-flash`)
+2. Always `-intl` endpoints (not `dashscope.aliyuncs.com`)
+3. `pythonjsonlogger` NOT on FC runtime — use try/except fallback
+4. `logConfig: auto` for initial SLS setup, then switch to explicit
 5. 512MB sufficient for webhook with lazy imports
 
 ---
