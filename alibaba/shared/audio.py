@@ -1319,15 +1319,18 @@ class AudioService:
 
         return merged
 
-    def format_dialogue(self, segments: List[dict]) -> str:
+    def format_dialogue(self, segments: List[dict],
+                        show_speakers: bool = True) -> str:
         """Format diarized segments as Russian dialogue with em-dash.
 
         Merges consecutive segments from the same speaker into one block.
-        Shows "Спикер N:" labels when 2+ speakers are present.
-        Filters punctuation-only segments. Numbers speakers by first appearance.
+        Shows "Спикер N:" labels when 2+ speakers are present and
+        show_speakers is True. Filters punctuation-only segments.
+        Numbers speakers by first appearance.
 
         Args:
             segments: List of dicts with 'speaker_id' and 'text' keys
+            show_speakers: Whether to include "Спикер N:" labels
 
         Returns:
             Formatted dialogue text with em-dash separators and speaker labels
@@ -1358,7 +1361,7 @@ class AudioService:
             if speaker != current_speaker:
                 if current_texts:
                     joined = '\n'.join(current_texts)
-                    if use_labels:
+                    if use_labels and show_speakers:
                         label = f"Спикер {speaker_map.get(current_speaker, '?')}"
                         lines.append(f"{label}:\n\u2014 {joined}")
                     else:
@@ -1370,7 +1373,7 @@ class AudioService:
 
         if current_texts:
             joined = '\n'.join(current_texts)
-            if use_labels:
+            if use_labels and show_speakers:
                 label = f"Спикер {speaker_map.get(current_speaker, '?')}"
                 lines.append(f"{label}:\n\u2014 {joined}")
             else:

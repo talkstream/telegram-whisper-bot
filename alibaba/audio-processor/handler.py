@@ -276,6 +276,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
         dialogue_mode = settings.get('dialogue_mode', False)
+        speaker_labels = settings.get('speaker_labels', True)
 
         is_dialogue = False
 
@@ -289,7 +290,8 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
                 )
             )
             if segments:
-                text = audio.format_dialogue(segments)
+                text = audio.format_dialogue(segments,
+                                             show_speakers=speaker_labels)
                 is_dialogue = True
             else:
                 # Fallback: regular transcription

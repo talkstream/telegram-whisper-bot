@@ -46,7 +46,7 @@ alibaba/
 ## Commands
 
 ### User
-`/start` `/help` `/balance` `/trial` `/buy_minutes` `/settings` `/code` `/yo` `/output` `/dialogue`
+`/start` `/help` `/balance` `/trial` `/buy_minutes` `/settings` `/code` `/yo` `/output` `/dialogue` `/speakers`
 
 ### Admin (OWNER_ID only)
 | Command | Description |

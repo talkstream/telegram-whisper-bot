@@ -254,6 +254,33 @@ class TestFormatDialogue:
         # speaker 99 again → Спикер 1
         assert lines[2].startswith('Спикер 1:')
 
+    def test_show_speakers_false(self, audio_service):
+        """show_speakers=False should hide 'Спикер N:' labels but keep em-dash."""
+        segments = [
+            {'speaker_id': 0, 'text': 'Алло. Здравствуйте.'},
+            {'speaker_id': 1, 'text': 'Не похищал. Это Марина.'},
+            {'speaker_id': 0, 'text': 'Я вас слушаю.'},
+        ]
+        result = audio_service.format_dialogue(segments, show_speakers=False)
+        lines = result.split('\n\n')
+        assert len(lines) == 3
+        # No speaker labels
+        assert 'Спикер' not in result
+        # Em-dash still present
+        assert lines[0] == '\u2014 Алло. Здравствуйте.'
+        assert lines[1] == '\u2014 Не похищал. Это Марина.'
+        assert lines[2] == '\u2014 Я вас слушаю.'
+
+    def test_show_speakers_true_default(self, audio_service):
+        """Default show_speakers=True preserves 'Спикер N:' labels (backward compat)."""
+        segments = [
+            {'speaker_id': 0, 'text': 'Привет!'},
+            {'speaker_id': 1, 'text': 'Привет, как дела?'},
+        ]
+        result = audio_service.format_dialogue(segments)
+        assert 'Спикер 1:' in result
+        assert 'Спикер 2:' in result
+
 
 # ============== send_as_file Tests ==============
 
