@@ -571,7 +571,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
 def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
                       file_id: str, file_type: str, duration: int,
                       status_message_id: Optional[int] = None) -> str:
-    """Queue audio for async processing via MNS."""
+    """Queue audio for async processing via direct HTTP invocation (or MNS fallback)."""
     import uuid
 
     chat_id = message.get('chat', {}).get('id')
@@ -581,22 +581,6 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     db = get_db_service()
     tg = get_telegram_service()
 
-    # Validate MNS config BEFORE creating job (avoid orphaned DB records)
-    # Read credentials at call time (module-level vars may be empty on FC 3.0 cold start)
-    mns_ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
-    mns_sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
-    missing = []
-    if not MNS_ENDPOINT:
-        missing.append('MNS_ENDPOINT')
-    if not mns_ak:
-        missing.append('ALIBABA_ACCESS_KEY')
-    if not mns_sk:
-        missing.append('ALIBABA_SECRET_KEY')
-    if missing:
-        logger.warning(f"MNS not available (missing: {', '.join(missing)}), using sync fallback")
-        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
-
-    # Create job only after MNS validation passed
     job_id = str(uuid.uuid4())
     job_data = {
         'job_id': job_id,
@@ -613,32 +597,55 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
 
     db.create_job(job_data)
 
-    # Publish to MNS queue
-    try:
-        from services.mns_service import MNSPublisher
-        import json as json_module
-        publisher = MNSPublisher(
-            endpoint=MNS_ENDPOINT,
-            access_key_id=mns_ak,
-            access_key_secret=mns_sk
-        )
-        publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
-        logger.info(f"Published job {job_id} to MNS queue")
-    except Exception as e:
-        logger.warning(f"MNS publish failed ({type(e).__name__}: {e}), using sync fallback")
-        # Cleanup orphaned job
+    # Primary: direct HTTP invocation of audio-processor (fire-and-forget)
+    import requests as http_req
+    audio_processor_url = os.environ.get('AUDIO_PROCESSOR_URL')
+    if audio_processor_url:
         try:
-            db.update_job_status(job_id, 'failed', error=str(e))
-        except Exception:
-            pass
-        return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
+            # Connect timeout 10s (cold start), read timeout 1s (we don't wait for result)
+            http_req.post(audio_processor_url, json=job_data, timeout=(10, 1))
+            logger.info(f"HTTP invoked audio-processor for job {job_id}")
+        except http_req.exceptions.ReadTimeout:
+            # Expected: function started processing, we don't wait for the 60-300s result
+            logger.info(f"HTTP invoked audio-processor for job {job_id} (fire-and-forget)")
+        except Exception as e:
+            logger.error(f"HTTP invoke failed for job {job_id}: {type(e).__name__}: {e}")
+            # Fall through to MNS fallback
+            audio_processor_url = None
 
-    # Update status message instead of sending new one
-    if status_message_id:
-        tg.edit_message_text(chat_id, status_message_id, "⏳ Аудио в очереди на обработку...")
-    else:
-        tg.send_message(chat_id, "⏳ Аудио в очереди на обработку...")
-    return 'queued'
+    if audio_processor_url:
+        if status_message_id:
+            tg.edit_message_text(chat_id, status_message_id, "⏳ Обрабатываю аудио...")
+        return 'queued'
+
+    # Fallback: MNS queue
+    mns_ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+    mns_sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+
+    if MNS_ENDPOINT and mns_ak and mns_sk:
+        try:
+            from services.mns_service import MNSPublisher
+            import json as json_module
+            publisher = MNSPublisher(
+                endpoint=MNS_ENDPOINT,
+                access_key_id=mns_ak,
+                access_key_secret=mns_sk
+            )
+            publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
+            logger.info(f"Published job {job_id} to MNS queue")
+            if status_message_id:
+                tg.edit_message_text(chat_id, status_message_id, "⏳ Аудио в очереди на обработку...")
+            return 'queued'
+        except Exception as e:
+            logger.error(f"MNS publish failed for job {job_id}: {type(e).__name__}: {e}")
+
+    # All async methods failed — sync fallback (no diarization)
+    logger.warning(f"All async methods failed for job {job_id}, using sync fallback")
+    try:
+        db.update_job(job_id, {'status': 'failed', 'error': 'async_unavailable'})
+    except Exception:
+        pass
+    return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
 
 
 def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:

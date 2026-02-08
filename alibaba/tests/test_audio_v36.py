@@ -926,9 +926,8 @@ class TestASRLanguageHints:
 class TestMNSFallback:
     """Test queue_audio_async sync fallback when MNS is unavailable."""
 
-    def test_missing_mns_endpoint_uses_sync_fallback(self):
-        """When MNS_ENDPOINT is empty, should use sync fallback with warning (not error)."""
-        # Import the module-level variables and function
+    def test_all_async_unavailable_uses_sync_fallback(self):
+        """When AUDIO_PROCESSOR_URL and MNS are both unavailable, should use sync fallback."""
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
 
@@ -946,7 +945,8 @@ class TestMNSFallback:
              patch.object(webhook_main, 'ALIBABA_SECRET_KEY', 'test-secret'), \
              patch.object(webhook_main, 'process_audio_sync', return_value='ok') as mock_sync, \
              patch.object(webhook_main, 'get_db_service') as mock_db, \
-             patch.object(webhook_main, 'get_telegram_service') as mock_tg:
+             patch.object(webhook_main, 'get_telegram_service') as mock_tg, \
+             patch.dict(os.environ, {'AUDIO_PROCESSOR_URL': ''}, clear=False):
 
             result = webhook_main.queue_audio_async(
                 message, user, 'file-id', 'voice', 30
@@ -955,11 +955,11 @@ class TestMNSFallback:
             # Should fall back to sync
             mock_sync.assert_called_once()
             assert result == 'ok'
-            # Should NOT create a job in DB (MNS check is before job creation)
-            mock_db.return_value.create_job.assert_not_called()
+            # Job IS created (before async attempts)
+            mock_db.return_value.create_job.assert_called_once()
 
-    def test_mns_publish_failure_cleans_up_job(self):
-        """When MNS publish fails, should mark job failed and use sync fallback."""
+    def test_http_and_mns_failure_uses_sync_fallback(self):
+        """When HTTP invoke and MNS both fail, should mark job failed and use sync fallback."""
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
 
@@ -981,7 +981,8 @@ class TestMNSFallback:
              patch.object(webhook_main, 'process_audio_sync', return_value='ok') as mock_sync, \
              patch.object(webhook_main, 'get_db_service') as mock_db, \
              patch.object(webhook_main, 'get_telegram_service') as mock_tg, \
-             patch('services.mns_service.MNSPublisher', return_value=mock_publisher):
+             patch('services.mns_service.MNSPublisher', return_value=mock_publisher), \
+             patch.dict(os.environ, {'AUDIO_PROCESSOR_URL': ''}, clear=False):
 
             result = webhook_main.queue_audio_async(
                 message, user, 'file-id', 'voice', 30
@@ -990,10 +991,10 @@ class TestMNSFallback:
             # Should fall back to sync
             mock_sync.assert_called_once()
             assert result == 'ok'
-            # Job was created (MNS config was valid)
+            # Job was created
             mock_db.return_value.create_job.assert_called_once()
             # Job should be marked as failed
-            mock_db.return_value.update_job_status.assert_called_once()
+            mock_db.return_value.update_job.assert_called_once()
 
 
 # ============== Diarization Debug Tests ==============
