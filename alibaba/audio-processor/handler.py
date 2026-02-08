@@ -147,7 +147,7 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 
 
 def poll_queue() -> Dict[str, Any]:
-    """Poll MNS queue for messages and process them."""
+    """Poll MNS queue for one message and process it."""
     from services.mns_service import MNSService
 
     try:
@@ -160,26 +160,22 @@ def poll_queue() -> Dict[str, Any]:
             queue_name=os.environ.get('AUDIO_JOBS_QUEUE', 'telegram-whisper-bot-prod-audio-jobs')
         )
 
-        # Receive messages (batch of up to 10)
-        messages = mns.receive_messages(batch_size=10, wait_seconds=1)
-
-        if not messages:
+        # Short poll: 1s wait, 600s visibility (audio processing can take up to 300s)
+        msg = mns.receive_message(wait_seconds=1, visibility_timeout=600)
+        if not msg:
             return {'statusCode': 200, 'body': 'No messages in queue'}
 
-        processed = 0
-        for msg in messages:
-            try:
-                job_data = json.loads(msg.get('body', '{}'))
-                result = process_job(job_data)
+        job_data = msg['data']
+        job_id = job_data.get('job_id', 'unknown')
+        logger.info(f"Polled job {job_id} from MNS queue")
 
-                if result.get('ok', False):
-                    mns.delete_message(msg.get('receipt_handle'))
-                    processed += 1
+        result = process_job(job_data)
 
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-
-        return {'statusCode': 200, 'body': f'Processed {processed}/{len(messages)} messages'}
+        if result.get('ok', False):
+            mns.delete_message(msg['receipt_handle'])
+            return {'statusCode': 200, 'body': f'Processed job {job_id}'}
+        else:
+            return {'statusCode': 200, 'body': f'Job {job_id} failed: {result.get("error")}'}
 
     except Exception as e:
         logger.error(f"Error polling queue: {e}")
