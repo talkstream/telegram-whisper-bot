@@ -1683,3 +1683,260 @@ class TestDebugWordLevel:
         assert 'txt_mode: word-level' in debug_text
         assert 'timeline_normalized: 120000ms/118500ms' in debug_text
         assert 'txt_segments: 150' in debug_text
+
+
+# ============== v3.6.1 Robustness Tests ==============
+
+class TestFutureResultTimeout:
+    """Test that ThreadPoolExecutor futures have timeout protection."""
+
+    def test_future_timeout_handling(self, audio_service):
+        """future.result(timeout=270) should catch FuturesTimeoutError."""
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed'
+        audio_service._oss_bucket = mock_bucket
+
+        def slow_transcription(*args, **kwargs):
+            raise FuturesTimeoutError("timed out")
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          side_effect=slow_transcription):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        # Both passes timed out → should return (None, [])
+        assert raw_text is None
+        assert segments == []
+
+    def test_future_timeout_pass1_only(self, audio_service):
+        """Pass 1 timeout, Pass 2 succeeds → text without speakers."""
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+        mock_bucket = MagicMock()
+        mock_bucket.sign_url.return_value = 'https://oss.example.com/signed'
+        audio_service._oss_bucket = mock_bucket
+
+        txt_data = {
+            'transcripts': [{'sentences': [
+                {'text': 'Привет мир', 'begin_time': 0, 'end_time': 2000},
+            ]}]
+        }
+
+        call_count = [0]
+        def side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise FuturesTimeoutError("pass 1 timed out")
+            return txt_data
+
+        with patch.object(audio_service, '_submit_async_transcription',
+                          side_effect=side_effect):
+            raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
+
+        assert raw_text is not None
+        assert 'Привет' in raw_text
+        assert segments == []  # no speaker info
+
+
+class TestTelegramTimeouts:
+    """Test that TelegramService methods use timeout."""
+
+    def test_default_timeout_constant(self, tg_service):
+        assert tg_service.DEFAULT_TIMEOUT == 30
+
+    def test_download_timeout_constant(self, tg_service):
+        assert tg_service.DOWNLOAD_TIMEOUT == 60
+
+    @patch('requests.Session.post')
+    def test_send_message_has_timeout(self, mock_post, tg_service):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {'ok': True, 'result': {}},
+            raise_for_status=lambda: None,
+        )
+        tg_service.send_message(123, "test")
+        _, kwargs = mock_post.call_args
+        assert kwargs.get('timeout') == 30
+
+    @patch('requests.Session.post')
+    def test_edit_message_has_timeout(self, mock_post, tg_service):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {'ok': True, 'result': {}},
+            raise_for_status=lambda: None,
+        )
+        tg_service.edit_message_text(123, 1, "test")
+        _, kwargs = mock_post.call_args
+        assert kwargs.get('timeout') == 30
+
+    @patch('requests.Session.post')
+    def test_delete_message_has_timeout(self, mock_post, tg_service):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            raise_for_status=lambda: None,
+        )
+        tg_service.delete_message(123, 1)
+        _, kwargs = mock_post.call_args
+        assert kwargs.get('timeout') == 30
+
+    @patch('requests.Session.get')
+    def test_download_file_has_timeout(self, mock_get, tg_service):
+        mock_response = MagicMock()
+        mock_response.iter_content.return_value = [b'data']
+        mock_response.raise_for_status = lambda: None
+        mock_get.return_value = mock_response
+        tg_service.download_file('file/test.ogg')
+        _, kwargs = mock_get.call_args
+        assert kwargs.get('timeout') == 60
+
+    @patch('requests.Session.get')
+    def test_get_file_path_has_timeout(self, mock_get, tg_service):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {'ok': True, 'result': {'file_path': 'a/b.ogg'}},
+            raise_for_status=lambda: None,
+        )
+        tg_service.get_file_path('file-123')
+        _, kwargs = mock_get.call_args
+        assert kwargs.get('timeout') == 30
+
+    @patch('requests.Session.post')
+    def test_send_chat_action_has_short_timeout(self, mock_post, tg_service):
+        """send_chat_action uses 2s timeout (fire-and-forget)."""
+        mock_post.return_value = MagicMock(status_code=200)
+        tg_service.send_chat_action(123, 'typing')
+        _, kwargs = mock_post.call_args
+        assert kwargs.get('timeout') == 2
+
+
+class TestDatetimeDeprecation:
+    """Test that datetime.utcnow() is NOT used anywhere."""
+
+    def test_utility_no_utcnow(self):
+        """utility.py should not contain datetime.utcnow()."""
+        from utility import UtilityService
+        import inspect
+        source = inspect.getsource(UtilityService)
+        assert 'utcnow()' not in source, \
+            "datetime.utcnow() is deprecated — use datetime.now(timezone.utc)"
+
+    def test_setup_logging_uses_timezone_utc(self):
+        """setup_logging formatter should use timezone.utc."""
+        from utility import UtilityService
+        import inspect
+        source = inspect.getsource(UtilityService.setup_logging)
+        # If pythonjsonlogger is available, it should use timezone.utc
+        assert 'timezone.utc' in source or 'utcnow' not in source
+
+
+class TestJobDedup:
+    """Test MNS at-least-once dedup in handler.py (mocked)."""
+
+    def test_duplicate_processing_job_skipped(self):
+        """Job with status 'processing' should be skipped."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'audio-processor'))
+
+        import handler
+
+        job_data = {
+            'job_id': 'test-job-1',
+            'user_id': '123',
+            'chat_id': '456',
+            'file_id': 'file-abc',
+            'duration': 60,
+        }
+
+        with patch.object(handler, 'get_db_service') as mock_db, \
+             patch.object(handler, 'get_telegram_service') as mock_tg, \
+             patch.object(handler, 'get_audio_service') as mock_audio:
+            mock_db.return_value.get_job.return_value = {'status': 'processing'}
+            result = handler.process_job(job_data)
+
+        assert result == {'ok': True, 'result': 'duplicate'}
+        # Should NOT have started processing
+        mock_db.return_value.update_job.assert_not_called()
+
+    def test_duplicate_completed_job_skipped(self):
+        """Job with status 'completed' should be skipped."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'audio-processor'))
+
+        import handler
+
+        job_data = {
+            'job_id': 'test-job-2',
+            'user_id': '123',
+            'chat_id': '456',
+            'file_id': 'file-def',
+            'duration': 30,
+        }
+
+        with patch.object(handler, 'get_db_service') as mock_db, \
+             patch.object(handler, 'get_telegram_service') as mock_tg, \
+             patch.object(handler, 'get_audio_service') as mock_audio:
+            mock_db.return_value.get_job.return_value = {'status': 'completed'}
+            result = handler.process_job(job_data)
+
+        assert result == {'ok': True, 'result': 'duplicate'}
+
+    def test_pending_job_proceeds(self):
+        """Job with status 'pending' should proceed normally."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'audio-processor'))
+
+        import handler
+
+        job_data = {
+            'job_id': 'test-job-3',
+            'user_id': '123',
+            'chat_id': '456',
+            'file_id': 'file-ghi',
+            'duration': 30,
+        }
+
+        with patch.object(handler, 'get_db_service') as mock_db, \
+             patch.object(handler, 'get_telegram_service') as mock_tg, \
+             patch.object(handler, 'get_audio_service') as mock_audio:
+            # Job exists with 'pending' status
+            mock_db.return_value.get_job.return_value = {'status': 'pending'}
+            # Will fail at get_file_path but that's ok — we just check dedup passed
+            mock_tg.return_value.get_file_path.return_value = None
+            mock_tg.return_value.send_message.return_value = {'ok': True, 'result': {'message_id': 1}}
+            mock_tg.return_value.edit_message_text.return_value = {'ok': True}
+            mock_tg.return_value.send_chat_action.return_value = True
+
+            result = handler.process_job(job_data)
+
+        # Should have called update_job (meaning dedup check passed)
+        mock_db.return_value.update_job.assert_called()
+
+    def test_new_job_proceeds(self):
+        """Job not found in DB (None) should proceed."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'audio-processor'))
+
+        import handler
+
+        job_data = {
+            'job_id': 'test-job-4',
+            'user_id': '123',
+            'chat_id': '456',
+            'file_id': 'file-jkl',
+            'duration': 30,
+        }
+
+        with patch.object(handler, 'get_db_service') as mock_db, \
+             patch.object(handler, 'get_telegram_service') as mock_tg, \
+             patch.object(handler, 'get_audio_service') as mock_audio:
+            mock_db.return_value.get_job.return_value = None
+            mock_tg.return_value.get_file_path.return_value = None
+            mock_tg.return_value.send_message.return_value = {'ok': True, 'result': {'message_id': 1}}
+            mock_tg.return_value.edit_message_text.return_value = {'ok': True}
+            mock_tg.return_value.send_chat_action.return_value = True
+
+            result = handler.process_job(job_data)
+
+        # Should have called update_job
+        mock_db.return_value.update_job.assert_called()

@@ -842,7 +842,7 @@ class AudioService:
             (raw_text, segments) where segments = [{'speaker_id', 'text', 'begin_time', 'end_time'}]
             Returns (None, []) on failure (caller should fallback to regular ASR)
         """
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
         self._diarization_debug = {}  # Reset for each call
 
@@ -911,13 +911,18 @@ class AudioService:
                     signed_url, 'qwen3-asr-flash-filetrans', txt_params, api_key,
                     debug_prefix='pass2')
 
+                # 270s timeout: leave 30s headroom before FC hard limit (300s)
                 try:
-                    spk_result = future_spk.result()
+                    spk_result = future_spk.result(timeout=270)
+                except FuturesTimeoutError:
+                    logging.error("Pass 1 (fun-asr-mtl) timed out after 270s")
                 except Exception as e:
                     logging.warning(f"Pass 1 (fun-asr-mtl) failed: {e}")
 
                 try:
-                    txt_result = future_txt.result()
+                    txt_result = future_txt.result(timeout=270)
+                except FuturesTimeoutError:
+                    logging.error("Pass 2 (qwen3-asr-flash-filetrans) timed out after 270s")
                 except Exception as e:
                     logging.warning(f"Pass 2 (qwen3-asr-flash-filetrans) failed: {e}")
 

@@ -233,6 +233,12 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     audio = get_audio_service()
 
     try:
+        # Dedup: MNS guarantees at-least-once delivery; skip if already processed
+        existing_job = db.get_job(job_id)
+        if existing_job and existing_job.get('status') in ('processing', 'completed'):
+            logger.warning(f"Job {job_id} already {existing_job['status']}, skipping (MNS redelivery)")
+            return {'ok': True, 'result': 'duplicate'}
+
         # Update job status
         db.update_job(job_id, {'status': 'processing'})
 
@@ -352,22 +358,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             result_text = formatted_text
             parse_mode = ''
 
-        long_text_mode = settings.get('long_text_mode', 'split')
-
-        if progress_id and len(result_text) <= 4000:
-            tg.edit_message_text(chat_id, progress_id, result_text, parse_mode=parse_mode)
-        elif long_text_mode == 'file':
-            if progress_id:
-                tg.delete_message(chat_id, progress_id)
-            first_dot = formatted_text.find('.')
-            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
-            tg.send_as_file(chat_id, formatted_text, caption=caption)
-        else:
-            if progress_id:
-                tg.delete_message(chat_id, progress_id)
-            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
-
-        # Update balance
+        # Deduct balance BEFORE delivery to prevent free transcriptions on DB failure
         duration_minutes = (duration + 59) // 60
         balance = user.get('balance_minutes', 0) if user else 0
         balance_updated = db.update_user_balance(user_id_int, -duration_minutes)
@@ -387,7 +378,23 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
-        # Check for low balance warning (calculate from known values)
+        # Deliver result to user
+        long_text_mode = settings.get('long_text_mode', 'split')
+
+        if progress_id and len(result_text) <= 4000:
+            tg.edit_message_text(chat_id, progress_id, result_text, parse_mode=parse_mode)
+        elif long_text_mode == 'file':
+            if progress_id:
+                tg.delete_message(chat_id, progress_id)
+            first_dot = formatted_text.find('.')
+            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
+            tg.send_as_file(chat_id, formatted_text, caption=caption)
+        else:
+            if progress_id:
+                tg.delete_message(chat_id, progress_id)
+            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
+
+        # Low balance warning (after delivery so user sees result first)
         if balance_updated:
             new_balance = max(0, int(balance) - duration_minutes)
             if 0 < new_balance < 5:

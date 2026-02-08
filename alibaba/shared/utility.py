@@ -7,7 +7,7 @@ import re
 import time
 
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 MUTE_FILE = '/tmp/twbot_mute_until'
@@ -110,9 +110,13 @@ class UtilityService:
         handler = logging.StreamHandler(sys.stdout)
 
         try:
-            from pythonjsonlogger import jsonlogger
+            # v3+: pythonjsonlogger.json; legacy: pythonjsonlogger.jsonlogger
+            try:
+                from pythonjsonlogger.json import JsonFormatter as _BaseJsonFormatter
+            except ImportError:
+                from pythonjsonlogger.jsonlogger import JsonFormatter as _BaseJsonFormatter
 
-            class SLSJsonFormatter(jsonlogger.JsonFormatter):
+            class SLSJsonFormatter(_BaseJsonFormatter):
                 def add_fields(self, log_record, record, message_dict):
                     super(SLSJsonFormatter, self).add_fields(log_record, record, message_dict)
 
@@ -122,7 +126,7 @@ class UtilityService:
 
                     # Add timestamp if not present
                     if not log_record.get('timestamp'):
-                        now = datetime.utcnow().replace(tzinfo=pytz.utc)
+                        now = datetime.now(timezone.utc)
                         log_record['timestamp'] = now.isoformat()
 
                     # Add component
@@ -208,7 +212,7 @@ class UtilityService:
     def get_moscow_time_str():
         """Get current Moscow time as formatted string"""
         moscow_tz = pytz.timezone("Europe/Moscow")
-        now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+        now_utc = datetime.now(timezone.utc)
         now_moscow = now_utc.astimezone(moscow_tz)
         return now_moscow.strftime("%d.%m.%Y %H:%M:%S MSK")
     

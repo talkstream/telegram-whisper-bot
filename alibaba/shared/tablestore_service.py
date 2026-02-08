@@ -434,6 +434,20 @@ class TablestoreService:
 
     # ==================== JOB OPERATIONS ====================
 
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get audio job by ID."""
+        try:
+            primary_key = [('job_id', job_id)]
+            consumed, return_row, next_token = self.client.get_row(
+                'audio_jobs', primary_key, []
+            )
+            if return_row is None:
+                return None
+            return self._row_to_dict(return_row)
+        except Exception as e:
+            logger.error(f"Error getting job {job_id}: {e}")
+            return None
+
     def create_job(self, job_data: Dict[str, Any]) -> str:
         """Create an audio processing job."""
         from tablestore import Row, Condition, RowExistenceExpectation

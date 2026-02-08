@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 class TelegramService:
     """Service for interacting with Telegram Bot API"""
-    
+
+    DEFAULT_TIMEOUT = 30   # seconds for API calls
+    DOWNLOAD_TIMEOUT = 60  # seconds for file downloads (up to 20MB)
+
     def __init__(self, bot_token: str):
         self.bot_token = bot_token
         self.api_url = f"https://api.telegram.org/bot{bot_token}"
@@ -53,7 +56,7 @@ class TelegramService:
             payload["reply_markup"] = json.dumps(reply_markup)
             
         try:
-            response = self.session.post(url, json=payload)
+            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             logger.info(f"Sent message to {chat_id}")
             return response.json()
@@ -79,7 +82,7 @@ class TelegramService:
             payload["reply_markup"] = json.dumps(reply_markup)
             
         try:
-            response = self.session.post(url, json=payload)
+            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -92,7 +95,7 @@ class TelegramService:
         payload = {"chat_id": chat_id, "message_id": message_id}
         
         try:
-            response = self.session.post(url, json=payload)
+            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
@@ -161,7 +164,7 @@ class TelegramService:
                 if caption:
                     data['caption'] = caption
                     
-                response = self.session.post(url, files=files, data=data)
+                response = self.session.post(url, files=files, data=data, timeout=self.DOWNLOAD_TIMEOUT)
                 response.raise_for_status()
                 logger.info(f"Sent document to {chat_id}")
                 return response.json()
@@ -179,10 +182,10 @@ class TelegramService:
         url = f"{self.api_url}/getFile"
         
         try:
-            response = self.session.get(url, params={"file_id": file_id})
+            response = self.session.get(url, params={"file_id": file_id}, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             data = response.json()
-            
+
             if data.get("ok"):
                 return data["result"]["file_path"]
             else:
@@ -197,7 +200,7 @@ class TelegramService:
         url = f"{self.file_url}/{file_path}"
         
         try:
-            response = self.session.get(url, stream=True)
+            response = self.session.get(url, stream=True, timeout=self.DOWNLOAD_TIMEOUT)
             response.raise_for_status()
             
             suffix = os.path.splitext(file_path)[1] or '.ogg'
@@ -224,7 +227,7 @@ class TelegramService:
             payload["show_alert"] = show_alert
 
         try:
-            response = self.session.post(url, json=payload)
+            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
@@ -240,7 +243,7 @@ class TelegramService:
             payload["error_message"] = error_message
             
         try:
-            response = self.session.post(url, json=payload)
+            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             logger.info(f"Answered pre_checkout_query {query_id} with ok={ok}")
             return True
@@ -264,7 +267,7 @@ class TelegramService:
         invoice_params.update(kwargs)  # Add any additional parameters
         
         try:
-            response = self.session.post(url, json=invoice_params)
+            response = self.session.post(url, json=invoice_params, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             logger.info(f"Invoice sent to {chat_id}")
             return response.json()
