@@ -435,47 +435,17 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
         use_code_tags = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
-        dialogue_mode = settings.get('dialogue_mode', False)
 
+        # Diarization is NEVER run in sync path — it requires >60s (two-pass API polling).
+        # Only the audio-processor (300s timeout) can run diarization.
         is_dialogue = False
 
-        if dialogue_mode:
-            # Two-pass diarization: fun-asr-mtl (speakers) + qwen3-asr-flash-filetrans (text)
-            def _diar_progress(stage):
-                if status_message_id:
-                    tg.edit_message_text(chat_id, status_message_id, stage)
+        def chunk_progress(current, total):
+            if status_message_id and total > 1:
+                tg.edit_message_text(chat_id, status_message_id,
+                    f"🎙 Распознаю речь... (часть {current} из {total})")
 
-            raw_text, segments = audio_service.transcribe_with_diarization(
-                converted_path,
-                progress_callback=_diar_progress
-            )
-
-            if segments:
-                text = audio_service.format_dialogue(segments)
-                is_dialogue = True
-            else:
-                # Fallback: regular transcription
-                def chunk_progress(current, total):
-                    if status_message_id and total > 1:
-                        tg.edit_message_text(chat_id, status_message_id,
-                            f"🎙 Распознаю речь... (часть {current} из {total})")
-
-                text = raw_text or audio_service.transcribe_audio(
-                    converted_path, progress_callback=chunk_progress)
-        else:
-            # Regular path (Qwen3-ASR)
-            def chunk_progress(current, total):
-                if status_message_id and total > 1:
-                    tg.edit_message_text(chat_id, status_message_id,
-                        f"🎙 Распознаю речь... (часть {current} из {total})")
-
-            text = audio_service.transcribe_audio(converted_path, progress_callback=chunk_progress)
-
-        # Send diarization debug info to admin
-        if dialogue_mode and chat_id == OWNER_ID:
-            debug_text = audio_service.get_diarization_debug()
-            if debug_text:
-                tg.send_message(chat_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')
+        text = audio_service.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
         if not text or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")
