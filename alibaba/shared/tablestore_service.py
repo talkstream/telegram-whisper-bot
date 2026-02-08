@@ -308,8 +308,9 @@ class TablestoreService:
 
             if state is None:
                 # Delete state
+                row = Row(primary_key)
                 condition = Condition(RowExistenceExpectation.IGNORE)
-                self.client.delete_row('user_state', primary_key, condition)
+                self.client.delete_row('user_state', row, condition)
             else:
                 # Set state
                 attribute_columns = [('state_data', json.dumps(state))]
@@ -417,12 +418,13 @@ class TablestoreService:
 
     def delete_trial_request(self, user_id: int) -> bool:
         """Delete a trial request."""
-        from tablestore import Condition, RowExistenceExpectation
+        from tablestore import Row, Condition, RowExistenceExpectation
 
         try:
             primary_key = [('user_id', str(user_id))]
+            row = Row(primary_key)
             condition = Condition(RowExistenceExpectation.IGNORE)
-            self.client.delete_row('trial_requests', primary_key, condition)
+            self.client.delete_row('trial_requests', row, condition)
             logger.info(f"Deleted trial request for user {user_id}")
             return True
 
@@ -445,6 +447,10 @@ class TablestoreService:
             for key, value in job_data.items():
                 if key != 'job_id':
                     attribute_columns.append((key, self._serialize_value(value)))
+
+            # Auto-add created_at if not present
+            if 'created_at' not in job_data:
+                attribute_columns.append(('created_at', datetime.now(pytz.utc).isoformat()))
 
             row = Row(primary_key, attribute_columns)
             condition = Condition(RowExistenceExpectation.EXPECT_NOT_EXIST)
@@ -719,16 +725,21 @@ class TablestoreService:
 
                 # Check created_at timestamp
                 created_at = row_dict.get('created_at', '')
-                if created_at:
-                    try:
-                        if isinstance(created_at, str):
-                            created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        else:
-                            created_dt = created_at
-                        if created_dt < cutoff_time:
-                            stuck_jobs.append(row_dict)
-                    except Exception:
-                        pass
+                if not created_at:
+                    # No timestamp — legacy job, treat as stuck
+                    stuck_jobs.append(row_dict)
+                    continue
+
+                try:
+                    if isinstance(created_at, str):
+                        created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    else:
+                        created_dt = created_at
+                    if created_dt < cutoff_time:
+                        stuck_jobs.append(row_dict)
+                except Exception:
+                    # Unparseable — treat as stuck
+                    stuck_jobs.append(row_dict)
 
             return stuck_jobs
 
@@ -738,12 +749,13 @@ class TablestoreService:
 
     def delete_job(self, job_id: str) -> bool:
         """Delete an audio job."""
-        from tablestore import Condition, RowExistenceExpectation
+        from tablestore import Row, Condition, RowExistenceExpectation
 
         try:
             primary_key = [('job_id', job_id)]
+            row = Row(primary_key)
             condition = Condition(RowExistenceExpectation.IGNORE)
-            self.client.delete_row('audio_jobs', primary_key, condition)
+            self.client.delete_row('audio_jobs', row, condition)
             logger.info(f"Deleted job {job_id}")
             return True
 

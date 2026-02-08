@@ -612,12 +612,13 @@ class AudioService:
         """
         import requests as req
 
+        self._diarization_debug = {'backend': 'assemblyai'}
+
         api_key = os.environ.get('ASSEMBLYAI_API_KEY')
         if not api_key:
             logging.warning("ASSEMBLYAI_API_KEY not configured")
+            self._diarization_debug['error'] = 'no_api_key'
             return None, []
-
-        self._diarization_debug = {'backend': 'assemblyai'}
         headers = {'Authorization': api_key}
 
         try:
@@ -631,6 +632,7 @@ class AudioService:
                     headers=headers, data=f, timeout=60)
             if upload_resp.status_code != 200:
                 logging.warning(f"AssemblyAI upload failed: {upload_resp.status_code}")
+                self._diarization_debug['error'] = f'upload_failed:{upload_resp.status_code}'
                 return None, []
             upload_url = upload_resp.json()['upload_url']
 
@@ -647,6 +649,11 @@ class AudioService:
                     'language_code': language,
                 },
                 timeout=30)
+            if submit_resp.status_code != 200:
+                error_data = submit_resp.json() if submit_resp.text else {}
+                logging.warning(f"AssemblyAI submit failed: {submit_resp.status_code} - {error_data}")
+                self._diarization_debug['error'] = f'submit_failed:{submit_resp.status_code}'
+                return None, []
             transcript_id = submit_resp.json()['id']
             self._diarization_debug['transcript_id'] = transcript_id
 
@@ -661,9 +668,11 @@ class AudioService:
                     break
                 if status == 'error':
                     logging.warning(f"AssemblyAI error: {data.get('error')}")
+                    self._diarization_debug['error'] = f'transcription_error:{data.get("error")}'
                     return None, []
             else:
                 logging.warning("AssemblyAI polling timeout")
+                self._diarization_debug['error'] = 'polling_timeout'
                 return None, []
 
             # Step 4: Parse utterances
@@ -839,6 +848,7 @@ class AudioService:
 
         # Backend routing
         backend = os.environ.get('DIARIZATION_BACKEND', 'dashscope')
+        logging.info(f"Diarization backend: {backend}")
 
         if backend == 'assemblyai':
             result = self._diarize_assemblyai(audio_path, language,
@@ -846,7 +856,11 @@ class AudioService:
             if result[1]:  # segments not empty
                 return result
             logging.warning("AssemblyAI returned no segments, falling back to dashscope")
-            self._diarization_debug = {}  # Reset for dashscope path
+            # Snapshot AssemblyAI debug, reset for DashScope
+            self._diarization_debug = {
+                'attempted_backend': 'assemblyai',
+                'attempted_debug': dict(self._diarization_debug),
+            }
 
         elif backend == 'gemini':
             result = self._diarize_gemini(audio_path, language,
@@ -854,7 +868,11 @@ class AudioService:
             if result[1]:
                 return result
             logging.warning("Gemini returned no segments, falling back to dashscope")
-            self._diarization_debug = {}  # Reset for dashscope path
+            # Snapshot Gemini debug, reset for DashScope
+            self._diarization_debug = {
+                'attempted_backend': 'gemini',
+                'attempted_debug': dict(self._diarization_debug),
+            }
 
         # Default: DashScope two-pass diarization
         api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
@@ -878,7 +896,7 @@ class AudioService:
             if speaker_count > 0:
                 spk_params['speaker_count'] = speaker_count
 
-            txt_params = {'language': language}
+            txt_params = {'language': language, 'enable_words': True}
 
             spk_result = None
             txt_result = None
@@ -920,10 +938,14 @@ class AudioService:
                     for s in speaker_segments[:5]
                 )
             if text_segments:
+                is_word_level = len(text_segments) > 20
+                sample = 10 if is_word_level else 5
                 self._diarization_debug['txt_detail'] = '; '.join(
-                    f"[{s['begin_time']}-{s['end_time']}]{s['text'][:30]}"
-                    for s in text_segments[:5]
+                    f"[{s['begin_time']}-{s['end_time']}]{s['text'][:20]}"
+                    for s in text_segments[:sample]
                 )
+                if is_word_level:
+                    self._diarization_debug['txt_word_level'] = True
 
             # Fallback cascade
             if not text_segments and not speaker_segments:
@@ -989,17 +1011,33 @@ class AudioService:
         return segments
 
     def _parse_text_segments(self, trans_data: dict) -> List[dict]:
-        """Parse qwen3-asr-flash-filetrans result into text segments."""
+        """Parse qwen3-asr-flash-filetrans result into text segments.
+
+        When enable_words=true, uses word-level data for precise timestamps.
+        Each word becomes its own segment. Falls back to sentence-level if
+        words array is absent.
+        """
         segments = []
         for transcript in trans_data.get('transcripts', []):
             for sentence in transcript.get('sentences', []):
-                text = sentence.get('text', '').strip()
-                if text:
-                    segments.append({
-                        'text': text,
-                        'begin_time': sentence.get('begin_time', 0),
-                        'end_time': sentence.get('end_time', 0)
-                    })
+                words = sentence.get('words')
+                if words:
+                    for w in words:
+                        text = (w.get('text', '') + w.get('punctuation', '')).strip()
+                        if text:
+                            segments.append({
+                                'text': text,
+                                'begin_time': w.get('begin_time', 0),
+                                'end_time': w.get('end_time', 0)
+                            })
+                else:
+                    text = sentence.get('text', '').strip()
+                    if text:
+                        segments.append({
+                            'text': text,
+                            'begin_time': sentence.get('begin_time', 0),
+                            'end_time': sentence.get('end_time', 0)
+                        })
         return segments
 
     def _cleanup_oss_key(self, oss_key: Optional[str]):
@@ -1180,6 +1218,26 @@ class AudioService:
                 for seg in text_segments
             ]
 
+        # Normalize timelines: both models may report different total durations
+        # for the same audio. Scale to [0.0, 1.0] range for alignment.
+        spk_max = max(s['end_time'] for s in speaker_segments) or 1
+        txt_max = max(s['end_time'] for s in text_segments) or 1
+
+        if abs(spk_max - txt_max) / max(spk_max, txt_max) > 0.1:
+            # >10% difference — normalize both to [0, 1] range
+            logging.info(f"Diarization timeline mismatch: spk={spk_max}ms, txt={txt_max}ms, normalizing")
+            self._diarization_debug['timeline_normalized'] = f'{spk_max}ms/{txt_max}ms'
+            speaker_segments = [
+                {**s, 'begin_time': s['begin_time'] / spk_max,
+                       'end_time': s['end_time'] / spk_max}
+                for s in speaker_segments
+            ]
+            text_segments = [
+                {**s, 'begin_time': s['begin_time'] / txt_max,
+                       'end_time': s['end_time'] / txt_max}
+                for s in text_segments
+            ]
+
         # Step 1: Build word stream with estimated timestamps
         word_stream = []  # [(estimated_time_ms, word), ...]
         for tseg in text_segments:
@@ -1328,7 +1386,22 @@ class AudioService:
 
         lines = ["DIARIZATION DEBUG", ""]
 
-        # AssemblyAI / Gemini backends (return early)
+        # Show attempted backend details if there was a fallback
+        if 'attempted_debug' in dbg:
+            ad = dbg['attempted_debug']
+            name = dbg.get('attempted_backend', 'unknown').upper()
+            lines.append(f"--- {name} (attempted, fell back) ---")
+            if 'error' in ad:
+                lines.append(f"error: {ad['error']}")
+            if 'transcript_id' in ad:
+                lines.append(f"transcript_id: {ad['transcript_id']}")
+            lines.append(f"model: {ad.get('model', 'n/a')}")
+            lines.append(f"segments: {ad.get('spk_segments', 0)}")
+            if ad.get('fallback') and ad['fallback'] != 'none':
+                lines.append(f"exception: {ad['fallback']}")
+            lines.append("")
+
+        # AssemblyAI / Gemini backends (successful, return early)
         if dbg.get('backend') in ('assemblyai', 'gemini'):
             lines.append(f"--- {dbg['backend'].upper()} ---")
             lines.append(f"model: {dbg.get('model', 'n/a')}")
@@ -1343,7 +1416,7 @@ class AudioService:
             text = html.escape('\n'.join(lines))
             return text[:3900]
 
-        # DashScope two-pass (legacy)
+        # DashScope two-pass
         # Pass 1
         lines.append("--- Pass 1 (fun-asr-mtl) ---")
         lines.append(f"result: {dbg.get('pass1_result', 'n/a')}")
@@ -1386,6 +1459,10 @@ class AudioService:
             lines.append(f"spk_segments: {dbg['spk_segments']}")
         if 'txt_segments' in dbg:
             lines.append(f"txt_segments: {dbg['txt_segments']}")
+        if dbg.get('txt_word_level'):
+            lines.append("txt_mode: word-level")
+        if 'timeline_normalized' in dbg:
+            lines.append(f"timeline_normalized: {dbg['timeline_normalized']}")
         if 'spk_detail' in dbg:
             lines.append(f"spk_detail: {dbg['spk_detail']}")
         if 'txt_detail' in dbg:

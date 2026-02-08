@@ -841,7 +841,7 @@ class TestTwoPassDiarization:
         # Pass 2: qwen3-asr-flash-filetrans with language (string, not list)
         txt_call = mock_submit.call_args_list[1]
         assert txt_call[0][1] == 'qwen3-asr-flash-filetrans'
-        assert txt_call[0][2] == {'language': 'ru'}
+        assert txt_call[0][2] == {'language': 'ru', 'enable_words': True}
         assert 'language_hints' not in txt_call[0][2]
 
 
@@ -1531,3 +1531,155 @@ class TestDiarizationRouting:
             raw, segs = audio_service.transcribe_with_diarization('/tmp/test.mp3')
         mock_gemini.assert_called_once()
         mock_oss.assert_called_once()
+
+
+# ============== Word-level timestamps (enable_words) ==============
+
+class TestParseTextSegmentsWordLevel:
+    """Tests for _parse_text_segments() with word-level timestamps."""
+
+    def test_parse_text_segments_word_level(self, audio_service):
+        """Words array present → one segment per word."""
+        trans_data = {
+            'transcripts': [{
+                'sentences': [{
+                    'text': 'Привет мир',
+                    'begin_time': 0,
+                    'end_time': 2000,
+                    'words': [
+                        {'text': 'Привет', 'punctuation': '', 'begin_time': 0, 'end_time': 800},
+                        {'text': 'мир', 'punctuation': '', 'begin_time': 900, 'end_time': 2000},
+                    ]
+                }]
+            }]
+        }
+        segments = audio_service._parse_text_segments(trans_data)
+        assert len(segments) == 2
+        assert segments[0] == {'text': 'Привет', 'begin_time': 0, 'end_time': 800}
+        assert segments[1] == {'text': 'мир', 'begin_time': 900, 'end_time': 2000}
+
+    def test_parse_text_segments_mixed_words_and_sentences(self, audio_service):
+        """Sentences with and without words array."""
+        trans_data = {
+            'transcripts': [{
+                'sentences': [
+                    {
+                        'text': 'Первое предложение',
+                        'begin_time': 0,
+                        'end_time': 3000,
+                        'words': [
+                            {'text': 'Первое', 'punctuation': '', 'begin_time': 0, 'end_time': 1500},
+                            {'text': 'предложение', 'punctuation': '', 'begin_time': 1600, 'end_time': 3000},
+                        ]
+                    },
+                    {
+                        'text': 'Без слов',
+                        'begin_time': 3100,
+                        'end_time': 5000,
+                    },
+                ]
+            }]
+        }
+        segments = audio_service._parse_text_segments(trans_data)
+        assert len(segments) == 3
+        assert segments[0]['text'] == 'Первое'
+        assert segments[1]['text'] == 'предложение'
+        assert segments[2] == {'text': 'Без слов', 'begin_time': 3100, 'end_time': 5000}
+
+    def test_parse_text_segments_sentence_fallback(self, audio_service):
+        """No words key at all → sentence-level (backward compat)."""
+        trans_data = {
+            'transcripts': [{
+                'sentences': [
+                    {'text': 'Длинное предложение', 'begin_time': 0, 'end_time': 5000},
+                    {'text': 'Второе', 'begin_time': 5100, 'end_time': 8000},
+                ]
+            }]
+        }
+        segments = audio_service._parse_text_segments(trans_data)
+        assert len(segments) == 2
+        assert segments[0] == {'text': 'Длинное предложение', 'begin_time': 0, 'end_time': 5000}
+        assert segments[1] == {'text': 'Второе', 'begin_time': 5100, 'end_time': 8000}
+
+    def test_parse_text_segments_punctuation_combined(self, audio_service):
+        """Word text + punctuation are concatenated."""
+        trans_data = {
+            'transcripts': [{
+                'sentences': [{
+                    'text': 'Да нет',
+                    'begin_time': 0,
+                    'end_time': 2000,
+                    'words': [
+                        {'text': 'Да', 'punctuation': ',', 'begin_time': 0, 'end_time': 800},
+                        {'text': 'нет', 'punctuation': '.', 'begin_time': 900, 'end_time': 2000},
+                    ]
+                }]
+            }]
+        }
+        segments = audio_service._parse_text_segments(trans_data)
+        assert len(segments) == 2
+        assert segments[0]['text'] == 'Да,'
+        assert segments[1]['text'] == 'нет.'
+
+    def test_parse_text_segments_empty_words_array(self, audio_service):
+        """words: [] → fallback to sentence text."""
+        trans_data = {
+            'transcripts': [{
+                'sentences': [{
+                    'text': 'Целое предложение',
+                    'begin_time': 0,
+                    'end_time': 4000,
+                    'words': []
+                }]
+            }]
+        }
+        segments = audio_service._parse_text_segments(trans_data)
+        assert len(segments) == 1
+        assert segments[0] == {'text': 'Целое предложение', 'begin_time': 0, 'end_time': 4000}
+
+
+class TestAlignWordLevelPrecise:
+    """Tests for alignment precision with word-level timestamps."""
+
+    def test_align_word_level_precise_timestamps(self, audio_service):
+        """Word-level segments with exact timestamps → correct speaker assignment."""
+        speaker_segments = [
+            {'speaker_id': 0, 'begin_time': 0, 'end_time': 3000, 'text': ''},
+            {'speaker_id': 1, 'begin_time': 3000, 'end_time': 6000, 'text': ''},
+        ]
+        # Word-level: each word is its own segment with precise times
+        text_segments = [
+            {'text': 'Привет,', 'begin_time': 100, 'end_time': 600},
+            {'text': 'как', 'begin_time': 700, 'end_time': 1100},
+            {'text': 'дела?', 'begin_time': 1200, 'end_time': 2000},
+            {'text': 'Хорошо,', 'begin_time': 3100, 'end_time': 3800},
+            {'text': 'спасибо.', 'begin_time': 3900, 'end_time': 5000},
+        ]
+        merged = audio_service._align_speakers_with_text(speaker_segments, text_segments)
+        # Speaker 0 should have first 3 words, speaker 1 should have last 2
+        assert len(merged) == 2
+        assert merged[0]['speaker_id'] == 0
+        assert 'Привет' in merged[0]['text']
+        assert 'дела' in merged[0]['text']
+        assert merged[1]['speaker_id'] == 1
+        assert 'Хорошо' in merged[1]['text']
+        assert 'спасибо' in merged[1]['text']
+
+
+class TestDebugWordLevel:
+    """Tests for debug output with word-level data."""
+
+    def test_debug_shows_timeline_normalized(self, audio_service):
+        """Debug output includes timeline_normalized and txt_mode when present."""
+        audio_service._diarization_debug = {
+            'spk_segments': 5,
+            'txt_segments': 150,
+            'txt_word_level': True,
+            'timeline_normalized': '120000ms/118500ms',
+            'spk_detail': 'spk0[0-30000]',
+            'txt_detail': '[0-500]Привет',
+        }
+        debug_text = audio_service.get_diarization_debug()
+        assert 'txt_mode: word-level' in debug_text
+        assert 'timeline_normalized: 120000ms/118500ms' in debug_text
+        assert 'txt_segments: 150' in debug_text

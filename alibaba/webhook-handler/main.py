@@ -51,8 +51,9 @@ ALIBABA_SECURITY_TOKEN = (
 )
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 
-# Sync processing threshold (seconds) - increased to 60s for less MNS latency (v3.0.1)
-SYNC_PROCESSING_THRESHOLD = 60
+# Sync processing threshold (seconds) - all audio processed synchronously
+# while MNS async queue has no trigger configured (audio-processor unreachable)
+SYNC_PROCESSING_THRESHOLD = 300
 
 # Owner ID for admin commands
 OWNER_ID = int(os.environ.get('OWNER_ID', '0'))
