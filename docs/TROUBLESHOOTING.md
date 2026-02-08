@@ -89,4 +89,4 @@ s logs audio-processor --tail
 
 ---
 
-*v3.6.0*
+*v4.0.0*

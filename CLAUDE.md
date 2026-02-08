@@ -4,8 +4,8 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v3.6.0 |
-| **ASR** | `qwen3-asr-flash` (REST), `fun-asr-mtl` + `qwen3-asr-flash-filetrans` (two-pass diarization) |
+| **Version** | v4.0.0 |
+| **ASR** | `qwen3-asr-flash` (REST), diarization: DashScope two-pass + AssemblyAI + Gemini backends |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
 | **Region** | eu-central-1 (Frankfurt) |
@@ -80,6 +80,9 @@ alibaba/
 | `WHISPER_BACKEND` | no | `qwen-asr` (default) |
 | `LOG_LEVEL` | no | `INFO` (default) |
 | `GOOGLE_API_KEY` | no | Gemini fallback |
+| `DIARIZATION_BACKEND` | no | `dashscope` (default), `assemblyai`, `gemini` |
+| `ASSEMBLYAI_API_KEY` | no | AssemblyAI diarization |
+| `AUDIO_PROCESSOR_URL` | no | Direct HTTP fallback URL |
 
 ---
 
@@ -107,6 +110,12 @@ alibaba/
 1. Short (≤4000 chars): edit status message in place
 2. File mode (`long_text_mode: file`): delete status → send .txt with caption
 3. Split mode (default): delete status → `send_long_message()`
+
+### Diarization Backends (v4.0.0)
+- `dashscope` (default): two-pass (fun-asr-mtl + qwen3-asr-flash-filetrans)
+- `assemblyai`: Universal-2 (requires ASSEMBLYAI_API_KEY)
+- `gemini`: Gemini 2.5 Flash (requires GOOGLE_API_KEY)
+- All → same segment format, auto-fallback to dashscope on failure
 
 ### Diarization (v3.6.0 — two-pass)
 - Pass 1: `fun-asr-mtl` — speaker labels + timestamps (no Russian)
@@ -159,4 +168,4 @@ FC ~$5 + Tablestore ~$1 + DashScope ~$2 (68% savings vs GCP ~$25)
 
 ---
 
-*v3.6.0 — 2026-02-07*
+*v4.0.0 — 2026-02-09*

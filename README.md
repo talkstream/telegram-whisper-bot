@@ -2,7 +2,7 @@
 
 **AI-бот для транскрипции голосовых сообщений в Telegram**
 
-[![Version](https://img.shields.io/badge/version-3.6.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-@editorialsrobot-blue?logo=telegram)](https://t.me/editorialsrobot)
 
@@ -24,8 +24,10 @@
 
 ## Возможности
 
+- **Диаризация** — разделение по спикерам в интервью и разговорах (`/dialogue`)
+  - 3 бэкенда: DashScope two-pass, AssemblyAI, Gemini
+  - Метки спикеров с возможностью отключения (`/speakers`)
 - **Транскрипция** — голосовые, аудио, видео (до 1 часа)
-- **Диаризация** — определение спикеров в разговоре (`/dialogue`)
 - **Форматирование** — пунктуация, абзацы, «ё» через LLM
 - **Чанкинг** — автосплит длинных аудио (>2.5 мин)
 - **52 языка** — автоопределение
@@ -74,6 +76,7 @@
 | `/yo` | Буква «ё» |
 | `/output` | Режим длинного текста (сообщения / .txt файл) |
 | `/dialogue` | Режим диалога (диаризация) |
+| `/speakers` | Метки спикеров |
 
 ---
 
@@ -81,7 +84,7 @@
 
 | Параметр | Значение |
 |----------|----------|
-| ASR | Qwen3-ASR-Flash (REST), Fun-ASR (диаризация) |
+| ASR | Qwen3-ASR-Flash (REST), диаризация: DashScope / AssemblyAI / Gemini |
 | LLM | Qwen-turbo (fallback: Gemini 2.5 Flash) |
 | TTFT | ~92 мс |
 | Синхронная обработка | до 60 сек |
@@ -92,6 +95,15 @@
 ---
 
 ## Changelog
+
+### [4.0.0] — 2026-02-09
+- **Диаризация**: 3 бэкенда (DashScope two-pass, AssemblyAI, Gemini) с автофолбэком
+- Word-level timestamps для точного выравнивания спикеров
+- `/speakers` — переключение меток спикеров
+- `/debug` — дебаг диаризации (админ)
+- Bulletproof async pipeline (таймауты, дедупликация)
+- Direct HTTP invocation fallback для audio-processor
+- 166 тестов
 
 ### [3.6.0] — 2026-02-07
 - Диаризация (Fun-ASR) — определение спикеров

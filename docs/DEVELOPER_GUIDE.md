@@ -92,4 +92,4 @@ Issues: see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ---
 
-*v3.6.0*
+*v4.0.0*

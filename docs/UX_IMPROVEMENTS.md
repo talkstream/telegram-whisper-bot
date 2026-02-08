@@ -62,4 +62,4 @@ Fallback: if diarization fails → regular ASR path (transparent to user).
 
 ---
 
-*v3.6.0*
+*v4.0.0*

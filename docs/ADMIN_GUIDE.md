@@ -37,12 +37,13 @@ Approve = 15 min + notification to user.
 | `/export users\|logs\|payments <days>` | CSV export |
 | `/report daily\|weekly` | Summary report |
 
-### System (v3.6.0)
+### System (v4.0.0)
 | Command | Description |
 |---------|-------------|
 | `/mute` | Show notification status |
 | `/mute <hours>` | Mute error notifications |
 | `/mute off` | Unmute |
+| `/debug` | Toggle diarization debug output |
 
 ## Auto-notifications
 
@@ -87,4 +88,4 @@ s logs --tail audio-processor
 
 ---
 
-*v3.6.0*
+*v4.0.0*

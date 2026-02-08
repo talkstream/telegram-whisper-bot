@@ -1,6 +1,6 @@
 # Alibaba Cloud Critical Configuration
 
-**v3.6.0** | 2026-02-07
+**v4.0.0** | 2026-02-09
 
 ---
 
@@ -18,7 +18,7 @@
 
 ---
 
-## Diarization (v3.6.0 — two-pass)
+## Diarization (v4.0.0 — multi-backend)
 
 Two parallel async passes, single OSS upload:
 
@@ -42,6 +42,16 @@ Flow: upload to OSS → launch both passes in parallel → poll → merge by tim
 **DO NOT USE:** `paraformer-v2` (China-only, `"Model not exist"` on intl endpoint)
 
 Requires: `OSS_BUCKET`, `OSS_ENDPOINT`, `ALIBABA_ACCESS_KEY/SECRET_KEY`
+
+### Backend Routing (v4.0.0)
+
+| Backend | Model | Env Variable | Fallback |
+|---------|-------|-------------|----------|
+| `dashscope` (default) | fun-asr-mtl + qwen3-asr-flash-filetrans | `DASHSCOPE_API_KEY` | — |
+| `assemblyai` | Universal-2 | `ASSEMBLYAI_API_KEY` | → dashscope |
+| `gemini` | Gemini 2.5 Flash | `GOOGLE_API_KEY` | → dashscope |
+
+Set via `DIARIZATION_BACKEND` env var. All backends produce the same segment format.
 
 ---
 
@@ -88,4 +98,4 @@ Optimizations: bitrate 64k→32k, short audio 24k/8kHz, sync threshold 60s.
 
 ---
 
-*v3.6.0*
+*v4.0.0*

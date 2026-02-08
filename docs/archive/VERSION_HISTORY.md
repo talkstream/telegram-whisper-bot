@@ -1,11 +1,12 @@
 # Version History
 
-## Current: v3.6.0 (2026-02-07)
+## Current: v4.0.0 (2026-02-09)
 
-## v3.x — Alibaba Cloud
+## v4.0 + v3.x — Alibaba Cloud
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v4.0.0 | 2026-02-09 | **Major**: 3 diarization backends (DashScope/AssemblyAI/Gemini), word-level timestamps, `/speakers` `/debug`, bulletproof async pipeline, direct HTTP fallback. 166 tests. |
 | v3.6.0 | 2026-02-07 | Diarization (Fun-ASR), `/output` `/dialogue` `/mute`, `_build_format_prompt()` DRY, proper noun/sibilant rules, SLS logging, TelegramErrorHandler, `send_as_file()`. 86 tests. |
 | v3.5.0 | 2026-02-07 | ASR chunking (>150s auto-split), document handler, adaptive compression, user-friendly errors. 55 tests. |
 | v3.4.0 | 2026-02-06 | Evolving progress messages, typing indicators, LLM threshold 100 chars, DB 6→4 calls |
@@ -38,7 +39,8 @@
 | 2025-07-04 | Architecture overhaul (-74% main.py) |
 | 2026-02-04 | Alibaba migration (-68% cost: $25→$8/mo) |
 | 2026-02-07 | v3.6.0 diarization, 86 tests |
+| 2026-02-09 | v4.0.0 multi-backend diarization, 166 tests |
 
 ---
 
-*v3.6.0*
+*v4.0.0*
