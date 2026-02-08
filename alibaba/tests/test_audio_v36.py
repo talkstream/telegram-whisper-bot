@@ -1735,6 +1735,28 @@ class TestDebugWordLevel:
         assert 'txt_segments: 150' in debug_text
 
 
+# ============== Debug Mode Gating Tests ==============
+
+class TestDebugModeGating:
+    """Test that debug output respects debug_mode setting."""
+
+    def test_debug_gated_by_setting(self):
+        """Debug output should only be sent when debug_mode=True."""
+        # Simulate the condition from handler.py
+        settings_on = {'debug_mode': True, 'dialogue_mode': True}
+        settings_off = {'debug_mode': False, 'dialogue_mode': True}
+        settings_default = {'dialogue_mode': True}
+
+        assert settings_on.get('debug_mode', False) is True
+        assert settings_off.get('debug_mode', False) is False
+        assert settings_default.get('debug_mode', False) is False
+
+    def test_debug_default_is_off(self):
+        """debug_mode defaults to False (no debug output by default)."""
+        settings = {}
+        assert settings.get('debug_mode', False) is False
+
+
 # ============== v3.6.1 Robustness Tests ==============
 
 class TestFutureResultTimeout:

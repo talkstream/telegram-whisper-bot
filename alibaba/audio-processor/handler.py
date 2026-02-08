@@ -311,10 +311,11 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
             text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
-        # Send diarization debug info to admin
+        # Send diarization debug info to admin (only when /debug is on)
         if dialogue_mode:
             owner_id = int(os.environ.get('OWNER_ID', 0))
-            if owner_id and chat_id == owner_id:
+            debug_mode = settings.get('debug_mode', False)
+            if owner_id and chat_id == owner_id and debug_mode:
                 debug_text = audio.get_diarization_debug()
                 if debug_text:
                     tg.send_message(owner_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')

@@ -807,7 +807,8 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "/status — статус очереди MNS\n"
             "/flush — очистить зависшие задачи\n"
             "/batch [user_id] — очередь пользователя\n"
-            "/mute [часы|off] — уведомления об ошибках\n\n"
+            "/mute [часы|off] — уведомления об ошибках\n"
+            "/debug — вкл/выкл дебаг диаризации\n\n"
             "<b>Отчёты:</b>\n"
             "/export [users|logs|payments] [дни] — экспорт CSV\n"
             "/report [daily|weekly] — отчёт"
@@ -874,6 +875,16 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         if user_id != OWNER_ID:
             return 'unauthorized'
         return handle_mute_command(text, chat_id, tg)
+
+    elif command == '/debug':
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        settings = db.get_user_settings(user_id) or {}
+        settings['debug_mode'] = not settings.get('debug_mode', False)
+        db.update_user_settings(user_id, settings)
+        status = 'включён' if settings['debug_mode'] else 'выключен'
+        tg.send_message(chat_id, f"Дебаг диаризации: {status}")
+        return 'debug_toggle'
 
     else:
         tg.send_message(chat_id, "Неизвестная команда. Используйте /help для справки.")

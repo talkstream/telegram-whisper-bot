@@ -58,6 +58,7 @@ alibaba/
 | `/stat` `/cost` `/metrics [h]` | Statistics |
 | `/status` `/flush` `/batch [id]` | Queue management |
 | `/mute [hours\|off]` | Mute error notifications |
+| `/debug` | Toggle diarization debug output |
 | `/export` `/report` | Data export |
 
 ---
