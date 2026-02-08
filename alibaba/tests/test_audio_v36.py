@@ -1346,6 +1346,28 @@ class TestDiarizeAssemblyAI:
             audio_service._diarize_assemblyai('/tmp/test.mp3', progress_callback=callback)
         assert callback.call_count == 2
 
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_submit_includes_speech_models(self, mock_post, mock_get, mock_sleep, audio_service):
+        """Submit request includes required speech_models parameter."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_123'}),
+        ]
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {
+            'status': 'completed', 'text': 'ok', 'utterances': []
+        })
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            audio_service._diarize_assemblyai('/tmp/test.mp3')
+        # Verify the submit call (second post) includes speech_models
+        submit_call = mock_post.call_args_list[1]
+        assert submit_call.kwargs['json']['speech_models'] == ['universal-2']
+
 
 # ============== Gemini Backend ==============
 

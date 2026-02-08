@@ -645,6 +645,7 @@ class AudioService:
                 headers={**headers, 'Content-Type': 'application/json'},
                 json={
                     'audio_url': upload_url,
+                    'speech_models': ['universal-2'],
                     'speaker_labels': True,
                     'language_code': language,
                 },
@@ -692,7 +693,7 @@ class AudioService:
                 })
 
             self._diarization_debug.update({
-                'model': 'universal-3-pro',
+                'model': 'universal-2',
                 'spk_segments': len(segments),
                 'unique_speakers': len(speaker_ids),
                 'fallback': 'none',
