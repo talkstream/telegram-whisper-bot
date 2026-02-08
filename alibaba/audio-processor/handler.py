@@ -341,7 +341,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             if progress_id:
                 tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
             tg.send_chat_action(chat_id, 'typing')
-            formatted_text = audio.format_text_with_qwen(
+            formatted_text = audio.format_text_with_llm(
                 text, use_code_tags=use_code, use_yo=use_yo,
                 is_chunked=is_chunked, is_dialogue=is_dialogue)
         else:

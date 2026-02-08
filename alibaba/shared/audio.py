@@ -1980,12 +1980,26 @@ class AudioService:
 
 {text}"""
 
+    def format_text_with_llm(self, text: str, use_code_tags: bool = False,
+                              use_yo: bool = True, is_chunked: bool = False,
+                              is_dialogue: bool = False) -> str:
+        """Route LLM formatting to configured backend (LLM_BACKEND env var)."""
+        backend = os.environ.get('LLM_BACKEND', 'qwen')
+        logging.info(f"LLM backend: {backend}")
+        if backend == 'assemblyai':
+            return self.format_text_with_assemblyai(
+                text, use_code_tags, use_yo, is_chunked, is_dialogue)
+        else:  # 'qwen' default
+            return self.format_text_with_qwen(
+                text, use_code_tags, use_yo, is_chunked, is_dialogue)
+
     def format_text_with_qwen(self, text: str, use_code_tags: bool = False,
                                use_yo: bool = True, is_chunked: bool = False,
-                               is_dialogue: bool = False) -> str:
+                               is_dialogue: bool = False,
+                               _is_fallback: bool = False) -> str:
         """
         Format transcribed text using Qwen LLM (Alibaba) via REST API.
-        Falls back to Gemini if Qwen fails.
+        Falls back to AssemblyAI LLM Gateway if Qwen fails.
 
         Args:
             text: Raw transcribed text
@@ -1993,6 +2007,7 @@ class AudioService:
             use_yo: Whether to preserve ё letters
             is_chunked: Whether text was assembled from multiple ASR chunks
             is_dialogue: Whether text is a multi-speaker dialogue
+            _is_fallback: Whether this is already a fallback call (prevents loops)
 
         Returns:
             Formatted text
@@ -2012,8 +2027,11 @@ class AudioService:
         try:
             api_key = self.alibaba_api_key or os.environ.get('DASHSCOPE_API_KEY')
             if not api_key:
-                logging.warning("DASHSCOPE_API_KEY not set, falling back to Gemini")
-                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+                if _is_fallback:
+                    logging.warning("DASHSCOPE_API_KEY not set, returning original text")
+                    return text
+                logging.warning("DASHSCOPE_API_KEY not set, falling back to AssemblyAI")
+                return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
 
             logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
 
@@ -2063,8 +2081,11 @@ class AudioService:
 
                 # Quality check
                 if len(formatted_text) < 5:
-                    logging.warning("Qwen returned very short text, trying Gemini fallback")
-                    return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+                    if _is_fallback:
+                        logging.warning("Qwen returned very short text, returning original")
+                        return text
+                    logging.warning("Qwen returned very short text, trying AssemblyAI fallback")
+                    return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
 
                 # Log API call metrics
                 if self.metrics_service:
@@ -2073,20 +2094,132 @@ class AudioService:
                 logging.info("Successfully formatted text with Qwen LLM")
                 return formatted_text
             else:
-                logging.warning(f"Qwen API error: {response.status_code} - {response.text}, trying Gemini fallback")
-                return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+                if _is_fallback:
+                    logging.warning(f"Qwen API error: {response.status_code} - {response.text}, returning original text")
+                    return text
+                logging.warning(f"Qwen API error: {response.status_code} - {response.text}, trying AssemblyAI fallback")
+                return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
 
         except requests.RequestException as e:
-            logging.warning(f"Qwen API request failed: {e}, falling back to Gemini")
-            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+            if _is_fallback:
+                logging.warning(f"Qwen API request failed: {e}, returning original text")
+                return text
+            logging.warning(f"Qwen API request failed: {e}, falling back to AssemblyAI")
+            return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
 
         except Exception as e:
             api_duration = time.time() - api_start_time
             if self.metrics_service:
                 self.metrics_service.log_api_call('qwen-llm', api_duration, False, str(e))
 
-            logging.warning(f"Qwen LLM failed: {e}, falling back to Gemini")
-            return self.format_text_with_gemini(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+            if _is_fallback:
+                logging.warning(f"Qwen LLM failed: {e}, returning original text")
+                return text
+            logging.warning(f"Qwen LLM failed: {e}, falling back to AssemblyAI")
+            return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+
+    def format_text_with_assemblyai(self, text: str, use_code_tags: bool = False,
+                                      use_yo: bool = True, is_chunked: bool = False,
+                                      is_dialogue: bool = False,
+                                      _is_fallback: bool = False) -> str:
+        """
+        Format transcribed text using AssemblyAI LLM Gateway (Gemini 3 Flash).
+        Falls back to Qwen if this fails (unless already a fallback call).
+        """
+        import requests
+
+        # Check if text is too short to format
+        word_count = len(text.split())
+        if word_count < 10:
+            logging.info(f"Text too short for LLM formatting ({word_count} words < 10), returning original")
+            return text
+
+        api_start_time = time.time()
+
+        try:
+            api_key = os.environ.get('ASSEMBLYAI_API_KEY')
+            if not api_key:
+                if _is_fallback:
+                    logging.warning("ASSEMBLYAI_API_KEY not set, returning original text")
+                    return text
+                logging.warning("ASSEMBLYAI_API_KEY not set, falling back to Qwen")
+                return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+
+            prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+
+            logging.info(f"Starting AssemblyAI LLM request (Gemini 3 Flash). Input chars: {len(text)}")
+
+            url = "https://llm-gateway.assemblyai.com/v1/chat/completions"
+
+            headers = {
+                'Authorization': api_key,
+                'Content-Type': 'application/json'
+            }
+
+            payload = {
+                'model': 'gemini-3-flash-preview',
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ],
+                'max_tokens': 8192
+            }
+
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+
+            if response.status_code == 200:
+                data = response.json()
+                logging.info(f"AssemblyAI LLM response keys: {list(data.keys())}")
+
+                formatted_text = ""
+                if 'choices' in data and data['choices']:
+                    formatted_text = data['choices'][0].get('message', {}).get('content', '')
+
+                formatted_text = formatted_text.strip()
+                api_duration = time.time() - api_start_time
+                logging.info(f"AssemblyAI LLM finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
+
+                # Remove code tags if present but not wanted
+                if not use_code_tags and formatted_text.startswith('<code>'):
+                    formatted_text = formatted_text.replace('<code>', '').replace('</code>', '')
+
+                # Quality check
+                if len(formatted_text) < 5:
+                    if _is_fallback:
+                        logging.warning("AssemblyAI LLM returned very short text, returning original")
+                        return text
+                    logging.warning("AssemblyAI LLM returned very short text, trying Qwen fallback")
+                    return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+
+                # Log API call metrics
+                if self.metrics_service:
+                    self.metrics_service.log_api_call('assemblyai-llm', api_duration, True)
+
+                logging.info("Successfully formatted text with AssemblyAI LLM")
+                return formatted_text
+            else:
+                if _is_fallback:
+                    logging.warning(f"AssemblyAI LLM API error: {response.status_code} - {response.text}, returning original text")
+                    return text
+                logging.warning(f"AssemblyAI LLM API error: {response.status_code} - {response.text}, trying Qwen fallback")
+                return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+
+        except requests.RequestException as e:
+            if _is_fallback:
+                logging.warning(f"AssemblyAI LLM request failed: {e}, returning original text")
+                return text
+            logging.warning(f"AssemblyAI LLM request failed: {e}, falling back to Qwen")
+            return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+
+        except Exception as e:
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('assemblyai-llm', api_duration, False, str(e))
+
+            if _is_fallback:
+                logging.warning(f"AssemblyAI LLM failed: {e}, returning original text")
+                return text
+            logging.warning(f"AssemblyAI LLM failed: {e}, falling back to Qwen")
+            return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
 
     def format_text_with_gemini(self, text: str, use_code_tags: bool = False,
                                 use_yo: bool = True, is_chunked: bool = False,

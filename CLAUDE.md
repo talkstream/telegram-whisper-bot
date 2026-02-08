@@ -82,6 +82,7 @@ alibaba/
 | `GOOGLE_API_KEY` | no | Gemini fallback |
 | `DIARIZATION_BACKEND` | no | `dashscope` (default), `assemblyai`, `gemini` |
 | `ASSEMBLYAI_API_KEY` | no | AssemblyAI diarization |
+| `LLM_BACKEND` | no | `qwen` (default), `assemblyai` |
 | `AUDIO_PROCESSOR_URL` | no | Direct HTTP fallback URL |
 
 ---
