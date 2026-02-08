@@ -1,0 +1,1292 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telegram Whisper Bot — Pitch Deck</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0f;
+  --bg-card: #12121a;
+  --bg-card-alt: #1a1a28;
+  --accent: #3b82f6;
+  --accent-dim: #2563eb;
+  --accent-glow: rgba(59, 130, 246, 0.15);
+  --text: #e4e4e7;
+  --text-dim: #a1a1aa;
+  --text-bright: #fafafa;
+  --border: #27272a;
+  --green: #22c55e;
+  --orange: #f59e0b;
+  --red: #ef4444;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: -apple-system, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Slides --- */
+.slide {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 60px 40px;
+  position: relative;
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+.slide.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.slide-inner {
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* --- Typography --- */
+.slide-number {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: clamp(36px, 5vw, 64px);
+  font-weight: 700;
+  color: var(--text-bright);
+  line-height: 1.1;
+  margin-bottom: 16px;
+}
+
+h2 {
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 700;
+  color: var(--text-bright);
+  line-height: 1.2;
+  margin-bottom: 24px;
+}
+
+h3 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 12px;
+}
+
+.subtitle {
+  font-size: clamp(18px, 2.5vw, 24px);
+  color: var(--text-dim);
+  max-width: 640px;
+  line-height: 1.5;
+}
+
+p { margin-bottom: 16px; }
+
+.highlight {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tag {
+  display: inline-block;
+  background: var(--accent-glow);
+  color: var(--accent);
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+/* --- Stats grid --- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+  margin-top: 32px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.stat-value {
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* --- Tables --- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+  font-size: 14px;
+}
+
+th {
+  text-align: left;
+  padding: 12px 16px;
+  background: var(--bg-card-alt);
+  color: var(--text-bright);
+  font-weight: 600;
+  border-bottom: 2px solid var(--accent);
+  white-space: nowrap;
+}
+
+td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+tr:hover td { background: var(--bg-card); }
+
+.table-wrap {
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.table-wrap table { margin-top: 0; }
+
+/* --- Bullet list --- */
+.bullets {
+  list-style: none;
+  margin-top: 16px;
+}
+
+.bullets li {
+  position: relative;
+  padding-left: 24px;
+  margin-bottom: 14px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.bullets li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+/* --- Architecture diagram --- */
+.arch-diagram {
+  margin-top: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.arch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.arch-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  min-width: 140px;
+  transition: border-color 0.3s;
+}
+
+.arch-box:hover { border-color: var(--accent); }
+
+.arch-box.primary {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.arch-arrow {
+  color: var(--text-dim);
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.arch-branch {
+  margin-left: 60px;
+  padding-left: 20px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
+.arch-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.arch-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  min-width: 80px;
+}
+
+/* --- Performance timeline --- */
+.timeline {
+  margin-top: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.timeline-bar-wrap {
+  flex: 1;
+  background: var(--bg-card);
+  border-radius: 8px;
+  height: 40px;
+  position: relative;
+  overflow: hidden;
+}
+
+.timeline-bar {
+  height: 100%;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-bright);
+  white-space: nowrap;
+}
+
+.timeline-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 120px;
+  text-align: right;
+}
+
+.timeline-time {
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  min-width: 70px;
+}
+
+/* --- Scale chart --- */
+.scale-chart {
+  margin-top: 32px;
+  position: relative;
+  height: 240px;
+  border-left: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  padding: 20px 20px 0;
+}
+
+.scale-line {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.scale-line-linear {
+  background: linear-gradient(to top right, transparent 49.5%, var(--accent) 49.5%, var(--accent) 50.5%, transparent 50.5%);
+  opacity: 0.6;
+}
+
+.scale-line-exp {
+  background: radial-gradient(ellipse at bottom left, transparent 70%, var(--red) 70%, var(--red) 70.5%, transparent 70.5%);
+  opacity: 0.3;
+}
+
+.scale-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.scale-label { font-size: 12px; color: var(--text-dim); }
+
+.scale-y-label {
+  position: absolute;
+  left: -60px;
+  top: 50%;
+  transform: rotate(-90deg);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* --- TAM/SAM/SOM --- */
+.tam-circles {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 40px;
+  position: relative;
+  height: 320px;
+}
+
+.tam-circle {
+  position: absolute;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.tam-circle.tam {
+  width: 300px;
+  height: 300px;
+  border: 2px solid var(--border);
+  background: rgba(59, 130, 246, 0.03);
+}
+
+.tam-circle.sam {
+  width: 200px;
+  height: 200px;
+  border: 2px solid var(--accent-dim);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.tam-circle.som {
+  width: 110px;
+  height: 110px;
+  border: 2px solid var(--accent);
+  background: var(--accent-glow);
+}
+
+.tam-circle .circle-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+
+.tam-circle .circle-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.tam-circle.tam .circle-label,
+.tam-circle.tam .circle-value {
+  position: absolute;
+  top: 20px;
+}
+.tam-circle.tam .circle-value { top: 16px; }
+.tam-circle.tam .circle-label { top: 40px; }
+
+.tam-circle.sam .circle-label,
+.tam-circle.sam .circle-value {
+  position: absolute;
+  bottom: 18px;
+}
+.tam-circle.sam .circle-value { bottom: 30px; }
+.tam-circle.sam .circle-label { bottom: 16px; }
+
+/* --- Roadmap --- */
+.roadmap {
+  margin-top: 32px;
+  position: relative;
+  padding-left: 32px;
+}
+
+.roadmap::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+
+.roadmap-item {
+  position: relative;
+  margin-bottom: 28px;
+  padding-left: 24px;
+}
+
+.roadmap-item::before {
+  content: '';
+  position: absolute;
+  left: -28px;
+  top: 6px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--border);
+}
+
+.roadmap-item.done::before {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.roadmap-item.next::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.roadmap-date {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.roadmap-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 4px;
+}
+
+.roadmap-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.roadmap-metric {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.1);
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+/* --- Pie / use of funds --- */
+.funds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.fund-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+}
+
+.fund-pct {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.fund-label {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.fund-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.fund-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* --- Competitive row --- */
+.adv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.adv-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.adv-card h3 { font-size: 18px; margin-bottom: 8px; }
+.adv-card p { font-size: 14px; color: var(--text-dim); margin-bottom: 0; }
+
+.adv-icon {
+  font-size: 28px;
+  margin-bottom: 12px;
+  display: block;
+}
+
+/* --- Two columns --- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  margin-top: 24px;
+}
+
+/* --- Unit econ --- */
+.econ-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.econ-value {
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.econ-label {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.econ-green { color: var(--green); }
+.econ-blue { color: var(--accent); }
+
+/* --- CTA / contact --- */
+.cta-links {
+  display: flex;
+  gap: 16px;
+  margin-top: 32px;
+  flex-wrap: wrap;
+}
+
+.cta-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.cta-link:hover { transform: translateY(-2px); }
+
+.cta-link.primary-btn {
+  background: var(--accent);
+  color: #fff;
+}
+
+.cta-link.primary-btn:hover {
+  box-shadow: 0 8px 30px rgba(59, 130, 246, 0.3);
+}
+
+.cta-link.secondary-btn {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.cta-link.secondary-btn:hover { border-color: var(--accent); }
+
+/* --- Divider --- */
+.divider {
+  width: 60px;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  margin: 20px 0;
+}
+
+/* --- Responsive --- */
+@media (max-width: 768px) {
+  .slide { padding: 40px 20px; }
+  .two-col { grid-template-columns: 1fr; }
+  .tam-circles { height: 240px; }
+  .tam-circle.tam { width: 220px; height: 220px; }
+  .tam-circle.sam { width: 150px; height: 150px; }
+  .tam-circle.som { width: 90px; height: 90px; }
+  .arch-branch { margin-left: 20px; }
+  .timeline-label { min-width: 80px; font-size: 12px; }
+  .adv-grid { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .funds-grid { grid-template-columns: 1fr 1fr; }
+  table { font-size: 13px; }
+  th, td { padding: 8px 10px; }
+  .stat-value { font-size: 28px; }
+}
+
+@media (max-width: 480px) {
+  .stats { grid-template-columns: 1fr; }
+  .funds-grid { grid-template-columns: 1fr; }
+  .cta-links { flex-direction: column; }
+  .cta-link { justify-content: center; }
+}
+</style>
+</head>
+<body>
+
+<!-- ===== 1. TITLE ===== -->
+<section class="slide" id="title">
+<div class="slide-inner" style="text-align:center;">
+  <div class="tag">Telegram Whisper Bot &middot; v4.0.0</div>
+  <h1>Лучшее качество<br>транскрипции<br>на русском языке</h1>
+  <p class="subtitle" style="margin:0 auto;">Telegram-нативный бот для расшифровки аудио с диаризацией спикеров и LLM-форматированием. От ₽1/мин.</p>
+  <div class="stats" style="max-width:600px;margin:40px auto 0;">
+    <div class="stat-card">
+      <div class="stat-value">92 мс</div>
+      <div class="stat-label">время до первого токена</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">52</div>
+      <div class="stat-label">поддерживаемых языка</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">166</div>
+      <div class="stat-label">автоматических тестов</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 2. PROBLEM ===== -->
+<section class="slide" id="problem">
+<div class="slide-inner">
+  <div class="slide-number">01 &mdash; Проблема</div>
+  <h2>57 млн минут в месяц<br>транскрибируется в России</h2>
+  <div class="divider"></div>
+  <ul class="bullets">
+    <li>Журналисты тратят <span class="highlight">4-6 часов</span> на расшифровку часового интервью вручную</li>
+    <li>Существующие решения: <span class="highlight">Войси — ₽500/ч</span> (дорого), SpeechKit — нет диаризации, Telegram Premium — базовое качество</li>
+    <li>Ни один сервис не даёт Telegram-нативный UX + диаризацию + LLM-форматирование по доступной цене</li>
+    <li>Рынок растёт: <span class="highlight">+217%</span> за 18 месяцев, но качество решений отстаёт от спроса</li>
+  </ul>
+</div>
+</section>
+
+<!-- ===== 3. SOLUTION ===== -->
+<section class="slide" id="solution">
+<div class="slide-inner">
+  <div class="slide-number">02 &mdash; Решение</div>
+  <h2>Отправь аудио &mdash;<br>получи текст</h2>
+  <div class="divider"></div>
+  <div class="adv-grid">
+    <div class="adv-card">
+      <span class="adv-icon">&#9654;</span>
+      <h3>Telegram-нативный</h3>
+      <p>Zero-install. Отправьте голосовое или аудиофайл — бот вернёт отформатированный текст за секунды.</p>
+    </div>
+    <div class="adv-card">
+      <span class="adv-icon">&#128483;</span>
+      <h3>Диаризация спикеров</h3>
+      <p>3 бэкенда (DashScope, AssemblyAI, Gemini) с автоматическим переключением. Точное разделение реплик.</p>
+    </div>
+    <div class="adv-card">
+      <span class="adv-icon">&#9998;</span>
+      <h3>LLM-форматирование</h3>
+      <p>Пунктуация, абзацы, «ё», правильные имена собственные. Qwen-turbo + Gemini fallback.</p>
+    </div>
+    <div class="adv-card">
+      <span class="adv-icon">&#128176;</span>
+      <h3>От ₽1/мин</h3>
+      <p>В 2-8 раз дешевле конкурентов. Оплата через Telegram Stars — мгновенно, без регистрации.</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 4. ARCHITECTURE ===== -->
+<section class="slide" id="architecture">
+<div class="slide-inner">
+  <div class="slide-number">03 &mdash; Архитектура</div>
+  <h2>Технологический флоу</h2>
+  <div class="divider"></div>
+
+  <div class="arch-diagram">
+    <div class="arch-row">
+      <div class="arch-box primary">Telegram</div>
+      <div class="arch-arrow">&rarr;</div>
+      <div class="arch-box primary">Webhook Handler<br><small style="color:var(--text-dim)">512 MB &middot; 60s</small></div>
+    </div>
+
+    <div class="arch-branch">
+      <div class="arch-branch-row">
+        <div class="arch-label">sync</div>
+        <div class="arch-box">Qwen3-ASR-Flash<br><small style="color:var(--text-dim)">92ms TTFT</small></div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box">Qwen-turbo LLM</div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box" style="border-color:var(--green)">Результат</div>
+      </div>
+
+      <div class="arch-branch-row">
+        <div class="arch-label">async</div>
+        <div class="arch-box">MNS Queue</div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box">Audio Processor<br><small style="color:var(--text-dim)">1024 MB &middot; 300s</small></div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box">ASR + Chunking</div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box" style="border-color:var(--green)">Результат</div>
+      </div>
+
+      <div class="arch-branch-row">
+        <div class="arch-label">diarize</div>
+        <div class="arch-box">OSS Upload</div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box primary">DashScope &#8226; AssemblyAI &#8226; Gemini</div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box">Align &amp; Format</div>
+        <div class="arch-arrow">&rarr;</div>
+        <div class="arch-box" style="border-color:var(--green)">Диалог</div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 5. STACK ===== -->
+<section class="slide" id="stack">
+<div class="slide-inner">
+  <div class="slide-number">04 &mdash; Стек</div>
+  <h2>Технологии и стоимость</h2>
+  <div class="divider"></div>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Компонент</th><th>Технология</th><th>Назначение</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Compute</td><td>Alibaba FC 3.0</td><td>Serverless, eu-central-1</td></tr>
+      <tr><td>ASR</td><td>Qwen3-ASR-Flash</td><td>52 языка, REST API</td></tr>
+      <tr><td>LLM</td><td>Qwen-turbo</td><td>Форматирование текста</td></tr>
+      <tr><td>LLM fallback</td><td>Gemini 2.5 Flash</td><td>Резервный LLM</td></tr>
+      <tr><td>DB</td><td>Tablestore</td><td>5 таблиц, оптимистичные блокировки</td></tr>
+      <tr><td>Queue</td><td>MNS</td><td>Асинхронная обработка</td></tr>
+      <tr><td>Storage</td><td>OSS</td><td>Временные файлы диаризации</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="stats" style="margin-top:32px;">
+    <div class="stat-card">
+      <div class="stat-value">~$0.002</div>
+      <div class="stat-label">себестоимость за минуту ASR</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">$8/мес</div>
+      <div class="stat-label">полные операционные расходы</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">166</div>
+      <div class="stat-label">автотестов (покрытие)</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 6. PERFORMANCE ===== -->
+<section class="slide" id="performance">
+<div class="slide-inner">
+  <div class="slide-number">05 &mdash; Скорость</div>
+  <h2>Performance</h2>
+  <div class="divider"></div>
+
+  <div class="stats" style="margin-top:0;">
+    <div class="stat-card">
+      <div class="stat-value">92 мс</div>
+      <div class="stat-label">TTFT — время до первого токена</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">2-3 с</div>
+      <div class="stat-label">cold start (serverless)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">3-8 с</div>
+      <div class="stat-label">ответ на короткие аудио</div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:32px;">Pipeline обработки запроса</h3>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-label">Cold start</div>
+      <div class="timeline-bar-wrap">
+        <div class="timeline-bar" style="width:8%;background:var(--orange);">2-3 с</div>
+      </div>
+      <div class="timeline-time">~3 с</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-label">ASR (1 мин)</div>
+      <div class="timeline-bar-wrap">
+        <div class="timeline-bar" style="width:15%;background:var(--accent);">3-5 с</div>
+      </div>
+      <div class="timeline-time">~4 с</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-label">LLM формат</div>
+      <div class="timeline-bar-wrap">
+        <div class="timeline-bar" style="width:8%;background:var(--accent-dim);">1-3 с</div>
+      </div>
+      <div class="timeline-time">~2 с</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-label">Доставка</div>
+      <div class="timeline-bar-wrap">
+        <div class="timeline-bar" style="width:4%;background:var(--green);">&lt;1 с</div>
+      </div>
+      <div class="timeline-time">&lt;1 с</div>
+    </div>
+  </div>
+  <p style="margin-top:16px;font-size:14px;color:var(--text-dim);">Чанкинг: автоматический сплит аудио &gt;2.5 мин, параллельная обработка. Адаптивный битрейт: сжатие 24k-32k для минимизации латентности.</p>
+</div>
+</section>
+
+<!-- ===== 7. SCALABILITY ===== -->
+<section class="slide" id="scalability">
+<div class="slide-inner">
+  <div class="slide-number">06 &mdash; Масштабируемость</div>
+  <h2>От $8/мес до &infin;</h2>
+  <div class="divider"></div>
+
+  <div class="adv-grid">
+    <div class="adv-card">
+      <h3>Serverless</h3>
+      <p>Alibaba FC 3.0 — автоскейлинг от 0 до &infin; инстансов. Нет DevOps, нет capacity planning.</p>
+    </div>
+    <div class="adv-card">
+      <h3>Multi-region</h3>
+      <p>Сейчас EU (Frankfurt). Масштабирование на Asia/US — развёртывание за 1 день.</p>
+    </div>
+    <div class="adv-card">
+      <h3>Очередь MNS</h3>
+      <p>Гарантированная обработка при пиках. Ни один запрос не теряется.</p>
+    </div>
+    <div class="adv-card">
+      <h3>3 бэкенда ASR</h3>
+      <p>Автоматический фолбэк между DashScope, AssemblyAI, Gemini = 99.9% availability.</p>
+    </div>
+  </div>
+
+  <h3 style="margin-top:32px;">Стоимость vs нагрузка</h3>
+  <div style="position:relative;margin-top:16px;">
+    <svg viewBox="0 0 500 200" style="width:100%;max-width:600px;" xmlns="http://www.w3.org/2000/svg">
+      <!-- Axes -->
+      <line x1="50" y1="10" x2="50" y2="170" stroke="#27272a" stroke-width="2"/>
+      <line x1="50" y1="170" x2="490" y2="170" stroke="#27272a" stroke-width="2"/>
+      <!-- Linear (our) -->
+      <line x1="50" y1="160" x2="480" y2="40" stroke="#3b82f6" stroke-width="2.5" stroke-dasharray="0"/>
+      <!-- Exponential (traditional) -->
+      <path d="M50,160 Q200,155 350,100 Q420,60 480,10" stroke="#ef4444" stroke-width="2" fill="none" stroke-dasharray="6,4" opacity="0.6"/>
+      <!-- Labels -->
+      <text x="250" y="195" fill="#a1a1aa" font-size="12" text-anchor="middle">Нагрузка (запросы)</text>
+      <text x="15" y="95" fill="#a1a1aa" font-size="12" text-anchor="middle" transform="rotate(-90,15,95)">Стоимость</text>
+      <!-- Legend -->
+      <line x1="300" y1="20" x2="330" y2="20" stroke="#3b82f6" stroke-width="2.5"/>
+      <text x="335" y="24" fill="#3b82f6" font-size="11">Serverless (линейно)</text>
+      <line x1="300" y1="38" x2="330" y2="38" stroke="#ef4444" stroke-width="2" stroke-dasharray="6,4" opacity="0.6"/>
+      <text x="335" y="42" fill="#ef4444" font-size="11" opacity="0.6">Серверы (экспоненциально)</text>
+    </svg>
+  </div>
+</div>
+</section>
+
+<!-- ===== 8. MARKET ===== -->
+<section class="slide" id="market">
+<div class="slide-inner">
+  <div class="slide-number">07 &mdash; Рынок</div>
+  <h2>TAM / SAM / SOM</h2>
+  <div class="divider"></div>
+
+  <div class="tam-circles">
+    <div class="tam-circle tam">
+      <div class="circle-value">₽8.7 млрд</div>
+      <div class="circle-label">TAM — рынок РФ 2026</div>
+    </div>
+    <div class="tam-circle sam">
+      <div class="circle-value">₽2 млрд</div>
+      <div class="circle-label">SAM — транскрипция</div>
+    </div>
+    <div class="tam-circle som">
+      <div class="circle-value">₽50M</div>
+      <div class="circle-label">SOM</div>
+    </div>
+  </div>
+
+  <div class="stats" style="margin-top:32px;">
+    <div class="stat-card">
+      <div class="stat-value">$561M</div>
+      <div class="stat-label">рынок разговорного ИИ в РФ, 2025</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">+217%</div>
+      <div class="stat-label">рост транскрибирования за 18 мес</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">CAGR 14.4%</div>
+      <div class="stat-label">глобальный рынок STT до 2030</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 9. MONETIZATION ===== -->
+<section class="slide" id="monetization">
+<div class="slide-inner">
+  <div class="slide-number">08 &mdash; Монетизация</div>
+  <h2>B2C + B2B</h2>
+  <div class="divider"></div>
+
+  <div class="two-col">
+    <div>
+      <h3>B2C — Telegram Stars <span class="tag">live</span></h3>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Пакет</th><th>Минуты</th><th>Stars</th><th>~₽</th></tr></thead>
+        <tbody>
+          <tr><td>Micro</td><td>10</td><td>5&#11088;</td><td>~10</td></tr>
+          <tr><td>Start</td><td>50</td><td>35&#11088;</td><td>~70</td></tr>
+          <tr><td>Standard</td><td>200</td><td>119&#11088;</td><td>~240</td></tr>
+          <tr><td>Profi</td><td>1 000</td><td>549&#11088;</td><td>~1 100</td></tr>
+          <tr><td>MAX</td><td>8 888</td><td>4 444&#11088;</td><td>~8 900</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <div>
+      <h3>B2B — рубли, юрлица <span class="tag">Q2 2026</span></h3>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Пакет</th><th>Мин/мес</th><th>Цена</th><th>₽/мин</th></tr></thead>
+        <tbody>
+          <tr><td>Редакция S</td><td>500</td><td>2 000₽</td><td>4.0</td></tr>
+          <tr><td>Редакция M</td><td>2 000</td><td>6 000₽</td><td>3.0</td></tr>
+          <tr><td>Редакция L</td><td>10 000</td><td>20 000₽</td><td>2.0</td></tr>
+          <tr><td>Enterprise</td><td>50 000+</td><td>Инд.</td><td>от 1.5</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p style="font-size:13px;color:var(--text-dim);margin-top:12px;">+ API-доступ, folder-sync интеграция, SLA</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 10. COMPETITIVE ===== -->
+<section class="slide" id="competitive">
+<div class="slide-inner">
+  <div class="slide-number">09 &mdash; Конкурентный ландшафт</div>
+  <h2>Преимущества</h2>
+  <div class="divider"></div>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Сервис</th>
+        <th>₽/мин</th>
+        <th>Диаризация</th>
+        <th>Telegram</th>
+        <th>LLM</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="background:var(--accent-glow);">
+        <td><strong>Whisper Bot</strong></td>
+        <td><strong>~1</strong></td>
+        <td>3 бэкенда</td>
+        <td>&#10003; Нативный</td>
+        <td>&#10003; Qwen</td>
+      </tr>
+      <tr>
+        <td>Писец</td>
+        <td>2.2</td>
+        <td>до 5 спикеров</td>
+        <td>&#10007; Веб</td>
+        <td>&#10007;</td>
+      </tr>
+      <tr>
+        <td>Войси</td>
+        <td>8.3</td>
+        <td>&#10003;</td>
+        <td>&#10003; Бот</td>
+        <td>&#10007;</td>
+      </tr>
+      <tr>
+        <td>Yandex SpeechKit</td>
+        <td>0.32</td>
+        <td>&#10007;</td>
+        <td>&#10007; API</td>
+        <td>&#10007;</td>
+      </tr>
+      <tr>
+        <td>SaluteSpeech</td>
+        <td>1.2</td>
+        <td>&#10007;</td>
+        <td>&#10007; API</td>
+        <td>&#10007;</td>
+      </tr>
+      <tr>
+        <td>Telegram Premium</td>
+        <td>бесплатно</td>
+        <td>&#10007;</td>
+        <td>&#10003; Встроен</td>
+        <td>&#10007;</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="stats" style="margin-top:32px;">
+    <div class="stat-card">
+      <div class="stat-value">93.6M</div>
+      <div class="stat-label">пользователей Telegram в РФ</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">2-8&times;</div>
+      <div class="stat-label">дешевле конкурентов</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">0 с</div>
+      <div class="stat-label">на установку — zero-install</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 11. ROADMAP ===== -->
+<section class="slide" id="roadmap">
+<div class="slide-inner">
+  <div class="slide-number">10 &mdash; Дорожная карта</div>
+  <h2>Майлстоуны</h2>
+  <div class="divider"></div>
+
+  <div class="roadmap">
+    <div class="roadmap-item done">
+      <div class="roadmap-date">Q1 2026 &#10003;</div>
+      <div class="roadmap-title">v4.0.0 — мульти-бэкенд диаризация</div>
+      <div class="roadmap-desc">3 бэкенда ASR, word-level timestamps, 166 тестов</div>
+      <div class="roadmap-metric">Продукт готов</div>
+    </div>
+    <div class="roadmap-item next">
+      <div class="roadmap-date">Q2 2026</div>
+      <div class="roadmap-title">B2B API: REST + webhook + folder-sync</div>
+      <div class="roadmap-desc">REST endpoint, webhook-отдача результатов, интеграция с папками</div>
+      <div class="roadmap-metric">10 пилотных редакций</div>
+    </div>
+    <div class="roadmap-item">
+      <div class="roadmap-date">Q3 2026</div>
+      <div class="roadmap-title">Личный кабинет, аналитика, команды</div>
+      <div class="roadmap-desc">Веб-интерфейс, управление расходом, многопользовательский доступ</div>
+      <div class="roadmap-metric">500 B2C &middot; 30 B2B</div>
+    </div>
+    <div class="roadmap-item">
+      <div class="roadmap-date">Q4 2026</div>
+      <div class="roadmap-title">WhatsApp + VK Messenger</div>
+      <div class="roadmap-desc">WhatsApp (94.5M аудитория РФ), VK Messenger интеграция</div>
+      <div class="roadmap-metric">2 000 B2C &middot; 50 B2B</div>
+    </div>
+    <div class="roadmap-item">
+      <div class="roadmap-date">H1 2027</div>
+      <div class="roadmap-title">imo + White Label</div>
+      <div class="roadmap-desc">imo — самый быстрорастущий мессенджер в РФ (+2900%). White Label для медиахолдингов</div>
+      <div class="roadmap-metric">5 000 B2C &middot; 100 B2B</div>
+    </div>
+    <div class="roadmap-item">
+      <div class="roadmap-date">H2 2027</div>
+      <div class="roadmap-title">CRM + SDK для разработчиков</div>
+      <div class="roadmap-desc">Интеграция с 1С, Bitrix24. Открытый SDK для сторонних разработчиков</div>
+      <div class="roadmap-metric">MRR ₽1M+</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 12. UNIT ECONOMICS ===== -->
+<section class="slide" id="economics">
+<div class="slide-inner">
+  <div class="slide-number">11 &mdash; Unit-экономика</div>
+  <h2>Маржинальность 85-92%</h2>
+  <div class="divider"></div>
+
+  <div class="stats">
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--text-dim);">~₽0.15</div>
+      <div class="stat-label">себестоимость / мин</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--accent);">₽1</div>
+      <div class="stat-label">цена B2C / мин</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--green);">85%</div>
+      <div class="stat-label">маржа B2C</div>
+    </div>
+  </div>
+
+  <div class="stats" style="margin-top:16px;">
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--accent);">₽2</div>
+      <div class="stat-label">средняя цена B2B / мин</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--green);">92%</div>
+      <div class="stat-label">маржа B2B</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--orange);">₽15K</div>
+      <div class="stat-label">breakeven MRR</div>
+    </div>
+  </div>
+
+  <p style="margin-top:24px;font-size:14px;color:var(--text-dim);text-align:center;">Breakeven B2B: ~8 клиентов &laquo;Редакция S&raquo; (2 000₽/мес). Достижимо в первый месяц продаж.</p>
+</div>
+</section>
+
+<!-- ===== 13. INVESTMENT ===== -->
+<section class="slide" id="investment">
+<div class="slide-inner">
+  <div class="slide-number">12 &mdash; Инвестиции</div>
+  <h2>Pre-Seed / Seed</h2>
+  <div class="divider"></div>
+
+  <div class="stats" style="margin-bottom:32px;">
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value">₽5-10M</div>
+      <div class="stat-label">запрос (~$55-110K)</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value">12 мес</div>
+      <div class="stat-label">горизонт</div>
+    </div>
+  </div>
+
+  <h3>Использование средств</h3>
+  <div class="funds-grid">
+    <div class="fund-item">
+      <div class="fund-pct">40%</div>
+      <div class="fund-label">Разработка B2B API</div>
+      <div class="fund-bar"><div class="fund-bar-fill" style="width:100%"></div></div>
+    </div>
+    <div class="fund-item">
+      <div class="fund-pct">30%</div>
+      <div class="fund-label">Маркетинг</div>
+      <div class="fund-bar"><div class="fund-bar-fill" style="width:75%"></div></div>
+    </div>
+    <div class="fund-item">
+      <div class="fund-pct">20%</div>
+      <div class="fund-label">Инфраструктура</div>
+      <div class="fund-bar"><div class="fund-bar-fill" style="width:50%"></div></div>
+    </div>
+    <div class="fund-item">
+      <div class="fund-pct">10%</div>
+      <div class="fund-label">Юридика</div>
+      <div class="fund-bar"><div class="fund-bar-fill" style="width:25%"></div></div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:32px;">Цели на 12 месяцев</h3>
+  <div class="stats">
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--green);">50</div>
+      <div class="stat-label">B2B-клиентов</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--green);">₽500K</div>
+      <div class="stat-label">MRR</div>
+    </div>
+    <div class="stat-card" style="text-align:center;">
+      <div class="stat-value" style="color:var(--green);">1M</div>
+      <div class="stat-label">обработанных минут</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ===== 14. CONTACT ===== -->
+<section class="slide" id="contact">
+<div class="slide-inner" style="text-align:center;">
+  <div class="slide-number">Контакт</div>
+  <h2>Готовы обсудить?</h2>
+  <p class="subtitle" style="margin:0 auto 32px;">Продукт работает. Технология доказана.<br>Рынок растёт на 217% в год.</p>
+
+  <div class="cta-links" style="justify-content:center;">
+    <a href="https://t.me/nafigator" class="cta-link primary-btn" target="_blank" rel="noopener">&#9993; @nafigator</a>
+    <a href="https://t.me/editorialsrobot" class="cta-link secondary-btn" target="_blank" rel="noopener">&#129302; @editorialsrobot</a>
+  </div>
+
+  <p style="margin-top:48px;font-size:13px;color:var(--text-dim);">Telegram Whisper Bot &middot; v4.0.0 &middot; 2026</p>
+</div>
+</section>
+
+<script>
+// Fade-in on scroll via IntersectionObserver
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.15 });
+
+document.querySelectorAll('.slide').forEach(slide => observer.observe(slide));
+</script>
+</body>
+</html>
