@@ -467,7 +467,8 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             tg.send_chat_action(chat_id, 'typing')
             formatted_text = audio_service.format_text_with_llm(
                 text, use_code_tags=use_code_tags, use_yo=use_yo,
-                is_chunked=is_chunked, is_dialogue=is_dialogue)
+                is_chunked=is_chunked, is_dialogue=is_dialogue,
+                backend=settings.get('llm_backend'))
         else:
             formatted_text = text
             if not use_yo:
@@ -808,7 +809,8 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "/flush — очистить зависшие задачи\n"
             "/batch [user_id] — очередь пользователя\n"
             "/mute [часы|off] — уведомления об ошибках\n"
-            "/debug — вкл/выкл дебаг диаризации\n\n"
+            "/debug — вкл/выкл дебаг диаризации\n"
+            "/llm [backend] — LLM backend (qwen/assemblyai)\n\n"
             "<b>Отчёты:</b>\n"
             "/export [users|logs|payments] [дни] — экспорт CSV\n"
             "/report [daily|weekly] — отчёт"
@@ -885,6 +887,27 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         status = 'включён' if settings['debug_mode'] else 'выключен'
         tg.send_message(chat_id, f"Дебаг диаризации: {status}")
         return 'debug_toggle'
+
+    elif command == '/llm' or command.startswith('/llm '):
+        if user_id != OWNER_ID:
+            return 'unauthorized'
+        parts = text.split(maxsplit=1) if text else []
+        arg = parts[1].strip().lower() if len(parts) > 1 else None
+        settings = db.get_user_settings(user_id) or {}
+        current = settings.get('llm_backend', 'qwen')
+        if arg in ('qwen', 'assemblyai'):
+            settings['llm_backend'] = arg
+            db.update_user_settings(user_id, settings)
+            tg.send_message(chat_id, f"LLM backend: {arg}")
+            return 'llm_set'
+        else:
+            tg.send_message(
+                chat_id,
+                f"LLM backend: <b>{current}</b>\n\n"
+                "/llm qwen\n/llm assemblyai",
+                parse_mode='HTML',
+            )
+            return 'llm_show'
 
     else:
         tg.send_message(chat_id, "Неизвестная команда. Используйте /help для справки.")

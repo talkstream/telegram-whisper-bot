@@ -59,6 +59,7 @@ alibaba/
 | `/status` `/flush` `/batch [id]` | Queue management |
 | `/mute [hours\|off]` | Mute error notifications |
 | `/debug` | Toggle diarization debug output |
+| `/llm [backend]` | LLM backend (qwen/assemblyai) |
 | `/export` `/report` | Data export |
 
 ---

@@ -343,7 +343,8 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             tg.send_chat_action(chat_id, 'typing')
             formatted_text = audio.format_text_with_llm(
                 text, use_code_tags=use_code, use_yo=use_yo,
-                is_chunked=is_chunked, is_dialogue=is_dialogue)
+                is_chunked=is_chunked, is_dialogue=is_dialogue,
+                backend=settings.get('llm_backend'))
         else:
             formatted_text = text
             if not use_yo:

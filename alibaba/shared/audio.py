@@ -1982,9 +1982,13 @@ class AudioService:
 
     def format_text_with_llm(self, text: str, use_code_tags: bool = False,
                               use_yo: bool = True, is_chunked: bool = False,
-                              is_dialogue: bool = False) -> str:
-        """Route LLM formatting to configured backend (LLM_BACKEND env var)."""
-        backend = os.environ.get('LLM_BACKEND', 'qwen')
+                              is_dialogue: bool = False,
+                              backend: str | None = None) -> str:
+        """Route LLM formatting to configured backend.
+
+        Priority: backend param → LLM_BACKEND env var → 'qwen'.
+        """
+        backend = backend or os.environ.get('LLM_BACKEND', 'qwen')
         logging.info(f"LLM backend: {backend}")
         if backend == 'assemblyai':
             return self.format_text_with_assemblyai(

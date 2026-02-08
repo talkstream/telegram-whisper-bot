@@ -228,6 +228,22 @@ class TestFormatTextWithLLMRouter:
             mock_q.assert_called_once_with(
                 LONG_TEXT, True, False, True, True)
 
+    @patch.dict(os.environ, {'LLM_BACKEND': 'qwen'})
+    def test_backend_param_overrides_env(self, audio_service):
+        """backend='assemblyai' overrides LLM_BACKEND=qwen env var."""
+        with patch.object(audio_service, 'format_text_with_assemblyai', return_value='aai') as mock_a:
+            result = audio_service.format_text_with_llm(LONG_TEXT, backend='assemblyai')
+            mock_a.assert_called_once()
+            assert result == 'aai'
+
+    @patch.dict(os.environ, {'LLM_BACKEND': 'assemblyai'})
+    def test_backend_param_none_uses_env(self, audio_service):
+        """backend=None → falls back to LLM_BACKEND env var."""
+        with patch.object(audio_service, 'format_text_with_assemblyai', return_value='aai') as mock_a:
+            result = audio_service.format_text_with_llm(LONG_TEXT, backend=None)
+            mock_a.assert_called_once()
+            assert result == 'aai'
+
 
 # ============== Fallback Chain Tests ==============
 
