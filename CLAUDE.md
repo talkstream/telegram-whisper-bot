@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v4.0.0 |
+| **Version** | v4.1.0 |
 | **ASR** | `qwen3-asr-flash` (REST), diarization: DashScope two-pass + AssemblyAI + Gemini backends |
 | **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
@@ -46,7 +46,7 @@ alibaba/
 ## Commands
 
 ### User
-`/start` `/help` `/balance` `/trial` `/buy_minutes` `/settings` `/code` `/yo` `/output` `/dialogue` `/speakers`
+`/start` `/help` `/balance` `/trial` `/buy_minutes` `/settings` `/code` `/yo` `/output` `/speakers`
 
 ### Admin (OWNER_ID only)
 | Command | Description |
@@ -175,4 +175,4 @@ FC ~$5 + Tablestore ~$1 + DashScope ~$2 (68% savings vs GCP ~$25)
 
 ---
 
-*v4.0.0 — 2026-02-09*
+*v4.1.0 — 2026-02-09*

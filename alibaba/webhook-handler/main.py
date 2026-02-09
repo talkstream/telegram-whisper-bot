@@ -51,9 +51,9 @@ ALIBABA_SECURITY_TOKEN = (
 )
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 
-# Sync processing threshold (seconds) - all audio processed synchronously
-# while MNS async queue has no trigger configured (audio-processor unreachable)
-SYNC_PROCESSING_THRESHOLD = 300
+# Sync processing threshold (seconds)
+# Audio >= this duration goes async for diarization (speaker auto-detection)
+SYNC_PROCESSING_THRESHOLD = 60
 
 # Owner ID for admin commands
 OWNER_ID = int(os.environ.get('OWNER_ID', '0'))
@@ -348,11 +348,7 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
 
     # Diarization requires async (two-pass API polling can exceed webhook 60s timeout)
-    settings_json = user.get('settings', '{}')
-    settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
-    dialogue_mode = settings.get('dialogue_mode', False)
-
-    if dialogue_mode or duration >= SYNC_PROCESSING_THRESHOLD:
+    if duration >= SYNC_PROCESSING_THRESHOLD:
         return queue_audio_async(message, user, file_id, file_type, duration, status_message_id)
     else:
         return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
@@ -669,7 +665,6 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "/balance - Проверить баланс\n"
             "/trial - Запросить пробный доступ\n"
             "/settings - Настройки\n"
-            "/dialogue - Режим диалога (разделение по спикерам)\n"
             "/speakers - Вкл/выкл метки спикеров\n"
             "/output - Формат длинного текста (файл / сообщения)"
         )
@@ -688,7 +683,6 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "/code - Вкл/выкл моноширинный шрифт\n"
             "/yo - Вкл/выкл букву ё\n"
             "/output - Формат длинного текста (файл / сообщения)\n"
-            "/dialogue - Режим диалога (разделение по спикерам)\n"
             "/speakers - Вкл/выкл метки спикеров"
         )
         return 'help'
@@ -719,11 +713,9 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
         long_text_mode = settings.get('long_text_mode', 'split')
-        dialogue_mode = settings.get('dialogue_mode', False)
         speaker_labels = settings.get('speaker_labels', True)
 
         long_text_label = '\U0001f4c4 файл .txt' if long_text_mode == 'file' else '\U0001f4ac несколько сообщений'
-        dialogue_label = '\u2705 Вкл (обработка дольше)' if dialogue_mode else '\u274c Выкл'
         speakers_label = '\u2705 Вкл' if speaker_labels else '\u274c Выкл'
 
         tg.send_message(
@@ -732,13 +724,11 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             f"Моноширинный шрифт: {'✅ Вкл' if use_code else '❌ Выкл'}\n"
             f"Использование ё: {'✅ Вкл' if use_yo else '❌ Выкл (заменяется на е)'}\n"
             f"Длинный текст: {long_text_label}\n"
-            f"Режим диалога: {dialogue_label}\n"
             f"Метки спикеров: {speakers_label}\n\n"
             f"Команды для изменения:\n"
             f"/code - переключить шрифт\n"
             f"/yo - переключить букву ё\n"
             f"/output - формат длинного текста\n"
-            f"/dialogue - режим диалога\n"
             f"/speakers - метки спикеров"
         )
         return 'settings'
@@ -768,15 +758,6 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         label = '\U0001f4c4 файл .txt' if new_mode == 'file' else '\U0001f4ac несколько сообщений'
         tg.send_message(chat_id, f"Длинный текст: {label}")
         return 'output_toggle'
-
-    elif command == '/dialogue':
-        settings = db.get_user_settings(user_id) or {}
-        settings['dialogue_mode'] = not settings.get('dialogue_mode', False)
-        db.update_user_settings(user_id, settings)
-        status = 'включён' if settings['dialogue_mode'] else 'выключен'
-        note = " (обработка дольше)" if settings['dialogue_mode'] else ""
-        tg.send_message(chat_id, f"Режим диалога: {status}{note}")
-        return 'dialogue_toggle'
 
     elif command == '/speakers':
         settings = db.get_user_settings(user_id) or {}

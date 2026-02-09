@@ -275,35 +275,29 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
         use_code = settings.get('use_code_tags', False)
         use_yo = settings.get('use_yo', True)
-        dialogue_mode = settings.get('dialogue_mode', False)
         speaker_labels = settings.get('speaker_labels', True)
 
         is_dialogue = False
 
-        if dialogue_mode:
-            # Diarization path (Fun-ASR, async, OSS)
-            raw_text, segments = audio.transcribe_with_diarization(
-                converted_path,
-                progress_callback=lambda stage: (
-                    tg.edit_message_text(chat_id, progress_id, stage)
-                    if progress_id else None
-                )
+        # Always run diarization, auto-detect mono vs dialogue by speaker count
+        raw_text, segments = audio.transcribe_with_diarization(
+            converted_path,
+            progress_callback=lambda stage: (
+                tg.edit_message_text(chat_id, progress_id, stage)
+                if progress_id else None
             )
-            if segments:
+        )
+        if segments:
+            unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+            if unique_speakers >= 2:
                 text = audio.format_dialogue(segments,
                                              show_speakers=speaker_labels)
                 is_dialogue = True
             else:
-                # Fallback: regular transcription
-                def chunk_progress(current, total):
-                    if progress_id and total > 1:
-                        tg.edit_message_text(chat_id, progress_id,
-                            f"🎙 Распознаю речь... (часть {current} из {total})")
-
-                text = raw_text or audio.transcribe_audio(
-                    converted_path, progress_callback=chunk_progress)
+                # 1 speaker: use raw_text (no dashes), will go through LLM
+                text = raw_text or ' '.join(s.get('text', '') for s in segments)
         else:
-            # Regular path (Qwen3-ASR)
+            # Diarization failed: fallback to regular ASR
             def chunk_progress(current, total):
                 if progress_id and total > 1:
                     tg.edit_message_text(chat_id, progress_id,
@@ -312,13 +306,12 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
 
         # Send diarization debug info to admin (only when /debug is on)
-        if dialogue_mode:
-            owner_id = int(os.environ.get('OWNER_ID', 0))
-            debug_mode = settings.get('debug_mode', False)
-            if owner_id and chat_id == owner_id and debug_mode:
-                debug_text = audio.get_diarization_debug()
-                if debug_text:
-                    tg.send_message(owner_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')
+        owner_id = int(os.environ.get('OWNER_ID', 0))
+        debug_mode = settings.get('debug_mode', False)
+        if owner_id and chat_id == owner_id and debug_mode:
+            debug_text = audio.get_diarization_debug()
+            if debug_text:
+                tg.send_message(owner_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')
 
         if not text or text.strip() == "" or text.strip() == "Продолжение следует...":
             tg.send_message(chat_id, "На записи не обнаружено речи или текст не был распознан.")

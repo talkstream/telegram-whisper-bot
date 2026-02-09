@@ -5,7 +5,7 @@ Unit tests for v3.6.0 features:
 - format_dialogue() (diarization formatting)
 - send_as_file() (TelegramService)
 - transcribe_with_diarization() (mocked Fun-ASR)
-- /output and /dialogue command handlers
+- /output command handler
 - Proper nouns & sibilant rules in prompt
 
 Run with: cd alibaba && python -m pytest tests/test_audio_v36.py -v
@@ -1743,9 +1743,9 @@ class TestDebugModeGating:
     def test_debug_gated_by_setting(self):
         """Debug output should only be sent when debug_mode=True."""
         # Simulate the condition from handler.py
-        settings_on = {'debug_mode': True, 'dialogue_mode': True}
-        settings_off = {'debug_mode': False, 'dialogue_mode': True}
-        settings_default = {'dialogue_mode': True}
+        settings_on = {'debug_mode': True}
+        settings_off = {'debug_mode': False}
+        settings_default = {}
 
         assert settings_on.get('debug_mode', False) is True
         assert settings_off.get('debug_mode', False) is False
@@ -2012,3 +2012,119 @@ class TestJobDedup:
 
         # Should have called update_job
         mock_db.return_value.update_job.assert_called()
+
+
+# ============== v4.1.0 Auto-Detection Tests ==============
+
+class TestAntiDialoguePromptRule:
+    """Test that non-dialogue prompt forbids em-dashes."""
+
+    def test_non_dialogue_forbids_dashes(self, audio_service):
+        """is_dialogue=False should include anti-dash rule."""
+        prompt = audio_service._build_format_prompt(
+            "текст", use_code_tags=False, use_yo=True,
+            is_chunked=False, is_dialogue=False
+        )
+        assert "НЕ используй тире" in prompt
+        assert "связный текст" in prompt
+        assert "ФОРМАТ ДИАЛОГА" not in prompt
+
+    def test_dialogue_has_no_anti_dash_rule(self, audio_service):
+        """is_dialogue=True should NOT include anti-dash rule."""
+        prompt = audio_service._build_format_prompt(
+            "текст", use_code_tags=False, use_yo=True,
+            is_chunked=False, is_dialogue=True
+        )
+        assert "ФОРМАТ ДИАЛОГА" in prompt
+        assert "НЕ используй тире" not in prompt
+
+
+class TestAutoDetectionLogic:
+    """Test speaker count auto-detection logic (from audio-processor)."""
+
+    def test_two_speakers_is_dialogue(self):
+        """2+ unique speakers → is_dialogue=True."""
+        segments = [
+            {'speaker_id': 0, 'text': 'Привет'},
+            {'speaker_id': 1, 'text': 'Здравствуйте'},
+            {'speaker_id': 0, 'text': 'Как дела?'},
+        ]
+        unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+        assert unique_speakers >= 2
+
+    def test_one_speaker_is_not_dialogue(self):
+        """1 unique speaker → is_dialogue=False."""
+        segments = [
+            {'speaker_id': 0, 'text': 'Привет'},
+            {'speaker_id': 0, 'text': 'Это я один говорю'},
+        ]
+        unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+        assert unique_speakers < 2
+
+    def test_missing_speaker_id_defaults_to_zero(self):
+        """Segments without speaker_id default to 0 → 1 speaker."""
+        segments = [
+            {'text': 'Привет'},
+            {'text': 'Без спикера'},
+        ]
+        unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+        assert unique_speakers == 1
+
+    def test_empty_segments_fallback(self):
+        """Empty segments list → fallback to regular ASR."""
+        segments = []
+        assert not segments  # falsy → fallback path
+
+    def test_one_speaker_uses_raw_text(self):
+        """1 speaker → use raw_text, not format_dialogue."""
+        segments = [
+            {'speaker_id': 0, 'text': 'Первая фраза'},
+            {'speaker_id': 0, 'text': 'Вторая фраза'},
+        ]
+        raw_text = "Первая фраза. Вторая фраза."
+        unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+        if unique_speakers >= 2:
+            text = "dialogue"
+        else:
+            text = raw_text or ' '.join(s.get('text', '') for s in segments)
+        assert text == raw_text
+        assert "—" not in text
+
+    def test_three_speakers_is_dialogue(self):
+        """3 speakers → is_dialogue=True."""
+        segments = [
+            {'speaker_id': 0, 'text': 'А'},
+            {'speaker_id': 1, 'text': 'Б'},
+            {'speaker_id': 2, 'text': 'В'},
+        ]
+        unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+        assert unique_speakers >= 2
+
+
+class TestRoutingThreshold:
+    """Test sync/async routing by duration threshold."""
+
+    def test_short_audio_sync(self):
+        """Audio < 60s should go sync."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
+        import main as webhook_main
+        assert webhook_main.SYNC_PROCESSING_THRESHOLD == 60
+        duration = 30
+        assert duration < webhook_main.SYNC_PROCESSING_THRESHOLD
+
+    def test_long_audio_async(self):
+        """Audio >= 60s should go async."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
+        import main as webhook_main
+        duration = 60
+        assert duration >= webhook_main.SYNC_PROCESSING_THRESHOLD
+
+    def test_exact_threshold_is_async(self):
+        """Audio exactly at threshold should go async."""
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
+        import main as webhook_main
+        duration = 60
+        assert duration >= webhook_main.SYNC_PROCESSING_THRESHOLD
