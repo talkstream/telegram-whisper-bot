@@ -10,9 +10,7 @@ import sys
 import math
 import csv
 import tempfile
-from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, List
-import pytz
 
 # Add shared services to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'telegram_bot_shared'))
@@ -267,17 +265,38 @@ def handle_message(message: Dict[str, Any]) -> str:
     db = get_db_service()
     user = db.get_user(user_id)
     if not user:
-        # Create new user
+        # Create new user with auto-trial
         user_data = {
             'first_name': message.get('from', {}).get('first_name', ''),
             'last_name': message.get('from', {}).get('last_name', ''),
             'username': message.get('from', {}).get('username', ''),
-            'balance_minutes': 0,
-            'trial_status': 'none',
+            'balance_minutes': TRIAL_MINUTES,
+            'trial_status': 'approved',
             'settings': json.dumps({'use_code_tags': False, 'use_yo': True})
         }
         db.create_user(user_id, user_data)
         user = db.get_user(user_id)
+
+        # Notify admin about new user with auto-trial
+        if OWNER_ID:
+            first_name = message.get('from', {}).get('first_name', '')
+            username = message.get('from', {}).get('username', '')
+            name_display = f"@{username}" if username else first_name or f"ID_{user_id}"
+            try:
+                tg = get_telegram_service()
+                keyboard = {
+                    "inline_keyboard": [[
+                        {"text": "❌ Отозвать триал", "callback_data": f"revoke_trial_{user_id}"}
+                    ]]
+                }
+                tg.send_message(
+                    OWNER_ID,
+                    f"🆕 Новый пользователь: {name_display} (ID: {user_id})\n"
+                    f"✅ Авто-триал: {TRIAL_MINUTES} мин",
+                    reply_markup=keyboard
+                )
+            except Exception:
+                pass  # Non-critical, don't block user flow
 
     # Check for audio/voice/video
     if any(key in message for key in ['voice', 'audio', 'video', 'video_note']):
@@ -333,15 +352,12 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     duration_minutes = (duration + 59) // 60  # Round up
 
     if balance < duration_minutes:
-        # Check trial status
-        trial_status = user.get('trial_status', 'none')
-        if trial_status == 'none':
-            tg.send_message(
-                chat_id,
-                "У вас недостаточно минут для транскрипции.\n"
-                "Используйте /trial для запроса пробного доступа или /buy_minutes для покупки."
-            )
-            return 'insufficient_balance'
+        tg.send_message(
+            chat_id,
+            "У вас недостаточно минут для транскрипции.\n"
+            "Используйте /buy_minutes для покупки."
+        )
+        return 'insufficient_balance'
 
     # Send processing notification and capture message_id for progress updates
     status_msg = tg.send_message(chat_id, "🎙 Аудио получено. Обрабатываю...")
@@ -656,18 +672,37 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     db = get_db_service()
 
     if command == '/start':
-        tg.send_message(
-            chat_id,
-            "👋 Добро пожаловать в Telegram Whisper Bot!\n\n"
-            "Отправьте мне голосовое сообщение или аудиофайл, и я преобразую его в текст.\n\n"
-            "Команды:\n"
-            "/help - Справка\n"
-            "/balance - Проверить баланс\n"
-            "/trial - Запросить пробный доступ\n"
-            "/settings - Настройки\n"
-            "/speakers - Вкл/выкл метки спикеров\n"
-            "/output - Формат длинного текста (файл / сообщения)"
+        balance = user.get('balance_minutes', 0)
+        trial_status = user.get('trial_status', 'none')
+
+        greeting = (
+            "🎙 <b>Расшифровка аудио в текст</b>\n\n"
+            "Интервью, совещание, лекция, подкаст — "
+            "отправьте аудио и получите готовый текст с пунктуацией и абзацами.\n\n"
+            "▸ Разбивка диалога по спикерам\n"
+            "▸ Форматирование и «ё» через AI\n"
+            "▸ До 1 часа аудио за раз\n\n"
         )
+
+        if trial_status == 'approved' and balance > 0:
+            greeting += (
+                f"🎁 <b>{balance} бесплатных минут</b> уже на балансе.\n"
+                "Перешлите голосовое сообщение, видео или кружок — попробуйте прямо сейчас.\n\n"
+                "Обратная связь: @nafigator"
+            )
+        elif balance > 0:
+            greeting += (
+                f"💰 Баланс: <b>{balance} мин</b>\n"
+                "Перешлите голосовое сообщение, видео или кружок для расшифровки.\n\n"
+                "Обратная связь: @nafigator"
+            )
+        else:
+            greeting += (
+                "Баланс исчерпан. Пополните: /buy_minutes\n\n"
+                "Обратная связь: @nafigator"
+            )
+
+        tg.send_message(chat_id, greeting, parse_mode='HTML')
         return 'start'
 
     elif command == '/help':
@@ -677,7 +712,6 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "Отправьте голосовое сообщение, аудио или видео для транскрипции.\n\n"
             "Команды:\n"
             "/balance - Проверить остаток минут\n"
-            "/trial - Запросить пробный доступ (15 мин)\n"
             "/buy_minutes - Купить минуты\n"
             "/settings - Показать настройки\n"
             "/code - Вкл/выкл моноширинный шрифт\n"
@@ -691,22 +725,6 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         balance = user.get('balance_minutes', 0)
         tg.send_message(chat_id, f"💰 Ваш баланс: {balance} минут")
         return 'balance'
-
-    elif command == '/trial':
-        trial_status = user.get('trial_status', 'none')
-        if trial_status == 'approved':
-            tg.send_message(chat_id, "Вы уже использовали пробный период.")
-        elif trial_status == 'pending':
-            tg.send_message(chat_id, "Ваш запрос на пробный период уже на рассмотрении.")
-        else:
-            db.create_trial_request(user_id, {
-                'status': 'pending',
-                'user_name': user.get('first_name', ''),
-                'request_timestamp': 'now'
-            })
-            db.update_user(user_id, {'trial_status': 'pending'})
-            tg.send_message(chat_id, "✅ Запрос на пробный период отправлен. Ожидайте одобрения.")
-        return 'trial'
 
     elif command == '/settings':
         settings = db.get_user_settings(user_id) or {}
@@ -779,8 +797,7 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
             "🔐 <b>Админ-команды</b>\n\n"
             "<b>Пользователи:</b>\n"
             "/user [search] — поиск пользователей\n"
-            "/credit &lt;id&gt; &lt;мин&gt; — добавить минуты\n"
-            "/review_trials — заявки на триал\n\n"
+            "/credit &lt;id&gt; &lt;мин&gt; — добавить минуты\n\n"
             "<b>Статистика:</b>\n"
             "/stat — общая статистика\n"
             "/cost — стоимость обработки\n"
@@ -798,11 +815,6 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         )
         tg.send_message(chat_id, admin_help, parse_mode='HTML')
         return 'admin_help'
-
-    elif command == '/review_trials':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_review_trials(chat_id, tg, db)
 
     elif command == '/credit':
         if user_id != OWNER_ID:
@@ -950,36 +962,6 @@ def handle_buy_minutes(chat_id: int, _user_id: int, tg) -> str:
 
 
 # ==================== ADMIN COMMAND HANDLERS ====================
-
-def handle_review_trials(chat_id: int, tg, db) -> str:
-    """Handle /review_trials command."""
-    requests = db.get_pending_trial_requests()
-
-    if not requests:
-        tg.send_message(chat_id, "✅ Нет ожидающих заявок на пробный доступ.")
-        return 'no_pending_trials'
-
-    for req in requests:
-        target_user_id = req.get('user_id', 'unknown')
-        user_name = req.get('user_name', f'ID_{target_user_id}')
-        timestamp = req.get('request_timestamp', 'unknown')
-
-        msg = f"📋 <b>Заявка на пробный доступ</b>\n\n"
-        msg += f"👤 Пользователь: {user_name}\n"
-        msg += f"🆔 ID: {target_user_id}\n"
-        msg += f"📅 Подана: {timestamp}\n"
-
-        keyboard = {
-            "inline_keyboard": [[
-                {"text": "✅ Одобрить", "callback_data": f"approve_trial_{target_user_id}"},
-                {"text": "❌ Отклонить", "callback_data": f"deny_trial_{target_user_id}"}
-            ]]
-        }
-
-        tg.send_message(chat_id, msg, parse_mode='HTML', reply_markup=keyboard)
-
-    return 'trials_reviewed'
-
 
 def handle_credit_command(text: str, chat_id: int, tg, db) -> str:
     """Handle /credit user_id minutes command."""
@@ -1422,14 +1404,10 @@ def handle_callback_query(callback_query: Dict[str, Any]) -> str:
             return handle_buy_callback(callback_data, user_id, chat_id)
         return 'unauthorized_callback'
 
-    # Trial approval/denial
-    if callback_data.startswith('approve_trial_'):
-        target_user_id = int(callback_data.replace('approve_trial_', ''))
-        return handle_trial_approval(target_user_id, chat_id, message_id, tg, db)
-
-    if callback_data.startswith('deny_trial_'):
-        target_user_id = int(callback_data.replace('deny_trial_', ''))
-        return handle_trial_denial(target_user_id, chat_id, message_id, tg, db)
+    # Revoke auto-trial
+    if callback_data.startswith('revoke_trial_'):
+        target_user_id = int(callback_data.replace('revoke_trial_', ''))
+        return handle_trial_revoke(target_user_id, chat_id, message_id, tg, db)
 
     # User management
     if callback_data.startswith('add_minutes_'):
@@ -1460,61 +1438,14 @@ def handle_callback_query(callback_query: Dict[str, Any]) -> str:
     return f'callback_{callback_data}'
 
 
-def handle_trial_approval(target_user_id: int, chat_id: int, message_id: int,
-                          tg, db) -> str:
-    """Handle trial request approval."""
-    # Update trial status
-    db.update_user(target_user_id, {'trial_status': 'approved'})
-
-    # Add trial minutes
-    db.update_user_balance(target_user_id, TRIAL_MINUTES)
-
-    # Update trial request
-    db.update_trial_request(target_user_id, {
-        'status': 'approved',
-        'processed_at': datetime.now(pytz.utc).isoformat()
-    })
-
-    # Notify the user
-    try:
-        tg.send_message(target_user_id,
-            f"✅ Ваша заявка на пробный доступ одобрена! "
-            f"На ваш баланс начислено {TRIAL_MINUTES} минут.")
-    except Exception as e:
-        logger.warning(f"Could not notify user {target_user_id}: {e}")
-
-    # Update the admin message
-    tg.edit_message_text(chat_id, message_id,
-        f"✅ Заявка пользователя {target_user_id} одобрена. "
-        f"Начислено {TRIAL_MINUTES} минут.")
-
-    # Delete from pending requests
-    db.delete_trial_request(target_user_id)
-
-    logger.info(f"Trial request for user {target_user_id} approved")
-    return 'trial_approved'
-
-
-def handle_trial_denial(target_user_id: int, chat_id: int, message_id: int,
+def handle_trial_revoke(target_user_id: int, chat_id: int, message_id: int,
                         tg, db) -> str:
-    """Handle trial request denial."""
-    # Update trial request
-    db.update_trial_request(target_user_id, {
-        'status': 'denied',
-        'processed_at': datetime.now(pytz.utc).isoformat()
-    })
-
-    db.update_user(target_user_id, {'trial_status': 'denied'})
-
-    # Update the admin message
+    """Revoke auto-trial: set balance to 0, mark trial as denied."""
+    db.update_user(target_user_id, {'trial_status': 'denied', 'balance_minutes': 0})
     tg.edit_message_text(chat_id, message_id,
-        f"❌ Заявка пользователя {target_user_id} отклонена.")
-
-    # Delete from pending requests
-    db.delete_trial_request(target_user_id)
-
-    logger.info(f"Trial request for user {target_user_id} denied")
-    return 'trial_denied'
+        f"❌ Триал пользователя {target_user_id} отозван. Баланс обнулён.")
+    logger.info(f"Auto-trial revoked for user {target_user_id}")
+    return 'trial_revoked'
 
 
 def show_user_details(target_user_id: int, chat_id: int, tg, db) -> str:
