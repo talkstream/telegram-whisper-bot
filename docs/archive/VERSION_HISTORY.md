@@ -1,11 +1,14 @@
 # Version History
 
-## Current: v4.0.0 (2026-02-09)
+## Current: v4.3.0 (2026-02-17)
 
-## v4.0 + v3.x — Alibaba Cloud
+## v4.x + v3.x — Alibaba Cloud
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v4.3.0 | 2026-02-17 | Parallel processing of forwarded audio (threshold 60→15s), DIARIZATION_THRESHOLD=60 fast path, document duration=0 detection. 230 tests. |
+| v4.2.0 | 2026-02-09 | Auto-trial at registration, converting `/start` onboarding, removed `/trial` `/review_trials`. 229 tests. |
+| v4.1.0 | 2026-02-09 | Auto-detection mono/dialogue by speaker count, removed `/dialogue`, anti-dash LLM rule. 213 tests. |
 | v4.0.0 | 2026-02-09 | **Major**: 3 diarization backends (DashScope/AssemblyAI/Gemini), word-level timestamps, `/speakers` `/debug`, bulletproof async pipeline, direct HTTP fallback. 166 tests. |
 | v3.6.0 | 2026-02-07 | Diarization (Fun-ASR), `/output` `/dialogue` `/mute`, `_build_format_prompt()` DRY, proper noun/sibilant rules, SLS logging, TelegramErrorHandler, `send_as_file()`. 86 tests. |
 | v3.5.0 | 2026-02-07 | ASR chunking (>150s auto-split), document handler, adaptive compression, user-friendly errors. 55 tests. |
@@ -40,7 +43,8 @@
 | 2026-02-04 | Alibaba migration (-68% cost: $25→$8/mo) |
 | 2026-02-07 | v3.6.0 diarization, 86 tests |
 | 2026-02-09 | v4.0.0 multi-backend diarization, 166 tests |
+| 2026-02-17 | v4.3.0 parallel processing, 230 tests |
 
 ---
 
-*v4.0.0*
+*v4.3.0*

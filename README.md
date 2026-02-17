@@ -2,7 +2,7 @@
 
 **AI-бот для транскрипции голосовых сообщений в Telegram**
 
-[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
+[![Version](https://img.shields.io/badge/version-4.3.0-blue.svg)](https://github.com/talkstream/telegram-whisper-bot)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-@editorialsrobot-blue?logo=telegram)](https://t.me/editorialsrobot)
 
@@ -18,7 +18,7 @@
 2. Отправьте голосовое или аудио/видео файл
 3. Получите текст через несколько секунд
 
-Пробный период: 15 минут бесплатно (`/trial`).
+При первом запуске — 15 минут бесплатно.
 
 ---
 
@@ -69,7 +69,6 @@
 | `/start` | Регистрация |
 | `/help` | Справка |
 | `/balance` | Баланс минут |
-| `/trial` | Пробный период (15 мин) |
 | `/buy_minutes` | Купить минуты |
 | `/settings` | Настройки |
 | `/code` | Моноширинный шрифт |
@@ -94,6 +93,18 @@
 ---
 
 ## Changelog
+
+### [4.3.0] — 2026-02-17
+- Параллельная обработка пересланных аудиосообщений (порог 60→15с)
+- Быстрый путь в audio-processor: аудио <60с без диаризации
+- Обнаружение реальной длительности документов с duration=0
+- 230 тестов
+
+### [4.2.0] — 2026-02-09
+- Авто-триал при регистрации (15 мин бесплатно)
+- Конвертирующий `/start` онбординг
+- Удалены `/trial` и `/review_trials`
+- 229 тестов
 
 ### [4.1.0] — 2026-02-09
 - Авто-определение моно/диалог по количеству спикеров (≥60с аудио)

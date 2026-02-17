@@ -8,7 +8,6 @@ All commands: OWNER_ID only. Full command list: [CLAUDE.md#commands](../CLAUDE.m
 |---------|--------|
 | `/user [search] [--page N]` | Search by username/name/ID |
 | `/credit <id> <min>` | Add/remove minutes |
-| `/review_trials` | Pending requests (inline approve/reject) |
 | `/stat` | Users, transcriptions, duration |
 | `/cost` | ASR/LLM costs by period |
 | `/metrics [hours]` | Performance (TTFT, success rate) |
