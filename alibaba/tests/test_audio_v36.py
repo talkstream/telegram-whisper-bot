@@ -2105,20 +2105,20 @@ class TestRoutingThreshold:
     """Test sync/async routing by duration threshold."""
 
     def test_short_audio_sync(self):
-        """Audio < 60s should go sync."""
+        """Audio < 15s should go sync."""
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
         import main as webhook_main
-        assert webhook_main.SYNC_PROCESSING_THRESHOLD == 60
-        duration = 30
+        assert webhook_main.SYNC_PROCESSING_THRESHOLD == 15
+        duration = 10
         assert duration < webhook_main.SYNC_PROCESSING_THRESHOLD
 
     def test_long_audio_async(self):
-        """Audio >= 60s should go async."""
+        """Audio >= 15s should go async."""
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
         import main as webhook_main
-        duration = 60
+        duration = 15
         assert duration >= webhook_main.SYNC_PROCESSING_THRESHOLD
 
     def test_exact_threshold_is_async(self):
@@ -2126,5 +2126,5 @@ class TestRoutingThreshold:
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
         import main as webhook_main
-        duration = 60
+        duration = 15
         assert duration >= webhook_main.SYNC_PROCESSING_THRESHOLD

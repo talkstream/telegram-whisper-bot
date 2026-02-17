@@ -50,8 +50,9 @@ ALIBABA_SECURITY_TOKEN = (
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 
 # Sync processing threshold (seconds)
-# Audio >= this duration goes async for diarization (speaker auto-detection)
-SYNC_PROCESSING_THRESHOLD = 60
+# Short audio (<15s): sync for immediate response
+# Longer audio (>=15s): async for parallel processing + diarization for >=60s
+SYNC_PROCESSING_THRESHOLD = 15
 
 # Owner ID for admin commands
 OWNER_ID = int(os.environ.get('OWNER_ID', '0'))
@@ -363,7 +364,8 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     status_msg = tg.send_message(chat_id, "🎙 Аудио получено. Обрабатываю...")
     status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
 
-    # Diarization requires async (two-pass API polling can exceed webhook 60s timeout)
+    # Short audio (<15s): sync for immediate response
+    # Longer audio (>=15s): async for parallel processing + diarization for >=60s
     if duration >= SYNC_PROCESSING_THRESHOLD:
         return queue_audio_async(message, user, file_id, file_type, duration, status_message_id)
     else:

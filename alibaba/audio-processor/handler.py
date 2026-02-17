@@ -27,6 +27,9 @@ MNS_ENDPOINT = os.environ.get('MNS_ENDPOINT')
 REGION = os.environ.get('REGION', 'eu-central-1')
 WHISPER_BACKEND = os.environ.get('WHISPER_BACKEND', 'qwen-asr')
 
+# Diarization threshold — audio below this skips two-pass diarization (fast path)
+DIARIZATION_THRESHOLD = 60  # seconds
+
 # Credentials - FC provides STS credentials automatically
 ALIBABA_ACCESS_KEY = (
     os.environ.get('ALIBABA_ACCESS_KEY') or
@@ -279,25 +282,57 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         is_dialogue = False
 
-        # Always run diarization, auto-detect mono vs dialogue by speaker count
-        raw_text, segments = audio.transcribe_with_diarization(
-            converted_path,
-            progress_callback=lambda stage: (
-                tg.edit_message_text(chat_id, progress_id, stage)
-                if progress_id else None
+        # Documents may arrive with duration=0 — detect real duration
+        actual_duration = duration
+        if duration == 0:
+            actual_duration = audio.get_audio_duration(converted_path)
+            logger.info(f"Job {job_id}: document duration was 0, detected {actual_duration:.1f}s")
+
+            # Re-check balance with real duration
+            actual_minutes = (int(actual_duration) + 59) // 60
+            balance = user.get('balance_minutes', 0) if user else 0
+            if balance < actual_minutes:
+                tg.send_message(
+                    chat_id,
+                    "У вас недостаточно минут для транскрипции.\n"
+                    "Используйте /buy_minutes для покупки."
+                )
+                if progress_id:
+                    tg.delete_message(chat_id, progress_id)
+                db.update_job(job_id, {'status': 'failed', 'error': 'insufficient_balance'})
+                return {'ok': True, 'result': 'insufficient_balance'}
+
+            # Update duration for balance deduction later
+            duration = int(actual_duration)
+
+        if actual_duration >= DIARIZATION_THRESHOLD:
+            # Diarization path: two-pass ASR + speaker detection
+            raw_text, segments = audio.transcribe_with_diarization(
+                converted_path,
+                progress_callback=lambda stage: (
+                    tg.edit_message_text(chat_id, progress_id, stage)
+                    if progress_id else None
+                )
             )
-        )
-        if segments:
-            unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
-            if unique_speakers >= 2:
-                text = audio.format_dialogue(segments,
-                                             show_speakers=speaker_labels)
-                is_dialogue = True
+            if segments:
+                unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+                if unique_speakers >= 2:
+                    text = audio.format_dialogue(segments,
+                                                 show_speakers=speaker_labels)
+                    is_dialogue = True
+                else:
+                    # 1 speaker: use raw_text (no dashes), will go through LLM
+                    text = raw_text or ' '.join(s.get('text', '') for s in segments)
             else:
-                # 1 speaker: use raw_text (no dashes), will go through LLM
-                text = raw_text or ' '.join(s.get('text', '') for s in segments)
+                # Diarization failed: fallback to regular ASR
+                def chunk_progress(current, total):
+                    if progress_id and total > 1:
+                        tg.edit_message_text(chat_id, progress_id,
+                            f"🎙 Распознаю речь... (часть {current} из {total})")
+
+                text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
         else:
-            # Diarization failed: fallback to regular ASR
+            # Fast path: simple ASR without diarization
             def chunk_progress(current, total):
                 if progress_id and total > 1:
                     tg.edit_message_text(chat_id, progress_id,
