@@ -2059,7 +2059,9 @@ class AudioService:
                         {"role": "user", "content": prompt}
                     ]
                 },
-                "parameters": {}
+                "parameters": {
+                    "enable_thinking": False
+                }
             }
 
             response = requests.post(url, headers=headers, json=payload, timeout=60)
@@ -2068,19 +2070,27 @@ class AudioService:
                 data = response.json()
                 logging.info(f"Qwen response: {data}")
 
-                # Extract text from response
+                # Extract text from response (prefer choices format —
+                # it separates reasoning_content from content)
                 formatted_text = ""
                 if 'output' in data:
                     output = data['output']
                     if isinstance(output, dict):
-                        if 'text' in output:
-                            formatted_text = output['text']
-                        elif 'choices' in output:
+                        if 'choices' in output:
                             choices = output['choices']
                             if choices and isinstance(choices, list):
                                 formatted_text = choices[0].get('message', {}).get('content', '')
+                        if not formatted_text and 'text' in output:
+                            formatted_text = output['text']
 
                 formatted_text = formatted_text.strip()
+
+                # Strip <think> blocks leaked by Qwen3 hybrid-thinking models
+                import re
+                if '<think>' in formatted_text:
+                    logging.warning("Qwen response contains <think> tags, stripping")
+                    formatted_text = re.sub(r'<think>.*?</think>', '', formatted_text, flags=re.DOTALL).strip()
+
                 api_duration = time.time() - api_start_time
                 logging.info(f"Qwen LLM finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
 

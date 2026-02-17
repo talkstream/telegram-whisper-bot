@@ -245,6 +245,99 @@ class TestFormatTextWithLLMRouter:
             assert result == 'aai'
 
 
+# ============== Qwen3 Thinking Leak Fix Tests ==============
+
+class TestQwen3ThinkingLeak:
+    """Test that Qwen3 thinking tokens never leak to users."""
+
+    @patch('requests.post')
+    def test_enable_thinking_false_in_payload(self, mock_post, audio_service):
+        """API payload must include enable_thinking: False."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'output': {'text': 'Clean text.'}
+        }
+        mock_post.return_value = mock_resp
+
+        audio_service.format_text_with_qwen(LONG_TEXT)
+
+        payload = mock_post.call_args[1]['json']
+        assert payload['parameters']['enable_thinking'] is False
+
+    @patch('requests.post')
+    def test_think_tags_stripped_from_text_field(self, mock_post, audio_service):
+        """<think> blocks in output.text must be stripped."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'output': {'text': '<think>Wait, let me check rule 3.</think>Clean formatted text.'}
+        }
+        mock_post.return_value = mock_resp
+
+        result = audio_service.format_text_with_qwen(LONG_TEXT)
+        assert '<think>' not in result
+        assert 'rule 3' not in result
+        assert result == 'Clean formatted text.'
+
+    @patch('requests.post')
+    def test_think_tags_stripped_multiline(self, mock_post, audio_service):
+        """Multi-line <think> blocks must be stripped."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'output': {
+                'text': '<think>\nActually, let me reconsider.\n'
+                        'Final check on punctuation.\nPerfect.\n</think>\n'
+                        'Отформатированный текст с правильной пунктуацией.'
+            }
+        }
+        mock_post.return_value = mock_resp
+
+        result = audio_service.format_text_with_qwen(LONG_TEXT)
+        assert '<think>' not in result
+        assert 'reconsider' not in result
+        assert 'Отформатированный текст' in result
+
+    @patch('requests.post')
+    def test_choices_preferred_over_text(self, mock_post, audio_service):
+        """When both choices and text present, choices.content wins."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'output': {
+                'text': 'Thinking + text mixed together.',
+                'choices': [{
+                    'message': {
+                        'content': 'Clean content from choices.',
+                        'reasoning_content': 'Internal reasoning.'
+                    }
+                }]
+            }
+        }
+        mock_post.return_value = mock_resp
+
+        result = audio_service.format_text_with_qwen(LONG_TEXT)
+        assert result == 'Clean content from choices.'
+        assert 'mixed together' not in result
+
+    @patch('requests.post')
+    def test_fallback_to_text_when_choices_empty(self, mock_post, audio_service):
+        """If choices content is empty, fall back to text field."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'output': {
+                'text': 'Fallback text.',
+                'choices': [{'message': {'content': ''}}]
+            }
+        }
+        mock_post.return_value = mock_resp
+
+        result = audio_service.format_text_with_qwen(LONG_TEXT)
+        assert result == 'Fallback text.'
+
+
 # ============== Fallback Chain Tests ==============
 
 class TestFallbackChains:
