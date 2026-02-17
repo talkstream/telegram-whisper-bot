@@ -1,6 +1,6 @@
 # Alibaba Cloud Critical Configuration
 
-**v4.0.0** | 2026-02-09
+**v4.3.0** | 2026-02-17
 
 Env vars & architecture: see [CLAUDE.md](../CLAUDE.md)
 
@@ -96,4 +96,4 @@ ffmpeg -y -i input.ogg -b:a 24k -ar 8000 -ac 1 -threads 4 output.mp3
 
 ---
 
-*v4.0.0*
+*v4.3.0*

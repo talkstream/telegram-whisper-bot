@@ -85,8 +85,8 @@
 | ASR | Qwen3-ASR-Flash (REST), диаризация: DashScope / AssemblyAI / Gemini |
 | LLM | Qwen-turbo (fallback: Gemini 2.5 Flash) |
 | TTFT | ~92 мс |
-| Синхронная обработка | до 60 сек |
-| Асинхронная | 60+ сек (MNS) |
+| Синхронная обработка | до 15 сек |
+| Асинхронная | 15+ сек (MNS) |
 | Регион | EU (Франкфурт) |
 | Cold start | 2-3 сек |
 

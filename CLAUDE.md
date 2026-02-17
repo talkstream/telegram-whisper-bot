@@ -84,6 +84,9 @@ alibaba/
 | `ASSEMBLYAI_API_KEY` | no | AssemblyAI diarization |
 | `LLM_BACKEND` | no | `qwen` (default), `assemblyai` |
 | `AUDIO_PROCESSOR_URL` | no | Direct HTTP fallback URL |
+| `GEMINI_API_KEY` | no | Alias for `GOOGLE_API_KEY` (Gemini diarization/LLM) |
+| `REGION` | no | FC region, default: `eu-central-1` |
+| `AUDIO_JOBS_QUEUE` | no | MNS queue name, default: `telegram-whisper-bot-prod-audio-jobs` |
 
 ---
 
@@ -93,7 +96,7 @@ alibaba/
 |-------|----|------------|
 | users | user_id (str) | balance_minutes, trial_status, settings |
 | audio_jobs | job_id (str) | user_id, status, result, status_message_id |
-| trial_requests | user_id (str) | status, request_timestamp |
+| trial_requests | user_id (str) | status, request_timestamp (legacy, post-v4.2.0) |
 | transcription_logs | log_id (str) | user_id, timestamp, duration |
 | payment_logs | payment_id (str) | user_id, amount, timestamp |
 
@@ -125,6 +128,11 @@ alibaba/
 - `_align_speakers_with_text()` merges by timestamp overlap (sliding window)
 - `format_dialogue()` merges consecutive same-speaker segments, em-dash (—) format
 - Fallback cascade: Pass 1 fail → text without speakers; Pass 2 fail → Pass 1 text; Both fail → regular ASR
+
+### Parallel Processing (v4.3.0)
+- Audio <15s: sync (webhook-handler, immediate response)
+- Audio 15-59s: async (audio-processor, simple ASR without diarization)
+- Audio ≥60s: async (audio-processor, two-pass diarization + speaker detection)
 
 ### Error Notifications (v3.6.0)
 - `TelegramErrorHandler` sends ERROR+ to OWNER_ID (60s cooldown)

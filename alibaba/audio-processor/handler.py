@@ -175,7 +175,19 @@ def poll_queue() -> Dict[str, Any]:
         result = process_job(job_data)
 
         if result.get('ok', False):
-            mns.delete_message(msg['receipt_handle'])
+            # Retry delete to prevent duplicate processing on transient failure
+            for attempt in range(3):
+                try:
+                    mns.delete_message(msg['receipt_handle'])
+                    logger.info(f"Deleted MNS message for job {job_id}")
+                    break
+                except Exception as e:
+                    logger.warning(f"MNS delete_message attempt {attempt + 1}/3 failed: {e}")
+                    if attempt < 2:
+                        import time
+                        time.sleep(1 << attempt)  # 1s, 2s
+            else:
+                logger.error(f"MNS delete_message failed after 3 attempts for job {job_id}, may be redelivered")
             return {'statusCode': 200, 'body': f'Processed job {job_id}'}
         else:
             return {'statusCode': 200, 'body': f'Job {job_id} failed: {result.get("error")}'}

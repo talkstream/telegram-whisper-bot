@@ -147,6 +147,16 @@ class AudioService:
         # Fallback for very long files: minimum acceptable for ASR
         return '32k', '16000', 'compressed'
 
+    @staticmethod
+    def _safe_callback(callback, *args):
+        """Invoke progress callback, swallowing errors so transcription continues."""
+        if not callback:
+            return
+        try:
+            callback(*args)
+        except Exception as e:
+            logging.warning(f"Progress callback failed: {e}")
+
     def convert_to_mp3(self, input_path: str, output_path: Optional[str] = None) -> Optional[str]:
         """
         Convert audio file to MP3 with adaptive settings based on duration.
@@ -267,17 +277,17 @@ class AudioService:
                 processing_path = extracted_path
 
             converted_path = self.convert_to_mp3(processing_path)
-
-            # Clean up intermediate extracted file
-            if extracted_path and os.path.exists(extracted_path) and extracted_path != converted_path:
-                os.remove(extracted_path)
-
             return converted_path  # None if conversion failed
         except Exception as e:
             logging.error(f"Audio preparation failed: {e}")
-            if extracted_path and os.path.exists(extracted_path):
-                os.remove(extracted_path)
             return None
+        finally:
+            # Always clean up intermediate extracted file
+            if extracted_path and os.path.exists(extracted_path):
+                try:
+                    os.remove(extracted_path)
+                except OSError:
+                    pass
 
     def split_audio_chunks(self, audio_path: str, chunk_duration: int = None) -> list:
         """
@@ -545,9 +555,21 @@ class AudioService:
             file_ext = os.path.splitext(local_path)[1] or '.mp3'
             oss_key = f"audio/{uuid.uuid4().hex}{file_ext}"
 
-            # Upload file
+            # Upload file with retry on transient failures
             logging.info(f"Uploading to OSS: {local_path} -> {oss_key}")
-            bucket.put_object_from_file(oss_key, local_path)
+            last_err = None
+            for attempt in range(3):
+                try:
+                    bucket.put_object_from_file(oss_key, local_path)
+                    last_err = None
+                    break
+                except Exception as upload_err:
+                    last_err = upload_err
+                    logging.warning(f"OSS upload attempt {attempt + 1}/3 failed: {upload_err}")
+                    if attempt < 2:
+                        time.sleep(1 << attempt)  # 1s, 2s
+            if last_err:
+                raise last_err
 
             # Return OSS URL
             bucket_name = self.oss_config.get('bucket')
@@ -595,7 +617,20 @@ class AudioService:
         try:
             file_ext = os.path.splitext(local_path)[1] or '.mp3'
             oss_key = f"diarization/{uuid.uuid4().hex}{file_ext}"
-            bucket.put_object_from_file(oss_key, local_path)
+            # Retry on transient failures
+            last_err = None
+            for attempt in range(3):
+                try:
+                    bucket.put_object_from_file(oss_key, local_path)
+                    last_err = None
+                    break
+                except Exception as upload_err:
+                    last_err = upload_err
+                    logging.warning(f"OSS diarization upload attempt {attempt + 1}/3 failed: {upload_err}")
+                    if attempt < 2:
+                        time.sleep(1 << attempt)  # 1s, 2s
+            if last_err:
+                raise last_err
             signed_url = bucket.sign_url('GET', oss_key, expiry)
             logging.info(f"Uploaded to OSS for diarization: {oss_key}")
             return oss_key, signed_url
@@ -622,8 +657,7 @@ class AudioService:
         headers = {'Authorization': api_key}
 
         try:
-            if progress_callback:
-                progress_callback("\U0001f504 Загружаю аудио в AssemblyAI...")
+            self._safe_callback(progress_callback, "\U0001f504 Загружаю аудио в AssemblyAI...")
 
             # Step 1: Upload file
             with open(audio_path, 'rb') as f:
@@ -636,8 +670,7 @@ class AudioService:
                 return None, []
             upload_url = upload_resp.json()['upload_url']
 
-            if progress_callback:
-                progress_callback("\U0001f504 Распознаю с диаризацией (AssemblyAI)...")
+            self._safe_callback(progress_callback, "\U0001f504 Распознаю с диаризацией (AssemblyAI)...")
 
             # Step 2: Submit transcription
             submit_resp = req.post(
@@ -658,10 +691,15 @@ class AudioService:
             transcript_id = submit_resp.json()['id']
             self._diarization_debug['transcript_id'] = transcript_id
 
-            # Step 3: Poll until completed
+            # Step 3: Poll until completed (exponential backoff: 1s → 2s → 4s → ... → 15s cap)
             poll_url = f'https://api.assemblyai.com/v2/transcript/{transcript_id}'
-            for _ in range(60):  # max 5 minutes (60 x 5s)
-                time.sleep(5)
+            poll_delay = 1
+            max_poll_delay = 15
+            elapsed = 0
+            max_wait = 300  # 5 minutes total
+            while elapsed < max_wait:
+                time.sleep(poll_delay)
+                elapsed += poll_delay
                 poll_resp = req.get(poll_url, headers=headers, timeout=15)
                 data = poll_resp.json()
                 status = data.get('status')
@@ -671,6 +709,7 @@ class AudioService:
                     logging.warning(f"AssemblyAI error: {data.get('error')}")
                     self._diarization_debug['error'] = f'transcription_error:{data.get("error")}'
                     return None, []
+                poll_delay = min(poll_delay * 2, max_poll_delay)
             else:
                 logging.warning("AssemblyAI polling timeout")
                 self._diarization_debug['error'] = 'polling_timeout'
@@ -726,8 +765,7 @@ class AudioService:
         self._diarization_debug = {'backend': 'gemini'}
 
         try:
-            if progress_callback:
-                progress_callback("\U0001f504 Распознаю с диаризацией (Gemini)...")
+            self._safe_callback(progress_callback, "\U0001f504 Распознаю с диаризацией (Gemini)...")
 
             # Read and base64 encode audio
             with open(audio_path, 'rb') as f:
@@ -843,7 +881,7 @@ class AudioService:
             (raw_text, segments) where segments = [{'speaker_id', 'text', 'begin_time', 'end_time'}]
             Returns (None, []) on failure (caller should fallback to regular ASR)
         """
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 
         self._diarization_debug = {}  # Reset for each call
 
@@ -889,8 +927,7 @@ class AudioService:
                 logging.warning("Failed to upload to OSS for diarization")
                 return None, []
 
-            if progress_callback:
-                progress_callback("\U0001f504 Распознаю с диаризацией...")
+            self._safe_callback(progress_callback, "\U0001f504 Распознаю с диаризацией...")
 
             # Step 2: Launch both passes in parallel
             spk_params: dict = {'diarization_enabled': True}
@@ -912,23 +949,26 @@ class AudioService:
                     signed_url, 'qwen3-asr-flash-filetrans', txt_params, api_key,
                     debug_prefix='pass2')
 
-                # 270s timeout: leave 30s headroom before FC hard limit (300s)
+                # Process results as they complete (270s timeout for FC headroom)
+                future_map = {future_spk: 'pass1', future_txt: 'pass2'}
                 try:
-                    spk_result = future_spk.result(timeout=270)
+                    for future in as_completed(future_map, timeout=270):
+                        label = future_map[future]
+                        try:
+                            result = future.result()
+                            if label == 'pass1':
+                                spk_result = result
+                            else:
+                                txt_result = result
+                        except Exception as e:
+                            if label == 'pass1':
+                                logging.warning(f"Pass 1 (fun-asr-mtl) failed: {e}")
+                            else:
+                                logging.warning(f"Pass 2 (qwen3-asr-flash-filetrans) failed: {e}")
                 except FuturesTimeoutError:
-                    logging.error("Pass 1 (fun-asr-mtl) timed out after 270s")
-                except Exception as e:
-                    logging.warning(f"Pass 1 (fun-asr-mtl) failed: {e}")
+                    logging.error("Diarization passes timed out after 270s")
 
-                try:
-                    txt_result = future_txt.result(timeout=270)
-                except FuturesTimeoutError:
-                    logging.error("Pass 2 (qwen3-asr-flash-filetrans) timed out after 270s")
-                except Exception as e:
-                    logging.warning(f"Pass 2 (qwen3-asr-flash-filetrans) failed: {e}")
-
-            if progress_callback:
-                progress_callback("\U0001f504 Объединяю результаты...")
+            self._safe_callback(progress_callback, "\U0001f504 Объединяю результаты...")
 
             # Step 3: Parse results
             speaker_segments = self._parse_speaker_segments(spk_result) if spk_result else []
@@ -1525,8 +1565,8 @@ class AudioService:
         failed_chunks = 0
         try:
             for i, chunk_path in enumerate(chunks):
-                if progress_callback and total_chunks > 1:
-                    progress_callback(i + 1, total_chunks)
+                if total_chunks > 1:
+                    self._safe_callback(progress_callback, i + 1, total_chunks)
 
                 try:
                     text = self._transcribe_single_qwen_asr(chunk_path, language)

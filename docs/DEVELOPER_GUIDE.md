@@ -37,7 +37,7 @@ See [DEPLOY.md](../alibaba/DEPLOY.md)
 pytest alibaba/tests/ -v
 ```
 
-166 tests (v4.0.0).
+230 tests (v4.3.0).
 
 ## Fork
 
@@ -59,4 +59,4 @@ Troubleshooting: see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ---
 
-*v4.0.0*
+*v4.3.0*

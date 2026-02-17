@@ -6,7 +6,7 @@ Delivery logic summary: see [CLAUDE.md#key-patterns](../CLAUDE.md#key-patterns)
 
 Single message updated through stages via `edit_message_text`.
 
-### Sync (< 60s audio)
+### Sync (< 15s audio)
 
 ```
 "Аудио получено..."
@@ -16,7 +16,7 @@ Single message updated through stages via `edit_message_text`.
   → [result]                    edit | delete+send
 ```
 
-### Async (>= 60s audio)
+### Async (>= 15s audio)
 
 ```
 "Аудио получено..."
@@ -68,4 +68,4 @@ Fallback: diarization fail → regular ASR (transparent to user).
 
 ---
 
-*v4.0.0*
+*v4.3.0*

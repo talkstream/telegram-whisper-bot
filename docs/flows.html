@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telegram Whisper Bot — User Flows</title>
+<style>
+:root {
+  --active: #22c55e;
+  --active-bg: #f0fdf4;
+  --active-border: #86efac;
+  --inactive: #9ca3af;
+  --inactive-bg: #f9fafb;
+  --inactive-border: #e5e7eb;
+  --bg: #ffffff;
+  --text: #1f2937;
+  --text-secondary: #6b7280;
+  --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  --stage-bg: #f8fafc;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  padding: 0 1rem;
+}
+
+header {
+  text-align: center;
+  padding: 2rem 0 1rem;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 2rem;
+}
+
+header h1 { font-size: 1.5rem; font-weight: 700; }
+header p { color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem; }
+
+.container { max-width: 960px; margin: 0 auto; }
+
+/* Settings panel */
+#settings {
+  background: var(--stage-bg);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 2rem;
+}
+
+#settings h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.toggles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.toggle-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg);
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.2s;
+}
+
+.toggle-item:hover { border-color: #d1d5db; }
+
+.toggle-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.toggle-label small {
+  display: block;
+  font-weight: 400;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+/* Toggle switch */
+.toggle-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+}
+
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #d1d5db;
+  border-radius: 11px;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  top: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--active);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+}
+
+/* Select for multi-option settings */
+.toggle-select {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  margin-left: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Flowchart */
+.stage {
+  background: var(--stage-bg);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.stage-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.stage-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--active);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.stage-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* Flow nodes */
+.flow {
+  position: relative;
+  padding-left: 1.5rem;
+}
+
+.flow-node {
+  position: relative;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  border: 2px solid var(--inactive-border);
+  background: var(--inactive-bg);
+  color: var(--text-secondary);
+  transition: all 0.3s ease;
+}
+
+.flow-node.active {
+  border-color: var(--active-border);
+  background: var(--active-bg);
+  color: var(--text);
+  box-shadow: 0 0 0 1px rgba(34,197,94,0.1);
+}
+
+.flow-node.active .node-badge {
+  background: var(--active);
+}
+
+.flow-node .node-label {
+  font-weight: 600;
+}
+
+.flow-node .node-desc {
+  font-size: 0.75rem;
+  color: inherit;
+  opacity: 0.8;
+}
+
+.node-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: var(--inactive);
+  color: white;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  transition: background 0.3s;
+}
+
+/* Decision diamond */
+.decision {
+  position: relative;
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  background: #fffbeb;
+  border: 2px solid #fde68a;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.decision.active-decision {
+  border-color: #fbbf24;
+  background: #fef3c7;
+}
+
+/* Branches */
+.branches {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.branch {
+  flex: 1;
+  min-width: 200px;
+  position: relative;
+}
+
+.branch-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.35rem;
+  color: var(--inactive);
+  transition: color 0.3s;
+}
+
+.branch-label.active-label {
+  color: var(--active);
+}
+
+/* Connector arrows (CSS-only) */
+.arrow-down {
+  display: flex;
+  justify-content: center;
+  margin: 0.25rem 0;
+}
+
+.arrow-down::after {
+  content: '';
+  width: 2px;
+  height: 16px;
+  background: var(--inactive-border);
+  transition: background 0.3s;
+}
+
+.arrow-down.active-arrow::after {
+  background: var(--active);
+}
+
+/* Settings reference table */
+#settings-table {
+  margin-bottom: 2rem;
+}
+
+#settings-table h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+#settings-table { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+th, td {
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+td code {
+  font-size: 0.75rem;
+  background: #f3f4f6;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+td .default-value {
+  color: var(--active);
+  font-weight: 600;
+}
+
+footer {
+  text-align: center;
+  padding: 1.5rem 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .toggles-grid { grid-template-columns: 1fr; }
+  .branches { flex-direction: column; }
+  .branch { min-width: 0; }
+  table { font-size: 0.7rem; }
+  th, td { padding: 0.35rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Telegram Whisper Bot — User Flows</h1>
+    <p>Интерактивная схема обработки аудио v4.3.0</p>
+  </header>
+
+  <!-- Settings toggles -->
+  <section id="settings">
+    <h2>Настройки пользователя</h2>
+    <div class="toggles-grid">
+      <label class="toggle-item">
+        <span class="toggle-label">Диалог<small>/dialogue</small></span>
+        <span class="toggle-switch">
+          <input type="checkbox" id="toggle-dialogue">
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-item">
+        <span class="toggle-label">Буква ё<small>/yo</small></span>
+        <span class="toggle-switch">
+          <input type="checkbox" id="toggle-yo" checked>
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-item">
+        <span class="toggle-label">Моноширинный<small>/code</small></span>
+        <span class="toggle-switch">
+          <input type="checkbox" id="toggle-code">
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-item">
+        <span class="toggle-label">Спикеры<small>/speakers</small></span>
+        <span class="toggle-switch">
+          <input type="checkbox" id="toggle-speakers" checked>
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-item">
+        <span class="toggle-label">Длинный текст<small>/output</small></span>
+        <select class="toggle-select" id="toggle-output">
+          <option value="split" selected>split</option>
+          <option value="file">file</option>
+        </select>
+      </label>
+
+      <label class="toggle-item">
+        <span class="toggle-label">LLM backend<small>/llm</small></span>
+        <select class="toggle-select" id="toggle-llm">
+          <option value="qwen" selected>qwen</option>
+          <option value="assemblyai">assemblyai</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <!-- Stage 1: Routing -->
+  <section class="stage" id="stage-routing">
+    <div class="stage-header">
+      <span class="stage-number">1</span>
+      <span class="stage-title">Маршрутизация</span>
+    </div>
+
+    <div class="flow">
+      <div class="flow-node active" id="node-audio-input">
+        <span class="node-label">🎙 Аудиосообщение</span>
+        <span class="node-desc"> — пользователь отправляет голосовое/аудио</span>
+      </div>
+
+      <div class="arrow-down active-arrow" id="arrow-1-1"></div>
+
+      <div class="decision active-decision" id="decision-dialogue">
+        dialogue_mode?
+      </div>
+
+      <div class="branches">
+        <!-- YES branch: dialogue_mode ON -->
+        <div class="branch" id="branch-dialogue-yes">
+          <div class="branch-label" id="label-dialogue-yes">Да</div>
+          <div class="flow-node" id="node-async-diarization">
+            <span class="node-label">Async</span>
+            <span class="node-desc"> — audio-processor, 300с, MNS</span>
+          </div>
+          <div class="arrow-down" id="arrow-diar-1"></div>
+          <div class="flow-node" id="node-diarization">
+            <span class="node-label">Диаризация (two-pass)</span>
+            <span class="node-desc"> — fun-asr-mtl + qwen3-asr-flash-filetrans</span>
+          </div>
+          <div class="arrow-down" id="arrow-diar-2"></div>
+          <div class="decision" id="decision-segments">
+            segments OK?
+          </div>
+          <div class="branches">
+            <div class="branch">
+              <div class="branch-label" id="label-seg-yes">Да</div>
+              <div class="flow-node" id="node-format-dialogue">
+                <span class="node-label">format_dialogue()</span>
+                <span class="node-desc"> — em-dash (—), метки спикеров</span>
+                <span class="node-badge">is_dialogue=True</span>
+              </div>
+            </div>
+            <div class="branch">
+              <div class="branch-label" id="label-seg-no">Нет</div>
+              <div class="flow-node" id="node-fallback-asr">
+                <span class="node-label">Обычный ASR</span>
+                <span class="node-desc"> — fallback, без спикеров</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- NO branch: regular -->
+        <div class="branch" id="branch-dialogue-no">
+          <div class="branch-label active-label" id="label-dialogue-no">Нет</div>
+          <div class="decision" id="decision-duration">
+            duration ≥ 60с?
+          </div>
+          <div class="branches">
+            <div class="branch">
+              <div class="branch-label" id="label-dur-yes">Да</div>
+              <div class="flow-node" id="node-async-regular">
+                <span class="node-label">Async</span>
+                <span class="node-desc"> — audio-processor, MNS</span>
+              </div>
+            </div>
+            <div class="branch">
+              <div class="branch-label active-label" id="label-dur-no">Нет</div>
+              <div class="flow-node active" id="node-sync">
+                <span class="node-label">Sync</span>
+                <span class="node-desc"> — webhook-handler, 60с</span>
+                <span class="node-badge active">по умолчанию</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stage 2: Formatting -->
+  <section class="stage" id="stage-formatting">
+    <div class="stage-header">
+      <span class="stage-number">2</span>
+      <span class="stage-title">Форматирование текста</span>
+    </div>
+
+    <div class="flow">
+      <div class="decision active-decision" id="decision-is-dialogue">
+        is_dialogue?
+      </div>
+
+      <div class="branches">
+        <!-- YES: skip LLM -->
+        <div class="branch" id="branch-is-dialogue-yes">
+          <div class="branch-label" id="label-isdial-yes">Да</div>
+          <div class="flow-node" id="node-skip-llm">
+            <span class="node-label">Пропуск LLM</span>
+            <span class="node-desc"> — текст уже отформатирован format_dialogue()</span>
+          </div>
+          <div class="arrow-down" id="arrow-skip-yo"></div>
+          <div class="flow-node" id="node-yo-dialogue">
+            <span class="node-label" id="node-yo-dialogue-label">use_yo?</span>
+            <span class="node-desc" id="node-yo-dialogue-desc"> — ё сохраняется</span>
+          </div>
+        </div>
+
+        <!-- NO: regular formatting -->
+        <div class="branch" id="branch-is-dialogue-no">
+          <div class="branch-label active-label" id="label-isdial-no">Нет</div>
+          <div class="decision active-decision" id="decision-len">
+            len(text) > 100?
+          </div>
+          <div class="branches">
+            <div class="branch">
+              <div class="branch-label active-label" id="label-len-yes">Да</div>
+              <div class="flow-node active" id="node-llm">
+                <span class="node-label">LLM форматирование</span>
+                <span class="node-desc" id="node-llm-desc"> — backend: qwen</span>
+                <span class="node-badge active" id="node-llm-badge">qwen</span>
+              </div>
+              <div class="arrow-down active-arrow" id="arrow-llm-fallback"></div>
+              <div class="flow-node" id="node-llm-fallback">
+                <span class="node-label">Fallback</span>
+                <span class="node-desc" id="node-llm-fallback-desc"> — при ошибке: assemblyai</span>
+              </div>
+            </div>
+            <div class="branch">
+              <div class="branch-label" id="label-len-no">Нет</div>
+              <div class="flow-node" id="node-raw">
+                <span class="node-label">Raw ASR</span>
+                <span class="node-desc"> — без форматирования, ≤100 символов</span>
+              </div>
+              <div class="arrow-down" id="arrow-raw-yo"></div>
+              <div class="flow-node" id="node-yo-raw">
+                <span class="node-label" id="node-yo-raw-label">use_yo?</span>
+                <span class="node-desc" id="node-yo-raw-desc"> — ё сохраняется</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stage 3: Delivery -->
+  <section class="stage" id="stage-delivery">
+    <div class="stage-header">
+      <span class="stage-number">3</span>
+      <span class="stage-title">Доставка</span>
+    </div>
+
+    <div class="flow">
+      <div class="flow-node" id="node-code-wrap">
+        <span class="node-label" id="node-code-wrap-label">use_code_tags?</span>
+        <span class="node-desc" id="node-code-wrap-desc"> — обёртка &lt;code&gt; выключена</span>
+      </div>
+
+      <div class="arrow-down active-arrow" id="arrow-delivery-1"></div>
+
+      <div class="decision active-decision" id="decision-length">
+        len(result) ≤ 4000?
+      </div>
+
+      <div class="branches">
+        <div class="branch">
+          <div class="branch-label active-label" id="label-short">Да</div>
+          <div class="flow-node active" id="node-edit-in-place">
+            <span class="node-label">Edit in place</span>
+            <span class="node-desc"> — редактируем статус-сообщение</span>
+            <span class="node-badge active">по умолчанию</span>
+          </div>
+        </div>
+        <div class="branch">
+          <div class="branch-label" id="label-long">Нет</div>
+          <div class="decision" id="decision-long-mode">
+            long_text_mode?
+          </div>
+          <div class="branches">
+            <div class="branch">
+              <div class="branch-label active-label" id="label-split">split</div>
+              <div class="flow-node active" id="node-split">
+                <span class="node-label">send_long_message()</span>
+                <span class="node-desc"> — split по ¶/\n/.</span>
+                <span class="node-badge active">по умолчанию</span>
+              </div>
+            </div>
+            <div class="branch">
+              <div class="branch-label" id="label-file">file</div>
+              <div class="flow-node" id="node-file">
+                <span class="node-label">send_as_file()</span>
+                <span class="node-desc"> — .txt с caption</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Reference table -->
+  <section id="settings-table">
+    <h2>Справочник настроек</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Настройка</th>
+          <th>Команда</th>
+          <th>По умолчанию</th>
+          <th>Варианты</th>
+          <th>Эффект</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Моноширинный шрифт</td>
+          <td><code>/code</code></td>
+          <td><span class="default-value">Выкл</span></td>
+          <td>Вкл / Выкл</td>
+          <td><code>&lt;code&gt;</code> обёртка результата</td>
+        </tr>
+        <tr>
+          <td>Буква ё</td>
+          <td><code>/yo</code></td>
+          <td><span class="default-value">Вкл</span></td>
+          <td>Вкл / Выкл</td>
+          <td>Сохранять ё в тексте (выкл → замена ё→е)</td>
+        </tr>
+        <tr>
+          <td>Длинный текст</td>
+          <td><code>/output</code></td>
+          <td><span class="default-value">split</span></td>
+          <td>split / file</td>
+          <td>Доставка длинного текста (>4000 символов)</td>
+        </tr>
+        <tr>
+          <td>Режим диалога</td>
+          <td><code>/dialogue</code></td>
+          <td><span class="default-value">Выкл</span></td>
+          <td>Вкл / Выкл</td>
+          <td>Диаризация: два спикера, two-pass ASR</td>
+        </tr>
+        <tr>
+          <td>Метки спикеров</td>
+          <td><code>/speakers</code></td>
+          <td><span class="default-value">Вкл</span></td>
+          <td>Вкл / Выкл</td>
+          <td>«Спикер N:» в режиме диалога</td>
+        </tr>
+        <tr>
+          <td>LLM backend</td>
+          <td><code>/llm</code></td>
+          <td><span class="default-value">qwen</span></td>
+          <td>qwen / assemblyai</td>
+          <td>Движок форматирования (admin)</td>
+        </tr>
+        <tr>
+          <td>Дебаг</td>
+          <td><code>/debug</code></td>
+          <td><span class="default-value">Выкл</span></td>
+          <td>Вкл / Выкл</td>
+          <td>Debug-вывод диаризации (admin)</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>
+    Telegram Whisper Bot v4.3.0 — 2026-02-17
+  </footer>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // State from toggles
+  function getState() {
+    return {
+      dialogue: document.getElementById('toggle-dialogue').checked,
+      yo: document.getElementById('toggle-yo').checked,
+      code: document.getElementById('toggle-code').checked,
+      speakers: document.getElementById('toggle-speakers').checked,
+      output: document.getElementById('toggle-output').value,
+      llm: document.getElementById('toggle-llm').value,
+    };
+  }
+
+  function setActive(id, active) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (el.classList.contains('flow-node')) {
+      el.classList.toggle('active', active);
+      var badge = el.querySelector('.node-badge');
+      if (badge) badge.classList.toggle('active', active);
+    } else if (el.classList.contains('decision')) {
+      el.classList.toggle('active-decision', active);
+    } else if (el.classList.contains('branch-label')) {
+      el.classList.toggle('active-label', active);
+    } else if (el.classList.contains('arrow-down')) {
+      el.classList.toggle('active-arrow', active);
+    }
+  }
+
+  function update() {
+    var s = getState();
+
+    // --- Stage 1: Routing ---
+    setActive('node-audio-input', true);
+    setActive('arrow-1-1', true);
+    setActive('decision-dialogue', true);
+
+    // Dialogue ON: async+diarization path
+    setActive('label-dialogue-yes', s.dialogue);
+    setActive('node-async-diarization', s.dialogue);
+    setActive('arrow-diar-1', s.dialogue);
+    setActive('node-diarization', s.dialogue);
+    setActive('arrow-diar-2', s.dialogue);
+    setActive('decision-segments', s.dialogue);
+    setActive('label-seg-yes', s.dialogue);
+    setActive('node-format-dialogue', s.dialogue);
+    setActive('label-seg-no', false); // fallback is not the active path
+
+    setActive('node-fallback-asr', false);
+
+    // Dialogue OFF: duration check — only sync (<60s) is the default path
+    setActive('label-dialogue-no', !s.dialogue);
+    setActive('decision-duration', !s.dialogue);
+    setActive('label-dur-yes', false);
+    setActive('node-async-regular', false);
+    setActive('label-dur-no', !s.dialogue);
+    setActive('node-sync', !s.dialogue);
+
+    // --- Stage 2: Formatting ---
+    setActive('decision-is-dialogue', true);
+
+    // is_dialogue = true path (only when dialogue mode ON)
+    var isDialogue = s.dialogue; // simplification: if dialogue ON, we assume segments OK
+    setActive('label-isdial-yes', isDialogue);
+    setActive('node-skip-llm', isDialogue);
+    setActive('arrow-skip-yo', isDialogue);
+    setActive('node-yo-dialogue', isDialogue);
+
+    // Update yo description in dialogue branch
+    var yoDialLabel = document.getElementById('node-yo-dialogue-label');
+    var yoDialDesc = document.getElementById('node-yo-dialogue-desc');
+    if (s.yo) {
+      yoDialLabel.textContent = 'use_yo = true';
+      yoDialDesc.textContent = ' — ё сохраняется';
+    } else {
+      yoDialLabel.textContent = 'use_yo = false';
+      yoDialDesc.textContent = ' — ё→е замена';
+    }
+
+    // is_dialogue = false path
+    setActive('label-isdial-no', !isDialogue);
+    setActive('decision-len', !isDialogue);
+    setActive('label-len-yes', !isDialogue);
+    setActive('node-llm', !isDialogue);
+    setActive('arrow-llm-fallback', !isDialogue);
+    setActive('node-llm-fallback', false); // fallback is not the primary active path
+
+    // LLM backend label
+    var llmDesc = document.getElementById('node-llm-desc');
+    var llmBadge = document.getElementById('node-llm-badge');
+    var llmFallbackDesc = document.getElementById('node-llm-fallback-desc');
+    llmDesc.textContent = ' — backend: ' + s.llm;
+    llmBadge.textContent = s.llm;
+    var fallbackBackend = s.llm === 'qwen' ? 'assemblyai' : 'qwen';
+    llmFallbackDesc.textContent = ' — при ошибке: ' + fallbackBackend;
+
+    setActive('label-len-no', false);
+    setActive('node-raw', false);
+    setActive('arrow-raw-yo', false);
+    setActive('node-yo-raw', false);
+
+    // Update yo in raw branch
+    var yoRawLabel = document.getElementById('node-yo-raw-label');
+    var yoRawDesc = document.getElementById('node-yo-raw-desc');
+    if (s.yo) {
+      yoRawLabel.textContent = 'use_yo = true';
+      yoRawDesc.textContent = ' — ё сохраняется';
+    } else {
+      yoRawLabel.textContent = 'use_yo = false';
+      yoRawDesc.textContent = ' — ё→е замена';
+    }
+
+    // --- Stage 3: Delivery ---
+    var codeLabel = document.getElementById('node-code-wrap-label');
+    var codeDesc = document.getElementById('node-code-wrap-desc');
+    if (s.code) {
+      codeLabel.textContent = 'use_code_tags = true';
+      codeDesc.textContent = ' — обёртка <code> включена';
+      setActive('node-code-wrap', true);
+    } else {
+      codeLabel.textContent = 'use_code_tags = false';
+      codeDesc.textContent = ' — обёртка <code> выключена';
+      setActive('node-code-wrap', false);
+    }
+
+    setActive('arrow-delivery-1', true);
+    setActive('decision-length', true);
+
+    // Short text: always active (default path)
+    setActive('label-short', true);
+    setActive('node-edit-in-place', true);
+
+    // Long text: depends on output mode
+    setActive('label-long', true);
+    setActive('decision-long-mode', true);
+
+    var isSplit = s.output === 'split';
+    setActive('label-split', isSplit);
+    setActive('node-split', isSplit);
+    setActive('label-file', !isSplit);
+    setActive('node-file', !isSplit);
+  }
+
+  // Bind events
+  var inputs = document.querySelectorAll('#settings input, #settings select');
+  for (var i = 0; i < inputs.length; i++) {
+    inputs[i].addEventListener('change', update);
+  }
+
+  // Initial render
+  update();
+})();
+</script>
+
+</body>
+</html>

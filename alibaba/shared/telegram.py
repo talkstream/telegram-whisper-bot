@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import tempfile
+import time
 import requests
 from typing import Optional, Dict, Any
 
@@ -28,6 +29,32 @@ class TelegramService:
         )
         self.session.mount('https://', adapter)
         
+    MAX_RETRIES = 3
+    RETRY_BACKOFF = [1, 2, 4]  # seconds between retries
+
+    def _post_with_retry(self, url: str, **kwargs) -> requests.Response:
+        """POST with retry on 429 (rate limit) and 5xx (server errors)."""
+        last_exc = None
+        response = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                response = self.session.post(url, **kwargs)
+                status = getattr(response, 'status_code', None)
+                if status == 429 or (isinstance(status, int) and status >= 500):
+                    retry_after = int(response.headers.get('Retry-After', self.RETRY_BACKOFF[attempt]))
+                    logger.warning(f"Telegram API {response.status_code}, retry {attempt + 1}/{self.MAX_RETRIES} in {retry_after}s")
+                    time.sleep(retry_after)
+                    continue
+                return response
+            except requests.exceptions.ConnectionError as e:
+                last_exc = e
+                logger.warning(f"Connection error, retry {attempt + 1}/{self.MAX_RETRIES}: {e}")
+                time.sleep(self.RETRY_BACKOFF[attempt])
+        # Return last response or raise last exception
+        if last_exc:
+            raise last_exc
+        return response
+
     def send_chat_action(self, chat_id: int, action: str) -> bool:
         """
         Send a chat action (e.g. 'typing', 'upload_photo', 'upload_document').
@@ -56,7 +83,7 @@ class TelegramService:
             payload["reply_markup"] = json.dumps(reply_markup)
             
         try:
-            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
+            response = self._post_with_retry(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             logger.info(f"Sent message to {chat_id}")
             return response.json()
@@ -82,7 +109,7 @@ class TelegramService:
             payload["reply_markup"] = json.dumps(reply_markup)
             
         try:
-            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
+            response = self._post_with_retry(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -95,7 +122,7 @@ class TelegramService:
         payload = {"chat_id": chat_id, "message_id": message_id}
         
         try:
-            response = self.session.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
+            response = self._post_with_retry(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
