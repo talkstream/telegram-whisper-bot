@@ -2133,7 +2133,7 @@ class AudioService:
             }
 
             payload = {
-                "model": "qwen-plus",  # qwen-flash doesn't follow dialogue formatting; qwen-plus is more capable
+                "model": "qwen3.5-397b-a17b",  # largest Qwen3.5 MoE — best instruction following
                 "input": {
                     "messages": [
                         {"role": "user", "content": prompt}
