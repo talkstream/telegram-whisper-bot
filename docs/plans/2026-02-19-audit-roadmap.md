@@ -92,18 +92,25 @@ Project reached MVP+ stage (v4.3.0): ASR, diarization, parallel processing, auto
 
 ---
 
-## Metrics Projection
+## Metrics — Actual Results
 
-| Metric | Current | After Tier 1 | After Tier 2 | After Tier 3 |
-|--------|---------|-------------|-------------|-------------|
-| **Tests** | 247 | 247 | ~330 | ~400 |
-| **Coverage (est.)** | ~45% | ~48% | ~65% | ~78% |
-| **CVE** | 2 | 0 | 0 | 0 |
-| **CI/CD** | broken | working | + coverage | + Snyk |
-| **Max function LOC** | 284 | 284 | 243 | ~60 |
-| **Billing bug** | yes | fixed | fixed | fixed |
-| **Temp cleanup** | missing | done | done | done |
-| **Tracing** | none | none | trace_id | trace_id |
+| Metric | Before Audit | After Tier 1+2 | After Tier 3 (actual) |
+|--------|---------|-------------|-------------|
+| **Tests** | 247 | 398 | **429** |
+| **Coverage (shared/)** | ~45% | ~54% | **55%** |
+| **CVE** | 2 | 0 | 0 |
+| **CI/CD** | broken | working + coverage | + coverage gate 50% |
+| **Max function LOC** | 284 | 243 | **~80** (process_job decomposed) |
+| **Billing bug** | yes | fixed | fixed |
+| **Temp cleanup** | missing | done | done |
+| **Tracing** | none | trace_id | trace_id |
+| **Rate limiting** | none | none | **10 req/sec per user** |
+| **MIME validation** | none | none | **magic bytes check** |
+| **Pre-checkout** | pass-through | pass-through | **payload + currency validation** |
+| **MNS tests** | 0 | 0 | **33 tests (96% coverage)** |
+| **Dead code** | format_text_with_gemini | present | **removed (-78 LOC)** |
+
+*Note: tablestore_service.py (510 LOC, 0% coverage) pulls shared/ average down. Without it: ~73% coverage.*
 
 ---
 

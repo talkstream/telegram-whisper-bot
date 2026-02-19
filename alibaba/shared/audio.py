@@ -255,10 +255,32 @@ class AudioService:
                 os.remove(output_path)
             return None
             
+    # Allowed MIME types for audio processing (magic bytes detection)
+    _ALLOWED_MIME_PREFIXES = ('audio/', 'video/', 'application/ogg', 'application/octet-stream')
+
+    @staticmethod
+    def _check_mime_type(file_path: str) -> bool:
+        """Validate file MIME type using magic bytes. Returns True if allowed."""
+        import mimetypes
+        # Try python-magic first (most reliable), fallback to mimetypes
+        try:
+            import magic
+            mime = magic.from_file(file_path, mime=True)
+        except (ImportError, Exception):
+            mime, _ = mimetypes.guess_type(file_path)
+            if not mime:
+                # Unknown extension — let FFmpeg decide
+                return True
+
+        for prefix in AudioService._ALLOWED_MIME_PREFIXES:
+            if mime.startswith(prefix):
+                return True
+        logging.warning(f"MIME validation failed: {mime} for {file_path}")
+        return False
+
     def prepare_audio_for_asr(self, input_path: str) -> Optional[str]:
         """
-        Prepare audio file for ASR: detect video, extract audio, convert to MP3.
-        Replaces direct convert_to_mp3() calls in handlers.
+        Prepare audio file for ASR: validate MIME, detect video, extract audio, convert to MP3.
 
         Args:
             input_path: Path to input audio/video file
@@ -266,6 +288,10 @@ class AudioService:
         Returns:
             Path to MP3 file ready for ASR, or None on error
         """
+        if not self._check_mime_type(input_path):
+            logging.error(f"File rejected: invalid MIME type for {input_path}")
+            return None
+
         processing_path = input_path
         extracted_path = None
         try:
@@ -2284,85 +2310,6 @@ class AudioService:
             logging.warning(f"AssemblyAI LLM failed: {e}, falling back to Qwen")
             return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
 
-    def format_text_with_gemini(self, text: str, use_code_tags: bool = False,
-                                use_yo: bool = True, is_chunked: bool = False,
-                                is_dialogue: bool = False) -> str:
-        """
-        Format transcribed text using Gemini via HTTP API.
-        Fallback method when Qwen LLM is unavailable.
-
-        NOTE: This is the backup formatter. Requires GCP credentials.
-        """
-        import requests
-
-        # Check if text is too short to format
-        word_count = len(text.split())
-        if word_count < 10:
-            logging.info(f"Text too short for formatting ({word_count} words), returning original")
-            return text
-
-        api_start_time = time.time()
-
-        try:
-            # Get API key from environment
-            api_key = os.environ.get('GOOGLE_API_KEY') or os.environ.get('GEMINI_API_KEY')
-            if not api_key:
-                logging.warning("No Gemini API key available, returning original text")
-                return text
-
-            prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue)
-
-            # Call Gemini API via REST
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.3,
-                    "topP": 0.95,
-                    "maxOutputTokens": 8192
-                }
-            }
-
-            logging.info(f"Starting Gemini request. Input chars: {len(text)}")
-
-            response = requests.post(url, json=payload, timeout=60)
-            response.raise_for_status()
-
-            data = response.json()
-            candidates = data.get('candidates', [])
-            if not candidates:
-                raise ValueError("Gemini LLM returned empty candidates")
-            formatted_text = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-
-            api_duration = time.time() - api_start_time
-            logging.info(f"Gemini finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
-
-            # Remove code tags if present but not wanted
-            if not use_code_tags and formatted_text.startswith('<code>'):
-                formatted_text = formatted_text.replace('<code>', '').replace('</code>', '')
-
-            # Quality check
-            if len(formatted_text) < 5:
-                logging.warning("Gemini returned very short text, using original")
-                return text
-
-            # Log API call metrics
-            if self.metrics_service:
-                self.metrics_service.log_api_call('gemini', api_duration, True)
-
-            logging.info("Successfully formatted text with Gemini")
-            return formatted_text
-
-        except Exception as e:
-            api_duration = time.time() - api_start_time
-            if self.metrics_service:
-                self.metrics_service.log_api_call('gemini', api_duration, False, str(e))
-
-            logging.error(f"Gemini formatting failed: {str(e)}")
-            # Fallback: return original text
-            return text
-            
     def is_video_file(self, file_path: str) -> bool:
         """
         Check if the file is a video based on format detection

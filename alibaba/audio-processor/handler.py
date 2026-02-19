@@ -212,8 +212,125 @@ def process_mns_message(event: Dict[str, Any]) -> Dict[str, Any]:
     return process_job(job_data)
 
 
+def _download_and_convert(tg, audio, file_id, chat_id, progress_id):
+    """Download file from Telegram and convert for ASR. Returns (local_path, converted_path)."""
+    if progress_id:
+        tg.edit_message_text(chat_id, progress_id, "📥 Загружаю файл...")
+    tg.send_chat_action(chat_id, 'typing')
+
+    telegram_file_path = tg.get_file_path(file_id)
+    if not telegram_file_path:
+        raise Exception("Failed to get file path from Telegram")
+
+    local_path = tg.download_file(telegram_file_path)
+    if not local_path:
+        raise Exception("Failed to download file from Telegram")
+
+    if progress_id:
+        tg.edit_message_text(chat_id, progress_id, "🎙 Распознаю речь...")
+    tg.send_chat_action(chat_id, 'typing')
+
+    converted_path = audio.prepare_audio_for_asr(local_path)
+    if not converted_path:
+        raise Exception("Failed to convert audio to MP3")
+
+    return local_path, converted_path
+
+
+def _transcribe_simple(audio, tg, converted_path, chat_id, progress_id):
+    """Simple ASR without diarization."""
+    def chunk_progress(current, total):
+        if progress_id and total > 1:
+            tg.edit_message_text(chat_id, progress_id,
+                f"🎙 Распознаю речь... (часть {current} из {total})")
+
+    return audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
+
+
+def _transcribe(audio, tg, converted_path, actual_duration, chat_id, progress_id, speaker_labels):
+    """Run ASR with optional diarization. Returns (text, is_dialogue)."""
+    if actual_duration >= DIARIZATION_THRESHOLD:
+        raw_text, segments = audio.transcribe_with_diarization(
+            converted_path,
+            progress_callback=lambda stage: (
+                tg.edit_message_text(chat_id, progress_id, stage)
+                if progress_id else None
+            )
+        )
+        if segments:
+            unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
+            if unique_speakers >= 2:
+                return audio.format_dialogue(segments, show_speakers=speaker_labels), True
+            # 1 speaker: use raw_text (no dashes), will go through LLM
+            return (raw_text or ' '.join(s.get('text', '') for s in segments)), False
+        # Diarization failed: fallback to regular ASR
+        return _transcribe_simple(audio, tg, converted_path, chat_id, progress_id), False
+
+    # Fast path: simple ASR without diarization
+    return _transcribe_simple(audio, tg, converted_path, chat_id, progress_id), False
+
+
+def _format_transcription(audio, text, is_dialogue, settings, converted_path,
+                          tg, chat_id, progress_id):
+    """Format transcribed text with LLM if needed. Returns formatted_text."""
+    use_yo = settings.get('use_yo', True)
+
+    if is_dialogue:
+        formatted = text
+        if not use_yo:
+            formatted = formatted.replace('ё', 'е').replace('Ё', 'Е')
+        return formatted
+
+    if len(text) > 100:
+        if progress_id:
+            tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
+        tg.send_chat_action(chat_id, 'typing')
+
+        audio_duration = audio.get_audio_duration(converted_path)
+        is_chunked = audio_duration > audio.ASR_MAX_CHUNK_DURATION
+
+        return audio.format_text_with_llm(
+            text,
+            use_code_tags=settings.get('use_code_tags', False),
+            use_yo=use_yo,
+            is_chunked=is_chunked,
+            is_dialogue=False,
+            backend=settings.get('llm_backend'))
+
+    formatted = text
+    if not use_yo:
+        formatted = formatted.replace('ё', 'е').replace('Ё', 'Е')
+    return formatted
+
+
+def _deliver_result(tg, chat_id, progress_id, formatted_text, settings):
+    """Deliver transcription result to user via appropriate method."""
+    use_code = settings.get('use_code_tags', False)
+    if use_code:
+        result_text = f"<code>{formatted_text}</code>"
+        parse_mode = 'HTML'
+    else:
+        result_text = formatted_text
+        parse_mode = ''
+
+    long_text_mode = settings.get('long_text_mode', 'split')
+
+    if progress_id and len(result_text) <= 4000:
+        tg.edit_message_text(chat_id, progress_id, result_text, parse_mode=parse_mode)
+    elif long_text_mode == 'file':
+        if progress_id:
+            tg.delete_message(chat_id, progress_id)
+        first_dot = formatted_text.find('.')
+        caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
+        tg.send_as_file(chat_id, formatted_text, caption=caption)
+    else:
+        if progress_id:
+            tg.delete_message(chat_id, progress_id)
+        tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
+
+
 def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Process a single audio processing job."""
+    """Process a single audio processing job (orchestrator)."""
     # Set trace context from webhook-handler (for correlated logs)
     from services.utility import set_trace_context
     trace_id = job_data.get('trace_id', '')
@@ -223,21 +340,18 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     user_id = job_data.get('user_id')
     chat_id = job_data.get('chat_id')
     file_id = job_data.get('file_id')
-    _file_type = job_data.get('file_type', 'voice')  # Preserved for future use
     duration = job_data.get('duration', 0)
 
     if job_id is None or user_id is None or chat_id is None or file_id is None:
         logger.error(f"Invalid job data: {job_data}")
         return {'ok': False, 'error': 'Missing required fields'}
 
-    # Type narrowing after validation - reassign with correct types
     job_id = str(job_id)
-    user_id_int = int(user_id)  # For numeric operations (balance, settings)
-    user_id = str(user_id)  # Keep as string for job records
+    user_id_int = int(user_id)
+    user_id = str(user_id)
     chat_id = int(chat_id)
     file_id = str(file_id)
 
-    # Reuse status message from webhook-handler if available
     status_message_id = job_data.get('status_message_id')
     if status_message_id:
         status_message_id = int(status_message_id)
@@ -258,10 +372,9 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning(f"Job {job_id} already {existing_job['status']}, skipping (MNS redelivery)")
             return {'ok': True, 'result': 'duplicate'}
 
-        # Update job status
         db.update_job(job_id, {'status': 'processing'})
 
-        # Use existing status message or create new one for progress
+        # Progress message
         if status_message_id:
             progress_id = status_message_id
             tg.edit_message_text(chat_id, progress_id, "🔄 Обработка началась...")
@@ -269,38 +382,13 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             progress_msg = tg.send_message(chat_id, "🔄 Обработка началась...")
             progress_id = progress_msg['result']['message_id'] if progress_msg and progress_msg.get('ok') else None
 
-        # Download file from Telegram
-        if progress_id:
-            tg.edit_message_text(chat_id, progress_id, "📥 Загружаю файл...")
-        tg.send_chat_action(chat_id, 'typing')
+        # Step 1: Download and convert
+        local_path, converted_path = _download_and_convert(tg, audio, file_id, chat_id, progress_id)
 
-        telegram_file_path = tg.get_file_path(file_id)
-        if not telegram_file_path:
-            raise Exception("Failed to get file path from Telegram")
-
-        local_path = tg.download_file(telegram_file_path)
-        if not local_path:
-            raise Exception("Failed to download file from Telegram")
-
-        # Update progress: transcribing
-        if progress_id:
-            tg.edit_message_text(chat_id, progress_id, "🎙 Распознаю речь...")
-        tg.send_chat_action(chat_id, 'typing')
-
-        # Convert audio (with video detection)
-        converted_path = audio.prepare_audio_for_asr(local_path)
-        if not converted_path:
-            raise Exception("Failed to convert audio to MP3")
-
-        # Extract settings from user
+        # Load user settings
         user = db.get_user(user_id_int)
         settings_json = user.get('settings', '{}') if user else '{}'
         settings = json.loads(settings_json) if isinstance(settings_json, str) else (settings_json or {})
-        use_code = settings.get('use_code_tags', False)
-        use_yo = settings.get('use_yo', True)
-        speaker_labels = settings.get('speaker_labels', True)
-
-        is_dialogue = False
 
         # Documents may arrive with duration=0 — detect real duration
         actual_duration = duration
@@ -308,62 +396,24 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             actual_duration = audio.get_audio_duration(converted_path)
             logger.info(f"Job {job_id}: document duration was 0, detected {actual_duration:.1f}s")
 
-            # Re-check balance with real duration
             actual_minutes = (int(actual_duration) + 59) // 60
             balance = user.get('balance_minutes', 0) if user else 0
             if balance < actual_minutes:
-                tg.send_message(
-                    chat_id,
-                    "У вас недостаточно минут для транскрипции.\n"
-                    "Используйте /buy_minutes для покупки."
-                )
+                tg.send_message(chat_id, "У вас недостаточно минут для транскрипции.\nИспользуйте /buy_minutes для покупки.")
                 if progress_id:
                     tg.delete_message(chat_id, progress_id)
                 db.update_job(job_id, {'status': 'failed', 'error': 'insufficient_balance'})
                 return {'ok': True, 'result': 'insufficient_balance'}
 
-            # Update duration for balance deduction later
             duration = int(actual_duration)
 
-        if actual_duration >= DIARIZATION_THRESHOLD:
-            # Diarization path: two-pass ASR + speaker detection
-            raw_text, segments = audio.transcribe_with_diarization(
-                converted_path,
-                progress_callback=lambda stage: (
-                    tg.edit_message_text(chat_id, progress_id, stage)
-                    if progress_id else None
-                )
-            )
-            if segments:
-                unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
-                if unique_speakers >= 2:
-                    text = audio.format_dialogue(segments,
-                                                 show_speakers=speaker_labels)
-                    is_dialogue = True
-                else:
-                    # 1 speaker: use raw_text (no dashes), will go through LLM
-                    text = raw_text or ' '.join(s.get('text', '') for s in segments)
-            else:
-                # Diarization failed: fallback to regular ASR
-                def chunk_progress(current, total):
-                    if progress_id and total > 1:
-                        tg.edit_message_text(chat_id, progress_id,
-                            f"🎙 Распознаю речь... (часть {current} из {total})")
+        # Step 2: Transcribe
+        text, is_dialogue = _transcribe(audio, tg, converted_path, actual_duration,
+                                        chat_id, progress_id, settings.get('speaker_labels', True))
 
-                text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
-        else:
-            # Fast path: simple ASR without diarization
-            def chunk_progress(current, total):
-                if progress_id and total > 1:
-                    tg.edit_message_text(chat_id, progress_id,
-                        f"🎙 Распознаю речь... (часть {current} из {total})")
-
-            text = audio.transcribe_audio(converted_path, progress_callback=chunk_progress)
-
-        # Send diarization debug info to admin (only when /debug is on)
+        # Debug diarization output for admin
         owner_id = int(os.environ.get('OWNER_ID', 0))
-        debug_mode = settings.get('debug_mode', False)
-        if owner_id and chat_id == owner_id and debug_mode:
+        if owner_id and chat_id == owner_id and settings.get('debug_mode', False):
             debug_text = audio.get_diarization_debug()
             if debug_text:
                 tg.send_message(owner_id, f"<pre>{debug_text}</pre>", parse_mode='HTML')
@@ -375,100 +425,47 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             db.update_job(job_id, {'status': 'failed', 'error': 'no_speech'})
             return {'ok': True, 'result': 'no_speech'}
 
-        # Determine if audio was chunked (for LLM prompt)
-        audio_duration = audio.get_audio_duration(converted_path)
-        is_chunked = audio_duration > audio.ASR_MAX_CHUNK_DURATION
+        # Step 3: Format text
+        formatted_text = _format_transcription(audio, text, is_dialogue, settings,
+                                               converted_path, tg, chat_id, progress_id)
 
-        # Format text (Qwen LLM with Gemini fallback)
-        # Dialogue already formatted by format_dialogue() — skip LLM to preserve speaker order
-        if is_dialogue:
-            formatted_text = text
-            if not use_yo:
-                formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
-        elif len(text) > 100:
-            if progress_id:
-                tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую текст...")
-            tg.send_chat_action(chat_id, 'typing')
-            formatted_text = audio.format_text_with_llm(
-                text, use_code_tags=use_code, use_yo=use_yo,
-                is_chunked=is_chunked, is_dialogue=is_dialogue,
-                backend=settings.get('llm_backend'))
-        else:
-            formatted_text = text
-            if not use_yo:
-                formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
-
-        # Send result: edit progress message or send new one
-        if use_code:
-            result_text = f"<code>{formatted_text}</code>"
-            parse_mode = 'HTML'
-        else:
-            result_text = formatted_text
-            parse_mode = ''
-
-        # Deduct balance BEFORE delivery to prevent free transcriptions on DB failure
+        # Step 4: Deduct balance BEFORE delivery
         duration_minutes = (duration + 59) // 60
         balance = user.get('balance_minutes', 0) if user else 0
         balance_updated = db.update_user_balance(user_id_int, -duration_minutes)
         if not balance_updated:
             logger.error(f"CRITICAL: Failed to deduct {duration_minutes} min from user {user_id} balance!")
             try:
-                owner_id = int(os.environ.get('OWNER_ID', 0))
                 if owner_id:
                     tg.send_message(
                         owner_id,
-                        f"⚠️ Ошибка списания баланса!\n"
-                        f"User: {user_id}\n"
-                        f"Минут: {duration_minutes}\n"
-                        f"Job: {job_id}\n"
+                        f"⚠️ Ошибка списания баланса!\nUser: {user_id}\n"
+                        f"Минут: {duration_minutes}\nJob: {job_id}\n"
                         f"Требуется ручная корректировка."
                     )
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
 
-        # Deliver result to user
-        long_text_mode = settings.get('long_text_mode', 'split')
-
-        if progress_id and len(result_text) <= 4000:
-            tg.edit_message_text(chat_id, progress_id, result_text, parse_mode=parse_mode)
-        elif long_text_mode == 'file':
-            if progress_id:
-                tg.delete_message(chat_id, progress_id)
-            first_dot = formatted_text.find('.')
-            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
-            tg.send_as_file(chat_id, formatted_text, caption=caption)
-        else:
-            if progress_id:
-                tg.delete_message(chat_id, progress_id)
-            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
+        # Step 5: Deliver result
+        _deliver_result(tg, chat_id, progress_id, formatted_text, settings)
 
         # Low balance warning (after delivery so user sees result first)
         if balance_updated:
             new_balance = max(0, int(balance) - duration_minutes)
             if 0 < new_balance < 5:
-                tg.send_message(
-                    chat_id,
-                    f"⚠️ <b>Низкий баланс!</b>\n"
-                    f"Осталось: {new_balance} мин.\n"
-                    f"Пополнить: /buy_minutes",
-                    parse_mode='HTML'
-                )
+                tg.send_message(chat_id,
+                    f"⚠️ <b>Низкий баланс!</b>\nОсталось: {new_balance} мин.\nПополнить: /buy_minutes",
+                    parse_mode='HTML')
             elif new_balance <= 0:
-                tg.send_message(
-                    chat_id,
-                    f"❌ <b>Баланс исчерпан!</b>\n"
-                    f"Пополнить: /buy_minutes",
-                    parse_mode='HTML'
-                )
+                tg.send_message(chat_id,
+                    f"❌ <b>Баланс исчерпан!</b>\nПополнить: /buy_minutes",
+                    parse_mode='HTML')
 
-        # Log and update job status (after sending result to reduce perceived latency)
+        # Log transcription (after delivery to reduce perceived latency)
         db.log_transcription({
-            'user_id': user_id,
-            'duration': duration,
-            'char_count': len(formatted_text),
-            'status': 'completed'
+            'user_id': user_id, 'duration': duration,
+            'char_count': len(formatted_text), 'status': 'completed'
         })
-
         db.update_job(job_id, {
             'status': 'completed',
             'result': json.dumps({'text_length': len(formatted_text)})
@@ -479,11 +476,8 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
-
-        # Update job status
         db.update_job(job_id, {'status': 'failed', 'error': str(e)[:200]})
 
-        # User-friendly error messages
         error_str = str(e).lower()
         if 'invalidparameter' in error_str or 'duration' in error_str:
             user_msg = "Аудио слишком длинное для обработки. Попробуйте отправить файл короче 60 минут."
@@ -498,7 +492,6 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         return {'ok': False, 'error': str(e)}
 
     finally:
-        # Cleanup temp files on both success and error paths
         for path in (local_path, converted_path):
             if path:
                 try:

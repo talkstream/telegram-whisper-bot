@@ -325,8 +325,9 @@ class TestTelegramAPI:
 
 
 # ============== E2E Webhook Test ==============
+@pytest.mark.skipif(not os.environ.get('RUN_E2E'), reason="E2E tests require RUN_E2E=1")
 class TestWebhookE2E:
-    """End-to-end webhook tests"""
+    """End-to-end webhook tests (require network access)"""
 
     def test_webhook_start_command(self):
         """Test /start command processing"""

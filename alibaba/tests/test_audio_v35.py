@@ -438,52 +438,6 @@ class TestFormatWithChunkedFlag:
         assert result == short
 
 
-# ============== format_text_with_gemini is_chunked Tests ==============
-
-class TestGeminiFormatWithChunkedFlag:
-    """Test is_chunked parameter in Gemini fallback."""
-
-    @patch('requests.post')
-    @patch.dict(os.environ, {'GOOGLE_API_KEY': 'fake-key'})
-    def test_gemini_prompt_with_chunked(self, mock_post):
-        service = AudioService()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            'candidates': [{'content': {'parts': [{'text': 'Formatted.'}]}}]
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        text = "Это достаточно длинный текст для форматирования чтобы превысить минимальный порог в десять слов для обработки."
-        service.format_text_with_gemini(text, is_chunked=True)
-
-        sent_payload = mock_post.call_args[1]['json']
-        prompt = sent_payload['contents'][0]['parts'][0]['text']
-        assert 'артефакты склейки' in prompt
-        assert 'топонимов' in prompt
-
-    @patch('requests.post')
-    @patch.dict(os.environ, {'GOOGLE_API_KEY': 'fake-key'})
-    def test_gemini_prompt_without_chunked(self, mock_post):
-        service = AudioService()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            'candidates': [{'content': {'parts': [{'text': 'Formatted.'}]}}]
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        text = "Это достаточно длинный текст для форматирования чтобы превысить минимальный порог в десять слов для обработки."
-        service.format_text_with_gemini(text, is_chunked=False)
-
-        sent_payload = mock_post.call_args[1]['json']
-        prompt = sent_payload['contents'][0]['parts'][0]['text']
-        assert 'артефакты склейки' not in prompt
-        assert 'топонимов' in prompt  # toponyms always present
-
-
 # ============== Document Handler Tests ==============
 
 class TestDocumentHandler:

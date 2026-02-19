@@ -10,6 +10,8 @@ import sys
 import math
 import csv
 import tempfile
+import time
+from collections import defaultdict
 from typing import Any, Dict, Optional, List
 
 # Add shared services to path
@@ -53,6 +55,28 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 # Short audio (<15s): sync for immediate response
 # Longer audio (>=15s): async for parallel processing + diarization for >=60s
 SYNC_PROCESSING_THRESHOLD = 15
+
+# Rate limiting: max requests per user in a sliding window
+_RATE_LIMIT_MAX = 10  # max requests
+_RATE_LIMIT_WINDOW = 1.0  # seconds
+_rate_limits: Dict[int, list] = defaultdict(list)
+
+
+def _is_rate_limited(user_id: int) -> bool:
+    """Check if user exceeded rate limit (10 req/sec). Cleans up stale entries."""
+    now = time.monotonic()
+    timestamps = _rate_limits[user_id]
+
+    # Remove expired timestamps
+    cutoff = now - _RATE_LIMIT_WINDOW
+    while timestamps and timestamps[0] < cutoff:
+        timestamps.pop(0)
+
+    if len(timestamps) >= _RATE_LIMIT_MAX:
+        return True
+
+    timestamps.append(now)
+    return False
 
 # Owner ID for admin commands
 OWNER_ID = int(os.environ.get('OWNER_ID', '0'))
@@ -249,6 +273,12 @@ def process_update(update: Dict[str, Any]) -> str:
     )
     set_trace_context(trace_id=trace_id, user_id=user_id)
 
+    # Rate limiting (skip for owner to avoid locking out admin)
+    if user_id and isinstance(user_id, int) and user_id != OWNER_ID:
+        if _is_rate_limited(user_id):
+            logger.warning(f"Rate limited user {user_id}")
+            return 'rate_limited'
+
     # Handle callback query
     if 'callback_query' in update:
         return handle_callback_query(update['callback_query'])
@@ -308,8 +338,8 @@ def handle_message(message: Dict[str, Any]) -> str:
                     f"✅ Авто-триал: {TRIAL_MINUTES} мин",
                     reply_markup=keyboard
                 )
-            except Exception:
-                pass  # Non-critical, don't block user flow
+            except Exception as e:
+                logger.warning(f"Failed to notify owner about new user {user_id}: {e}")
 
     # Check for audio/voice/video
     if any(key in message for key in ['voice', 'audio', 'video', 'video_note']):
@@ -642,7 +672,7 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         except http_req.exceptions.ReadTimeout:
             # Expected: function started processing, we don't wait for the 60-300s result
             logger.info(f"HTTP invoked audio-processor for job {job_id} (fire-and-forget)")
-        except Exception as e:
+        except (http_req.exceptions.ConnectionError, http_req.exceptions.Timeout) as e:
             logger.error(f"HTTP invoke failed for job {job_id}: {type(e).__name__}: {e}")
             # Fall through to MNS fallback
             audio_processor_url = None
@@ -677,8 +707,8 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     logger.warning(f"All async methods failed for job {job_id}, using sync fallback")
     try:
         db.update_job(job_id, {'status': 'failed', 'error': 'async_unavailable'})
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to update job {job_id} status before sync fallback: {e}")
     return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
 
 
@@ -1279,8 +1309,8 @@ def handle_flush_command(chat_id: int, tg, db) -> str:
         minutes_to_refund = total_seconds / 60
         try:
             db.update_user_balance(int(refund_user_id), minutes_to_refund)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to refund {minutes_to_refund:.1f} min to user {refund_user_id}: {e}")
 
     msg = f"🧹 <b>Очистка завершена</b>\n\n"
     msg += f"✅ Удалено задач: {deleted_count}\n"
@@ -1574,12 +1604,33 @@ def handle_buy_callback(callback_data: str, user_id: int, chat_id: int) -> str:
 
 
 def handle_pre_checkout(pre_checkout_query: Dict[str, Any]) -> str:
-    """Handle pre-checkout query for Telegram Payments."""
+    """Handle pre-checkout query for Telegram Payments.
+
+    Validates payload format and currency before approving.
+    """
     tg = get_telegram_service()
     query_id = pre_checkout_query.get('id')
     if not query_id:
         logger.error("Pre-checkout query missing id")
         return 'pre_checkout_error'
+
+    # Validate payload matches a known product
+    payload = pre_checkout_query.get('invoice_payload', '')
+    valid_payloads = {pkg['payload'] for pkg in PRODUCT_PACKAGES.values()}
+    if payload not in valid_payloads:
+        logger.warning(f"Pre-checkout rejected: unknown payload '{payload}'")
+        tg.answer_pre_checkout_query(query_id, ok=False,
+            error_message="Неизвестный продукт. Попробуйте ещё раз через /buy_minutes")
+        return 'pre_checkout_rejected'
+
+    # Validate currency
+    currency = pre_checkout_query.get('currency', '')
+    if currency != 'XTR':
+        logger.warning(f"Pre-checkout rejected: unexpected currency '{currency}'")
+        tg.answer_pre_checkout_query(query_id, ok=False,
+            error_message="Неверная валюта платежа.")
+        return 'pre_checkout_rejected'
+
     tg.answer_pre_checkout_query(query_id, ok=True)
     return 'pre_checkout_approved'
 
