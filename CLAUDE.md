@@ -4,9 +4,9 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v4.3.0 |
+| **Version** | v4.3.1 |
 | **ASR** | `qwen3-asr-flash` (REST), diarization: DashScope two-pass + AssemblyAI + Gemini backends |
-| **LLM** | `qwen-turbo` (fallback: Gemini 2.5 Flash) |
+| **LLM** | `qwen3.5-397b-a17b` (fallback: Gemini 3 Flash via AssemblyAI Gateway) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
 | **Region** | eu-central-1 (Frankfurt) |
 
@@ -17,7 +17,8 @@
 | ASR | `qwen3-asr-flash` | `https://dashscope-intl.aliyuncs.com/api/v1` |
 | Diarization (speakers) | `fun-asr-mtl` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
 | Diarization (text) | `qwen3-asr-flash-filetrans` | `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription` |
-| LLM | `qwen-turbo` | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
+| LLM (Qwen) | `qwen3.5-397b-a17b` | `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation` |
+| LLM (Gemini) | `gemini-3-flash-preview` | `https://llm-gateway.assemblyai.com/v1/chat/completions` |
 
 **DO NOT USE:** ~~paraformer-v1/v2~~ (China-only), ~~WebSocket ASR~~, ~~dashscope.aliyuncs.com~~ (use `-intl`)
 
@@ -134,6 +135,12 @@ alibaba/
 - Audio 15-59s: async (audio-processor, simple ASR without diarization)
 - Audio ≥60s: async (audio-processor, two-pass diarization + speaker detection)
 
+### Pipeline Logging (v4.3.1)
+- Every pipeline step tagged: `[routing]`, `[download]`, `[transcribe]`, `[diarize]`, `[align]`, `[dialogue]`, `[format]`, `[llm]`, `[llm-qwen]`, `[llm-assemblyai]`, `[deliver]`, `[duration]`, `[telegram]`
+- Logs metadata only (sizes, durations, decisions) — never content/transcripts
+- LLM truncation safety: `finish_reason='length'` → return original text
+- Fetch logs: `aliyun sls GetLogs` (use `/logs` skill, not `s logs`)
+
 ### Error Notifications (v3.6.0)
 - `TelegramErrorHandler` sends ERROR+ to OWNER_ID (60s cooldown)
 - `/mute <hours>` → `/tmp/twbot_mute_until` (resets on cold start)
@@ -183,4 +190,4 @@ FC ~$5 + Tablestore ~$1 + DashScope ~$2 (68% savings vs GCP ~$25)
 
 ---
 
-*v4.3.0 — 2026-02-17*
+*v4.3.1 — 2026-02-20*
