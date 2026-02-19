@@ -931,6 +931,12 @@ def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
     if len(parts) == 3 and str(user_id) == str(OWNER_ID):
         target_id = parts[1]
         backend = parts[2].lower()
+        if backend == 'default':
+            target_settings = db.get_user_settings(target_id) or {}
+            target_settings.pop('llm_backend', None)
+            db.update_user_settings(target_id, target_settings)
+            tg.send_message(chat_id, f"LLM backend for user {target_id}: default")
+            return 'llm_set_user'
         if backend in ('qwen', 'assemblyai'):
             target_settings = db.get_user_settings(target_id) or {}
             target_settings['llm_backend'] = backend
@@ -938,12 +944,17 @@ def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
             tg.send_message(chat_id, f"LLM backend for user {target_id}: {backend}")
             return 'llm_set_user'
         else:
-            tg.send_message(chat_id, "Backend: qwen / assemblyai")
+            tg.send_message(chat_id, "Backend: qwen / assemblyai / default")
             return 'llm_invalid'
     # /llm <backend> — set own LLM
     arg = parts[1].strip().lower() if len(parts) > 1 else None
     settings = db.get_user_settings(user_id) or {}
-    current = settings.get('llm_backend', 'qwen')
+    current = settings.get('llm_backend', 'default')
+    if arg == 'default':
+        settings.pop('llm_backend', None)
+        db.update_user_settings(user_id, settings)
+        tg.send_message(chat_id, "LLM backend: default")
+        return 'llm_set'
     if arg in ('qwen', 'assemblyai'):
         settings['llm_backend'] = arg
         db.update_user_settings(user_id, settings)
@@ -953,7 +964,7 @@ def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
         tg.send_message(
             chat_id,
             f"LLM backend: <b>{current}</b>\n\n"
-            "/llm qwen\n/llm assemblyai\n"
+            "/llm default\n/llm qwen\n/llm assemblyai\n"
             "/llm &lt;user_id&gt; &lt;backend&gt;",
             parse_mode='HTML',
         )
