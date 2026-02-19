@@ -515,9 +515,17 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         is_chunked = audio_duration > audio_service.ASR_MAX_CHUNK_DURATION
 
         # Format text with Qwen LLM (with Gemini fallback)
-        # Dialogue already formatted by format_dialogue() — skip LLM to preserve speaker order
         if is_dialogue:
-            formatted_text = text
+            if len(text) > 100:
+                if status_message_id:
+                    tg.edit_message_text(chat_id, status_message_id, "✏️ Форматирую диалог...")
+                tg.send_chat_action(chat_id, 'typing')
+                formatted_text = audio_service.format_text_with_llm(
+                    text, use_code_tags=use_code_tags, use_yo=use_yo,
+                    is_chunked=is_chunked, is_dialogue=True,
+                    backend=settings.get('llm_backend'))
+            else:
+                formatted_text = text
             if not use_yo:
                 formatted_text = formatted_text.replace('ё', 'е').replace('Ё', 'Е')
         elif len(text) > 100:

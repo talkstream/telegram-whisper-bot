@@ -803,7 +803,7 @@ class TestDiarizationSpeakerDetection:
     """Test speaker detection logic in diarization path."""
 
     def test_two_speakers_formats_dialogue(self, mock_db, mock_tg, mock_audio):
-        """2+ speakers with 3+ transitions -> format_dialogue, is_dialogue=True (LLM skipped)."""
+        """2+ speakers with 3+ transitions -> format_dialogue, is_dialogue=True, then LLM."""
         import handler
         mock_audio.transcribe_with_diarization.return_value = ('Raw text.', [
             {'speaker_id': 1, 'text': 'Hello', 'start': 0, 'end': 5},
@@ -811,7 +811,9 @@ class TestDiarizationSpeakerDetection:
             {'speaker_id': 1, 'text': 'How are you?', 'start': 10, 'end': 15},
             {'speaker_id': 2, 'text': 'Fine thanks', 'start': 15, 'end': 20},
         ])
-        mock_audio.format_dialogue.return_value = '— Hello\n— Hi'
+        dialogue_text = '— Hello, how is everything going today?\n\n— Hi there, everything is fine thank you very much for asking!\n\n— How are you doing?\n\n— Fine thanks, appreciate it'
+        mock_audio.format_dialogue.return_value = dialogue_text
+        mock_audio.format_text_with_llm.return_value = dialogue_text
         mock_audio.get_audio_duration.return_value = 90.0
 
         with patch.object(handler, 'get_db_service', return_value=mock_db), \
@@ -822,8 +824,10 @@ class TestDiarizationSpeakerDetection:
 
         assert result['ok'] is True
         mock_audio.format_dialogue.assert_called_once()
-        # LLM should NOT be called for dialogue
-        mock_audio.format_text_with_llm.assert_not_called()
+        # LLM post-processes dialogue for punctuation and capitalization
+        mock_audio.format_text_with_llm.assert_called_once()
+        call_kwargs = mock_audio.format_text_with_llm.call_args
+        assert call_kwargs[1].get('is_dialogue') is True or call_kwargs[0][0] == dialogue_text
 
     def test_few_transitions_treated_as_monologue(self, mock_db, mock_tg, mock_audio):
         """2 speakers but <3 transitions -> treated as monologue (goes through LLM)."""

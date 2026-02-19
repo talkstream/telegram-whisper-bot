@@ -287,7 +287,19 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
     use_yo = settings.get('use_yo', True)
 
     if is_dialogue:
-        formatted = text
+        if len(text) > 100:
+            if progress_id:
+                tg.edit_message_text(chat_id, progress_id, "✏️ Форматирую диалог...")
+            tg.send_chat_action(chat_id, 'typing')
+            formatted = audio.format_text_with_llm(
+                text,
+                use_code_tags=settings.get('use_code_tags', False),
+                use_yo=use_yo,
+                is_chunked=False,
+                is_dialogue=True,
+                backend=settings.get('llm_backend'))
+        else:
+            formatted = text
         if not use_yo:
             formatted = formatted.replace('ё', 'е').replace('Ё', 'Е')
         return formatted
