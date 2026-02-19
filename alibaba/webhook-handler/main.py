@@ -523,7 +523,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                 formatted_text = audio_service.format_text_with_llm(
                     text, use_code_tags=use_code_tags, use_yo=use_yo,
                     is_chunked=is_chunked, is_dialogue=True,
-                    backend=settings.get('llm_backend'))
+                    backend=settings.get('llm_backend', 'assemblyai'))  # Gemini 3 Flash default for dialogues
             else:
                 formatted_text = text
             if not use_yo:
@@ -862,7 +862,8 @@ def _cmd_admin(chat_id, user_id, text, user, tg, db) -> str:
         "/batch [user_id] — очередь пользователя\n"
         "/mute [часы|off] — уведомления об ошибках\n"
         "/debug — вкл/выкл дебаг диаризации\n"
-        "/llm [backend] — LLM backend (qwen/assemblyai)\n\n"
+        "/llm [backend] — LLM backend (qwen/assemblyai)\n"
+        "/llm &lt;user_id&gt; &lt;backend&gt; — LLM для юзера\n\n"
         "<b>Отчёты:</b>\n"
         "/export [users|logs|payments] [дни] — экспорт CSV\n"
         "/report [daily|weekly] — отчёт"
@@ -925,7 +926,21 @@ def _cmd_debug(chat_id, user_id, text, user, tg, db) -> str:
 
 
 def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
-    parts = text.split(maxsplit=1) if text else []
+    parts = text.split() if text else []
+    # /llm <user_id> <backend> — admin sets LLM for another user
+    if len(parts) == 3 and str(user_id) == str(OWNER_ID):
+        target_id = parts[1]
+        backend = parts[2].lower()
+        if backend in ('qwen', 'assemblyai'):
+            target_settings = db.get_user_settings(target_id) or {}
+            target_settings['llm_backend'] = backend
+            db.update_user_settings(target_id, target_settings)
+            tg.send_message(chat_id, f"LLM backend for user {target_id}: {backend}")
+            return 'llm_set_user'
+        else:
+            tg.send_message(chat_id, "Backend: qwen / assemblyai")
+            return 'llm_invalid'
+    # /llm <backend> — set own LLM
     arg = parts[1].strip().lower() if len(parts) > 1 else None
     settings = db.get_user_settings(user_id) or {}
     current = settings.get('llm_backend', 'qwen')
@@ -938,7 +953,8 @@ def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
         tg.send_message(
             chat_id,
             f"LLM backend: <b>{current}</b>\n\n"
-            "/llm qwen\n/llm assemblyai",
+            "/llm qwen\n/llm assemblyai\n"
+            "/llm &lt;user_id&gt; &lt;backend&gt;",
             parse_mode='HTML',
         )
         return 'llm_show'
