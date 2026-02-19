@@ -523,7 +523,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                 formatted_text = audio_service.format_text_with_llm(
                     text, use_code_tags=use_code_tags, use_yo=use_yo,
                     is_chunked=is_chunked, is_dialogue=True,
-                    backend='assemblyai')  # Gemini 3 Flash — better at preserving dialogue structure
+                    backend=settings.get('llm_backend'))
             else:
                 formatted_text = text
             if not use_yo:

@@ -297,7 +297,7 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
                 use_yo=use_yo,
                 is_chunked=False,
                 is_dialogue=True,
-                backend='assemblyai')  # Gemini 3 Flash — better at preserving dialogue structure
+                backend=settings.get('llm_backend'))
         else:
             formatted = text
         if not use_yo:

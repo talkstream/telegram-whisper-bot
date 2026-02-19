@@ -2133,7 +2133,7 @@ class AudioService:
             }
 
             payload = {
-                "model": "qwen-turbo",  # v3.0.1: qwen-turbo is 2x faster, 3x cheaper than qwen-plus
+                "model": "qwen-flash",  # qwen-turbo deprecated; qwen-flash is faster, cheaper, 32K output
                 "input": {
                     "messages": [
                         {"role": "user", "content": prompt}
