@@ -238,10 +238,17 @@ def handler(event, context):
                 except json.JSONDecodeError:
                     pass
 
-        logger.info(f"HTTP method: {http_method}")
+        # Extract request path for API routing
+        http_path = event.get('requestContext', {}).get('http', {}).get('path', '/') if isinstance(event, dict) else '/'
+        logger.info(f"HTTP method: {http_method}, path: {http_path}")
 
-        # Handle health check (GET request)
+        # Handle GET requests
         if http_method.upper() == 'GET':
+            # Mini App HTML page
+            if http_path == '/upload' or http_path.endswith('/upload'):
+                return _serve_upload_page()
+
+            # Health check (default GET)
             return {
                 'statusCode': 200,
                 'headers': {'Content-Type': 'application/json'},
@@ -249,11 +256,17 @@ def handler(event, context):
                     'status': 'ok',
                     'service': 'telegram-whisper-bot',
                     'region': REGION,
-                    'version': '4.0.0-alibaba',
+                    'version': '5.0.0',
                     'telegram_token_set': bool(TELEGRAM_BOT_TOKEN),
                     'telegram_token_len': len(TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else 0
                 }, ensure_ascii=False)
             }
+
+        # API endpoints for Mini App
+        if http_path.endswith('/api/signed-url'):
+            return _handle_signed_url_request(request_body, event)
+        if http_path.endswith('/api/process'):
+            return _handle_process_upload(request_body, event)
 
         logger.info(f"Processing update: {str(request_body)[:200]}")
 
@@ -362,6 +375,10 @@ def handle_message(message: Dict[str, Any]) -> str:
     # Check for commands
     if text.startswith('/'):
         return handle_command(message, user)
+
+    # Check for cloud drive URLs
+    if text and _is_cloud_drive_url(text.strip()):
+        return _handle_url_import(message, user, text.strip())
 
     return 'message_received'
 
@@ -762,7 +779,8 @@ def _cmd_start(chat_id, user_id, text, user, tg, db) -> str:
         "отправьте аудио и получите готовый текст с пунктуацией и абзацами.\n\n"
         "▸ Разбивка диалога по спикерам\n"
         "▸ Форматирование и «ё» через AI\n"
-        "▸ До 1 часа аудио за раз\n\n"
+        "▸ Файлы до 500 МБ через /upload\n"
+        "▸ Импорт по ссылке (Яндекс.Диск, Google Drive, Dropbox)\n\n"
     )
 
     if trial_status == 'approved' and balance > 0:
@@ -791,10 +809,15 @@ def _cmd_help(chat_id, user_id, text, user, tg, db) -> str:
     tg.send_message(
         chat_id,
         "📖 Справка по боту\n\n"
-        "Отправьте голосовое сообщение, аудио или видео для транскрипции.\n\n"
+        "▸ Отправьте голосовое, аудио или видео — до 20 МБ\n"
+        "▸ /upload — загрузите файл до 500 МБ\n"
+        "▸ Скиньте ссылку с Яндекс.Диска, Google Drive или Dropbox\n\n"
+        "Длинные аудио (интервью, лекции, пресс-конференции) — "
+        "автоматическая разбивка по спикерам и LLM-форматирование.\n\n"
         "Команды:\n"
         "/balance - Проверить остаток минут\n"
         "/buy_minutes - Купить минуты\n"
+        "/upload - Загрузка больших файлов (до 500 МБ)\n"
         "/settings - Показать настройки\n"
         "/code - Вкл/выкл моноширинный шрифт\n"
         "/yo - Вкл/выкл букву ё\n"
@@ -1004,6 +1027,31 @@ def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
 
 
 # Command dispatch tables
+def _cmd_upload(chat_id, user_id, text, user, tg, db):
+    """Send Mini App button for large file upload."""
+    webhook_url = os.environ.get(
+        'WEBHOOK_URL',
+        'https://webhook-handler-telegrabot-prod-zmdupczvfj.eu-central-1.fcapp.run')
+    upload_url = f"{webhook_url.rstrip('/')}/upload"
+    keyboard = {
+        'inline_keyboard': [[{
+            'text': '📎 Загрузить файл (до 500 МБ)',
+            'web_app': {'url': upload_url}
+        }]]
+    }
+    tg.send_message(
+        chat_id,
+        "📎 <b>Загрузка больших файлов</b>\n\n"
+        "Нажмите кнопку ниже, чтобы загрузить аудио или видео файл размером до 500 МБ.\n\n"
+        "Поддерживаемые форматы: MP3, WAV, OGG, M4A, FLAC, MP4, MOV, MKV, WEBM.\n\n"
+        "💡 Файлы до 20 МБ можно отправлять обычным способом — "
+        "просто перешлите аудио/видео боту.",
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+    return 'upload_command'
+
+
 _USER_COMMANDS = {
     '/start': _cmd_start,
     '/help': _cmd_help,
@@ -1014,6 +1062,7 @@ _USER_COMMANDS = {
     '/output': _cmd_output,
     '/speakers': _cmd_speakers,
     '/buy_minutes': _cmd_buy_minutes,
+    '/upload': _cmd_upload,
 }
 
 _ADMIN_COMMANDS = {
@@ -1744,3 +1793,505 @@ def handle_successful_payment(message: Dict[str, Any]) -> str:
             return 'balance_update_failed'
 
     return 'payment_processed'
+
+
+# === Cloud Drive Import ===
+
+CLOUD_DRIVE_PATTERNS = {
+    'yandex_disk': r'https?://disk\.yandex\.\w+/[di]/\S+',
+    'google_drive': r'https?://drive\.google\.com/file/d/([^/]+)',
+    'dropbox': r'https?://(?:www\.)?dropbox\.com/s\w*/\S+',
+}
+
+
+def _is_cloud_drive_url(text: str) -> bool:
+    """Check if text contains a cloud drive URL."""
+    import re
+    for pattern in CLOUD_DRIVE_PATTERNS.values():
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+def _resolve_download_url(url: str) -> Optional[str]:
+    """Convert cloud drive share URL to direct download URL.
+
+    Returns direct URL or None if service not supported.
+    """
+    import re
+    import requests as req
+
+    # Yandex.Disk
+    match = re.search(CLOUD_DRIVE_PATTERNS['yandex_disk'], url)
+    if match:
+        public_url = match.group(0)
+        try:
+            api_url = f"https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key={public_url}"
+            resp = req.get(api_url, timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get('href')
+        except Exception as e:
+            logger.warning(f"Yandex.Disk resolve failed: {e}")
+        return None
+
+    # Google Drive
+    match = re.search(CLOUD_DRIVE_PATTERNS['google_drive'], url)
+    if match:
+        file_id = match.group(1)
+        return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    # Dropbox
+    match = re.search(CLOUD_DRIVE_PATTERNS['dropbox'], url)
+    if match:
+        dropbox_url = match.group(0)
+        # Replace dl=0 with dl=1 for direct download
+        if 'dl=0' in dropbox_url:
+            return dropbox_url.replace('dl=0', 'dl=1')
+        elif 'dl=' not in dropbox_url:
+            separator = '&' if '?' in dropbox_url else '?'
+            return f"{dropbox_url}{separator}dl=1"
+        return dropbox_url
+
+    return None
+
+
+def _handle_url_import(message: Dict[str, Any], user: Dict[str, Any], url: str) -> str:
+    """Handle audio/video URL from cloud drive."""
+    chat_id = message.get('chat', {}).get('id')
+    user_id = message.get('from', {}).get('id')
+    tg = get_telegram_service()
+    db = get_db_service()
+
+    # Check balance (at least 1 minute)
+    balance = user.get('balance_minutes', 0)
+    if balance < 1:
+        tg.send_message(chat_id,
+            "💰 Баланс: 0 мин. Для обработки файла нужен хотя бы 1 мин.\n/buy_minutes")
+        return 'insufficient_balance'
+
+    # Resolve download URL
+    download_url = _resolve_download_url(url)
+    if not download_url:
+        tg.send_message(chat_id, "❌ Не удалось получить ссылку для скачивания. "
+                        "Поддерживаются: Яндекс.Диск, Google Drive, Dropbox.")
+        return 'unsupported_url'
+
+    # Detect service name for user message
+    import re
+    if re.search(CLOUD_DRIVE_PATTERNS['yandex_disk'], url):
+        service_name = 'Яндекс.Диск'
+    elif re.search(CLOUD_DRIVE_PATTERNS['google_drive'], url):
+        service_name = 'Google Drive'
+    else:
+        service_name = 'Dropbox'
+
+    status_msg = tg.send_message(chat_id,
+        f"🔗 Ссылка {service_name} обнаружена.\n📥 Скачиваю файл...")
+    status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
+
+    # Create job and queue for async processing
+    import uuid
+    job_id = str(uuid.uuid4())
+
+    db.create_job({
+        'job_id': job_id,
+        'user_id': str(user_id),
+        'chat_id': str(chat_id),
+        'file_id': download_url,
+        'file_type': 'url_import',
+        'duration': 0,
+        'status': 'pending',
+        'status_message_id': str(status_message_id) if status_message_id else '',
+    })
+
+    job_data = {
+        'job_id': job_id,
+        'user_id': str(user_id),
+        'chat_id': str(chat_id),
+        'file_id': download_url,
+        'file_type': 'url_import',
+        'duration': 0,
+        'status_message_id': str(status_message_id) if status_message_id else '',
+    }
+
+    # Try async via MNS
+    if MNS_ENDPOINT and ALIBABA_ACCESS_KEY and ALIBABA_SECRET_KEY:
+        from services.mns_service import MNSService, MNSPublisher
+        mns = MNSService(
+            endpoint=MNS_ENDPOINT,
+            access_key_id=ALIBABA_ACCESS_KEY,
+            access_key_secret=ALIBABA_SECRET_KEY,
+            queue_name=os.environ.get('AUDIO_JOBS_QUEUE',
+                                       'telegram-whisper-bot-prod-audio-jobs')
+        )
+        publisher = MNSPublisher(mns)
+        if publisher.publish(job_data):
+            logger.info(f"[cloud-import] job {job_id} queued, url={url[:60]}")
+            return 'url_import_queued'
+
+    # Fallback: process sync (not ideal for large files, but better than nothing)
+    logger.warning("MNS not available for URL import, rejecting")
+    tg.send_message(chat_id, "❌ Сервис временно недоступен. Попробуйте позже.")
+    db.update_job(job_id, {'status': 'failed', 'error': 'MNS unavailable'})
+    return 'url_import_failed'
+
+
+# === Mini App: Large File Upload ===
+
+UPLOAD_PAGE_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upload Audio</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--tg-theme-bg-color, #fff);
+       color: var(--tg-theme-text-color, #000); padding: 16px; }
+.drop-zone { border: 2px dashed var(--tg-theme-hint-color, #aaa); border-radius: 12px;
+             padding: 40px 20px; text-align: center; margin: 20px 0; cursor: pointer;
+             transition: border-color 0.3s; }
+.drop-zone.active { border-color: var(--tg-theme-button-color, #3390ec); background: rgba(51,144,236,0.05); }
+.drop-zone h2 { margin-bottom: 8px; font-size: 18px; }
+.drop-zone p { color: var(--tg-theme-hint-color, #999); font-size: 14px; }
+.progress-bar { width: 100%; height: 8px; background: var(--tg-theme-secondary-bg-color, #eee);
+                border-radius: 4px; margin: 16px 0; overflow: hidden; display: none; }
+.progress-bar .fill { height: 100%; background: var(--tg-theme-button-color, #3390ec);
+                      border-radius: 4px; transition: width 0.3s; width: 0%; }
+.status { text-align: center; margin: 12px 0; font-size: 14px;
+          color: var(--tg-theme-hint-color, #999); }
+.error { color: #e53935; }
+input[type=file] { display: none; }
+.limits { font-size: 12px; color: var(--tg-theme-hint-color, #999); text-align: center; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="drop-zone" id="dropZone">
+  <h2>📎 Перетащите файл сюда</h2>
+  <p>или нажмите для выбора</p>
+  <p class="limits">MP3, WAV, OGG, M4A, FLAC, MP4, MOV, MKV, WEBM — до 500 МБ</p>
+</div>
+<input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.ogg,.m4a,.flac,.mp4,.mov,.mkv,.webm">
+<div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+<div class="status" id="status"></div>
+
+<script>
+const API_BASE = window.location.origin;
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+const ALLOWED = ['audio/mpeg','audio/wav','audio/ogg','audio/x-m4a','audio/flac','audio/aac',
+                 'audio/mp4','video/mp4','video/quicktime','video/x-matroska','video/webm',
+                 'audio/x-wav','audio/wave'];
+const ALLOWED_EXT = ['.mp3','.wav','.ogg','.m4a','.flac','.aac','.mp4','.mov','.mkv','.webm'];
+const MAX_SIZE = 500 * 1024 * 1024;
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const progressBar = document.getElementById('progressBar');
+const progressFill = document.getElementById('progressFill');
+const status = document.getElementById('status');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('active'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('active'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('active');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+function validateFile(file) {
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!ALLOWED.includes(file.type) && !ALLOWED_EXT.includes(ext)) {
+    return 'Неподдерживаемый формат файла';
+  }
+  if (file.size > MAX_SIZE) {
+    return 'Файл слишком большой (макс. 500 МБ)';
+  }
+  return null;
+}
+
+async function handleFile(file) {
+  const err = validateFile(file);
+  if (err) { showError(err); return; }
+
+  try {
+    showStatus('Запрашиваю URL для загрузки...');
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    const initData = tg.initData || '';
+
+    const urlRes = await fetch(API_BASE + '/api/signed-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ext: ext, init_data: initData })
+    });
+    if (!urlRes.ok) { const e = await urlRes.json(); throw new Error(e.error || 'URL error'); }
+    const { put_url, oss_key } = await urlRes.json();
+
+    showStatus('Загружаю файл...');
+    progressBar.style.display = 'block';
+
+    await uploadWithProgress(put_url, file);
+
+    showStatus('Отправляю на обработку...');
+    const procRes = await fetch(API_BASE + '/api/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oss_key: oss_key, init_data: initData, filename: file.name })
+    });
+    if (!procRes.ok) { const e = await procRes.json(); throw new Error(e.error || 'Process error'); }
+
+    showStatus('✅ Файл отправлен на обработку! Результат придёт в чат.');
+    progressFill.style.width = '100%';
+    setTimeout(() => tg.close(), 2000);
+
+  } catch (e) {
+    showError(e.message || 'Ошибка загрузки');
+  }
+}
+
+function uploadWithProgress(url, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable) {
+        const pct = Math.round(e.loaded / e.total * 100);
+        progressFill.style.width = pct + '%';
+        showStatus('Загружаю... ' + pct + '%');
+      }
+    });
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error('Upload failed: ' + xhr.status));
+    });
+    xhr.addEventListener('error', () => reject(new Error('Network error')));
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.send(file);
+  });
+}
+
+function showStatus(msg) { status.textContent = msg; status.classList.remove('error'); }
+function showError(msg) { status.textContent = msg; status.classList.add('error');
+                          progressBar.style.display = 'none'; }
+</script>
+</body>
+</html>"""
+
+
+def _serve_upload_page():
+    """Serve Mini App HTML for large file upload."""
+    return {
+        'statusCode': 200,
+        'headers': {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-cache',
+        },
+        'body': UPLOAD_PAGE_HTML
+    }
+
+
+def _validate_init_data(init_data: str) -> Optional[int]:
+    """Validate Telegram Mini App initData using HMAC-SHA256.
+
+    Returns user_id if valid, None otherwise.
+    """
+    import hashlib
+    import hmac
+    from urllib.parse import parse_qs
+
+    if not init_data:
+        return None
+
+    try:
+        params = parse_qs(init_data, keep_blank_values=True)
+        received_hash = params.get('hash', [''])[0]
+        if not received_hash:
+            return None
+
+        # Build data-check-string
+        check_items = []
+        for key in sorted(params.keys()):
+            if key != 'hash':
+                check_items.append(f"{key}={params[key][0]}")
+        data_check_string = '\n'.join(check_items)
+
+        # HMAC-SHA256 validation
+        secret_key = hmac.new(b'WebAppData', TELEGRAM_BOT_TOKEN.encode(), hashlib.sha256).digest()
+        computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(computed_hash, received_hash):
+            logger.warning("Mini App initData hash mismatch")
+            return None
+
+        # Extract user_id
+        user_json = params.get('user', [''])[0]
+        if user_json:
+            user_data = json.loads(user_json)
+            return user_data.get('id')
+
+        return None
+    except Exception as e:
+        logger.warning(f"initData validation error: {e}")
+        return None
+
+
+def _handle_signed_url_request(body: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate OSS PUT signed URL for direct client upload."""
+    cors_headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+    }
+
+    try:
+        # Validate initData
+        init_data = body.get('init_data', '')
+        user_id = _validate_init_data(init_data)
+        if not user_id:
+            return {'statusCode': 403, 'headers': cors_headers,
+                    'body': json.dumps({'error': 'Invalid authentication'})}
+
+        ext = body.get('ext', '.mp3').lower()
+        allowed_ext = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac',
+                       '.mp4', '.mov', '.mkv', '.webm']
+        if ext not in allowed_ext:
+            return {'statusCode': 400, 'headers': cors_headers,
+                    'body': json.dumps({'error': f'Unsupported format: {ext}'})}
+
+        # Generate OSS key and signed PUT URL
+        import uuid
+        oss_key = f"uploads/{user_id}/{uuid.uuid4().hex}{ext}"
+
+        import oss2
+        ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY')
+        sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY')
+        st = ALIBABA_SECURITY_TOKEN or os.environ.get('ALIBABA_CLOUD_SECURITY_TOKEN')
+        oss_endpoint = os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com')
+        oss_bucket_name = os.environ.get('OSS_BUCKET', 'twbot-prod-audio')
+
+        if not oss_endpoint.startswith('http'):
+            oss_endpoint = f'https://{oss_endpoint}'
+
+        if st:
+            auth = oss2.StsAuth(ak, sk, st)
+        else:
+            auth = oss2.Auth(ak, sk)
+        bucket = oss2.Bucket(auth, oss_endpoint, oss_bucket_name)
+
+        # 15-minute expiry for PUT URL (minimize exposure window)
+        put_url = bucket.sign_url('PUT', oss_key, 900,
+                                   headers={'Content-Type': 'application/octet-stream'})
+
+        logger.info(f"[upload] signed URL generated for user {user_id}, key={oss_key}")
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({'put_url': put_url, 'oss_key': oss_key})
+        }
+
+    except Exception as e:
+        logger.error(f"Signed URL generation error: {e}", exc_info=True)
+        return {'statusCode': 500, 'headers': cors_headers,
+                'body': json.dumps({'error': 'Internal error'})}
+
+
+def _handle_process_upload(body: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
+    """Create processing job from uploaded OSS file."""
+    cors_headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+    }
+
+    try:
+        # Validate initData
+        init_data = body.get('init_data', '')
+        user_id = _validate_init_data(init_data)
+        if not user_id:
+            return {'statusCode': 403, 'headers': cors_headers,
+                    'body': json.dumps({'error': 'Invalid authentication'})}
+
+        oss_key = body.get('oss_key', '')
+        if not oss_key or not oss_key.startswith(f'uploads/{user_id}/'):
+            return {'statusCode': 400, 'headers': cors_headers,
+                    'body': json.dumps({'error': 'Invalid OSS key'})}
+
+        filename = body.get('filename', 'upload')
+
+        # Create job in Tablestore
+        import uuid
+        job_id = str(uuid.uuid4())
+        db = get_db_service()
+        tg = get_telegram_service()
+
+        # Send status message to user
+        status_msg = tg.send_message(
+            user_id,
+            f"📎 Файл <b>{filename}</b> получен.\n🔄 Начинаю обработку...",
+            parse_mode='HTML'
+        )
+        status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
+
+        # Create job record
+        db.create_job({
+            'job_id': job_id,
+            'user_id': str(user_id),
+            'chat_id': str(user_id),
+            'file_id': oss_key,  # OSS key instead of Telegram file_id
+            'file_type': 'oss_upload',
+            'duration': 0,  # Will be detected by audio-processor
+            'status': 'pending',
+            'status_message_id': str(status_message_id) if status_message_id else '',
+        })
+
+        # Queue for async processing via MNS
+        job_data = {
+            'job_id': job_id,
+            'user_id': str(user_id),
+            'chat_id': str(user_id),
+            'file_id': oss_key,
+            'file_type': 'oss_upload',
+            'duration': 0,
+            'status_message_id': str(status_message_id) if status_message_id else '',
+        }
+
+        from services.mns_service import MNSService
+        if MNS_ENDPOINT and ALIBABA_ACCESS_KEY and ALIBABA_SECRET_KEY:
+            mns = MNSService(
+                endpoint=MNS_ENDPOINT,
+                access_key_id=ALIBABA_ACCESS_KEY,
+                access_key_secret=ALIBABA_SECRET_KEY,
+                queue_name=os.environ.get('AUDIO_JOBS_QUEUE',
+                                           'telegram-whisper-bot-prod-audio-jobs')
+            )
+            from services.mns_service import MNSPublisher
+            publisher = MNSPublisher(mns)
+            published = publisher.publish(job_data)
+            if not published:
+                db.update_job(job_id, {'status': 'failed', 'error': 'MNS publish failed'})
+                return {'statusCode': 500, 'headers': cors_headers,
+                        'body': json.dumps({'error': 'Queue error'})}
+        else:
+            logger.warning("MNS not configured, cannot process upload async")
+            db.update_job(job_id, {'status': 'failed', 'error': 'MNS not configured'})
+            return {'statusCode': 500, 'headers': cors_headers,
+                    'body': json.dumps({'error': 'Async processing unavailable'})}
+
+        logger.info(f"[upload] job {job_id} created for user {user_id}, oss_key={oss_key}")
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({'ok': True, 'job_id': job_id})
+        }
+
+    except Exception as e:
+        logger.error(f"Process upload error: {e}", exc_info=True)
+        return {'statusCode': 500, 'headers': cors_headers,
+                'body': json.dumps({'error': 'Internal error'})}

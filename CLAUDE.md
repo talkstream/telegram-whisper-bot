@@ -36,7 +36,7 @@ alibaba/
 │   └── utility.py       # TelegramErrorHandler, setup_logging
 ├── webhook-handler/     # FC 3.0 (512MB, 60s timeout)
 │   └── services/ → ../shared/ (auto-copied at deploy)
-└── audio-processor/     # MNS worker (1024MB, 300s timeout)
+└── audio-processor/     # MNS worker (1024MB, 600s timeout)
     └── services/ → ../shared/ (auto-copied at deploy)
 ```
 
@@ -47,7 +47,7 @@ alibaba/
 ## Commands
 
 ### User
-`/start` `/help` `/balance` `/buy_minutes` `/settings` `/code` `/yo` `/output` `/speakers`
+`/start` `/help` `/balance` `/buy_minutes` `/upload` `/settings` `/code` `/yo` `/output` `/speakers`
 
 ### Admin (OWNER_ID only)
 | Command | Description |
@@ -182,6 +182,22 @@ response = client.models.generate_content(model="gemini-2.5-flash", contents=pro
 - Gap ratio: >30% unmatched words → discard speaker labels
 - Windowed timeline normalization for audio >15 min
 - Dynamic diarization timeout: <30min→180s, 30-60min→240s, 60+min→300s
+
+### Mini App Upload (v5.0.0)
+- `/upload` → inline button with `web_app` URL → HTML page served from webhook GET `/upload`
+- Client uploads directly to OSS via signed PUT URL (15-min expiry)
+- `_validate_init_data()` — HMAC-SHA256 validation of Telegram initData
+- `_handle_signed_url_request()` — generates OSS signed PUT URL for client
+- `_handle_process_upload()` — creates job with `file_type='oss_upload'`, queues via MNS
+- Audio-processor: `_download_from_oss(oss_key)` downloads from OSS to /tmp
+- Max file size: 500 MB
+
+### Cloud Drive Import (v5.0.0)
+- User sends URL → `_is_cloud_drive_url()` checks against `CLOUD_DRIVE_PATTERNS`
+- Supported: Яндекс.Диск (API), Google Drive (direct export), Dropbox (dl=1)
+- `_resolve_download_url()` converts public URLs to direct download URLs
+- `_handle_url_import()` → creates job with `file_type='url_import'`, queues via MNS
+- Audio-processor: `_download_from_url(url)` streams download with 100 MB size limit
 
 ---
 

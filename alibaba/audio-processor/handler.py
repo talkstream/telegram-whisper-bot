@@ -285,22 +285,87 @@ def process_mns_message(event: Dict[str, Any]) -> Dict[str, Any]:
     return process_job(job_data)
 
 
-def _download_and_convert(tg, audio, file_id, chat_id, progress_id, progress=None):
-    """Download file from Telegram and convert for ASR. Returns (local_path, converted_path)."""
-    logger.info(f"[download] start file_id={file_id}")
+def _download_from_oss(oss_key):
+    """Download file from OSS to /tmp. Returns local path or raises Exception."""
+    import oss2
+    ak = ALIBABA_ACCESS_KEY
+    sk = ALIBABA_SECRET_KEY
+    st = ALIBABA_SECURITY_TOKEN
+    endpoint = os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com')
+    bucket_name = os.environ.get('OSS_BUCKET', 'twbot-prod-audio')
+
+    if not endpoint.startswith('http'):
+        endpoint = f'https://{endpoint}'
+
+    if st:
+        auth = oss2.StsAuth(ak, sk, st)
+    else:
+        auth = oss2.Auth(ak, sk)
+    bucket = oss2.Bucket(auth, endpoint, bucket_name)
+
+    ext = os.path.splitext(oss_key)[1] or '.mp3'
+    local_path = f"/tmp/oss_upload_{int(time.time())}{ext}"
+    bucket.get_object_to_file(oss_key, local_path)
+    logger.info(f"[download] OSS download done: {oss_key} → {local_path}")
+    return local_path
+
+
+def _download_from_url(url, max_size=100 * 1024 * 1024):
+    """Download file from URL to /tmp. Returns local path or raises Exception."""
+    import requests as req
+    response = req.get(url, stream=True, timeout=60, allow_redirects=True)
+    response.raise_for_status()
+
+    # Check content-length
+    content_length = int(response.headers.get('content-length', 0))
+    if content_length > max_size:
+        raise Exception(f"File too large: {content_length / 1024 / 1024:.1f} MB (max 100 MB)")
+
+    # Detect extension from URL or content-type
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    ext = os.path.splitext(parsed.path)[1] or '.mp3'
+    if ext not in ('.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac',
+                   '.mp4', '.mov', '.mkv', '.webm'):
+        ext = '.mp3'
+
+    local_path = f"/tmp/url_download_{int(time.time())}{ext}"
+    downloaded = 0
+    with open(local_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            downloaded += len(chunk)
+            if downloaded > max_size:
+                f.close()
+                os.remove(local_path)
+                raise Exception(f"File too large (>{max_size / 1024 / 1024:.0f} MB)")
+            f.write(chunk)
+
+    logger.info(f"[download] URL download done: {url[:80]} → {local_path}, size={downloaded}b")
+    return local_path
+
+
+def _download_and_convert(tg, audio, file_id, chat_id, progress_id, progress=None,
+                          file_type=None):
+    """Download file from Telegram/OSS/URL and convert for ASR. Returns (local_path, converted_path)."""
+    logger.info(f"[download] start file_id={file_id}, type={file_type}")
     if progress:
         progress.stage('download')
     elif progress_id:
         tg.edit_message_text(chat_id, progress_id, "📥 Загружаю файл...")
     tg.send_chat_action(chat_id, 'typing')
 
-    telegram_file_path = tg.get_file_path(file_id)
-    if not telegram_file_path:
-        raise Exception("Failed to get file path from Telegram")
-
-    local_path = tg.download_file(telegram_file_path)
-    if not local_path:
-        raise Exception("Failed to download file from Telegram")
+    # Route by file type
+    if file_type == 'oss_upload':
+        local_path = _download_from_oss(file_id)
+    elif file_type == 'url_import':
+        local_path = _download_from_url(file_id)
+    else:
+        telegram_file_path = tg.get_file_path(file_id)
+        if not telegram_file_path:
+            raise Exception("Failed to get file path from Telegram")
+        local_path = tg.download_file(telegram_file_path)
+        if not local_path:
+            raise Exception("Failed to download file from Telegram")
 
     if progress:
         progress.stage('transcribe')
@@ -490,6 +555,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     user_id = job_data.get('user_id')
     chat_id = job_data.get('chat_id')
     file_id = job_data.get('file_id')
+    file_type = job_data.get('file_type', 'telegram')
     duration = job_data.get('duration', 0)
 
     if job_id is None or user_id is None or chat_id is None or file_id is None:
@@ -540,7 +606,8 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Step 1: Download and convert
         local_path, converted_path = _download_and_convert(
-            tg, audio, file_id, chat_id, progress_id, progress=progress)
+            tg, audio, file_id, chat_id, progress_id, progress=progress,
+            file_type=file_type)
 
         # Load user settings
         user = db.get_user(user_id_int)
