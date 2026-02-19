@@ -1031,7 +1031,7 @@ def _cmd_upload(chat_id, user_id, text, user, tg, db):
     """Send Mini App button for large file upload."""
     webhook_url = os.environ.get(
         'WEBHOOK_URL',
-        'https://webhook-handler-telegrabot-prod-zmdupczvfj.eu-central-1.fcapp.run')
+        'https://twbot-p-webhook-hnfnlkbphn.eu-central-1.fcapp.run')
     upload_url = f"{webhook_url.rstrip('/')}/upload"
     keyboard = {
         'inline_keyboard': [[{
