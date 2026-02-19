@@ -803,11 +803,13 @@ class TestDiarizationSpeakerDetection:
     """Test speaker detection logic in diarization path."""
 
     def test_two_speakers_formats_dialogue(self, mock_db, mock_tg, mock_audio):
-        """2+ speakers -> format_dialogue, is_dialogue=True (LLM skipped)."""
+        """2+ speakers with 3+ transitions -> format_dialogue, is_dialogue=True (LLM skipped)."""
         import handler
         mock_audio.transcribe_with_diarization.return_value = ('Raw text.', [
             {'speaker_id': 1, 'text': 'Hello', 'start': 0, 'end': 5},
-            {'speaker_id': 2, 'text': 'Hi', 'start': 5, 'end': 10},
+            {'speaker_id': 2, 'text': 'Hi there', 'start': 5, 'end': 10},
+            {'speaker_id': 1, 'text': 'How are you?', 'start': 10, 'end': 15},
+            {'speaker_id': 2, 'text': 'Fine thanks', 'start': 15, 'end': 20},
         ])
         mock_audio.format_dialogue.return_value = '— Hello\n— Hi'
         mock_audio.get_audio_duration.return_value = 90.0
@@ -822,6 +824,28 @@ class TestDiarizationSpeakerDetection:
         mock_audio.format_dialogue.assert_called_once()
         # LLM should NOT be called for dialogue
         mock_audio.format_text_with_llm.assert_not_called()
+
+    def test_few_transitions_treated_as_monologue(self, mock_db, mock_tg, mock_audio):
+        """2 speakers but <3 transitions -> treated as monologue (goes through LLM)."""
+        import handler
+        raw_text = 'A' * 200
+        mock_audio.transcribe_with_diarization.return_value = (raw_text, [
+            {'speaker_id': 1, 'text': raw_text[:100], 'start': 0, 'end': 30},
+            {'speaker_id': 2, 'text': raw_text[100:], 'start': 30, 'end': 60},
+        ])
+        mock_audio.get_audio_duration.return_value = 90.0
+
+        with patch.object(handler, 'get_db_service', return_value=mock_db), \
+             patch.object(handler, 'get_telegram_service', return_value=mock_tg), \
+             patch.object(handler, 'get_audio_service', return_value=mock_audio), \
+             patch('os.remove'):
+            result = handler.process_job(_make_job_data(duration=90))
+
+        assert result['ok'] is True
+        # Few transitions: NOT a dialogue
+        mock_audio.format_dialogue.assert_not_called()
+        # Goes through LLM instead
+        mock_audio.format_text_with_llm.assert_called_once()
 
     def test_single_speaker_uses_raw_text(self, mock_db, mock_tg, mock_audio):
         """1 speaker -> raw_text (no dashes), goes through LLM."""

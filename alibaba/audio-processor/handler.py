@@ -30,6 +30,11 @@ WHISPER_BACKEND = os.environ.get('WHISPER_BACKEND', 'qwen-asr')
 # Diarization threshold — audio below this skips two-pass diarization (fast path)
 DIARIZATION_THRESHOLD = 60  # seconds
 
+# Minimum speaker transitions to classify as dialogue (prevents false positives on monologues)
+# A→B = 1 transition, A→B→A = 2, A→B→A→B = 3
+# Real dialogues have many transitions; misdetected monologues typically have 1-2
+MIN_DIALOGUE_TRANSITIONS = 3
+
 # Credentials - FC provides STS credentials automatically
 ALIBABA_ACCESS_KEY = (
     os.environ.get('ALIBABA_ACCESS_KEY') or
@@ -260,8 +265,14 @@ def _transcribe(audio, tg, converted_path, actual_duration, chat_id, progress_id
         if segments:
             unique_speakers = len(set(s.get('speaker_id', 0) for s in segments))
             if unique_speakers >= 2:
-                return audio.format_dialogue(segments, show_speakers=speaker_labels), True
-            # 1 speaker: use raw_text (no dashes), will go through LLM
+                # Count speaker transitions to filter false dialogue detection
+                transitions = sum(1 for i in range(1, len(segments))
+                                  if segments[i].get('speaker_id') != segments[i-1].get('speaker_id'))
+                if transitions >= MIN_DIALOGUE_TRANSITIONS:
+                    return audio.format_dialogue(segments, show_speakers=speaker_labels), True
+                # Too few transitions — likely misdetected monologue
+                logger.info(f"Diarization found {unique_speakers} speakers but only {transitions} transitions, treating as monologue")
+            # 1 speaker (or false multi-speaker): use raw_text, will go through LLM
             return (raw_text or ' '.join(s.get('text', '') for s in segments)), False
         # Diarization failed: fallback to regular ASR
         return _transcribe_simple(audio, tg, converted_path, chat_id, progress_id), False
@@ -409,7 +420,7 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Step 2: Transcribe
         text, is_dialogue = _transcribe(audio, tg, converted_path, actual_duration,
-                                        chat_id, progress_id, settings.get('speaker_labels', True))
+                                        chat_id, progress_id, settings.get('speaker_labels', False))
 
         # Debug diarization output for admin
         owner_id = int(os.environ.get('OWNER_ID', 0))

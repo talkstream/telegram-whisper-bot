@@ -2066,11 +2066,16 @@ class AudioService:
         backend = backend or os.environ.get('LLM_BACKEND', 'qwen')
         logging.info(f"LLM backend: {backend}")
         if backend == 'assemblyai':
-            return self.format_text_with_assemblyai(
+            result = self.format_text_with_assemblyai(
                 text, use_code_tags, use_yo, is_chunked, is_dialogue)
         else:  # 'qwen' default
-            return self.format_text_with_qwen(
+            result = self.format_text_with_qwen(
                 text, use_code_tags, use_yo, is_chunked, is_dialogue)
+
+        # Fix spaced ellipsis from ASR artifacts (". . ." → "...")
+        import re
+        result = re.sub(r'(?:\.\s){2,}\.', '...', result)
+        return result
 
     def format_text_with_qwen(self, text: str, use_code_tags: bool = False,
                                use_yo: bool = True, is_chunked: bool = False,

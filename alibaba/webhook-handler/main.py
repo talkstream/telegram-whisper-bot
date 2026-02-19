@@ -775,7 +775,7 @@ def _cmd_settings(chat_id, user_id, text, user, tg, db) -> str:
     use_code = settings.get('use_code_tags', False)
     use_yo = settings.get('use_yo', True)
     long_text_mode = settings.get('long_text_mode', 'split')
-    speaker_labels = settings.get('speaker_labels', True)
+    speaker_labels = settings.get('speaker_labels', False)
 
     long_text_label = '\U0001f4c4 файл .txt' if long_text_mode == 'file' else '\U0001f4ac несколько сообщений'
     speakers_label = '\u2705 Вкл' if speaker_labels else '\u274c Выкл'
@@ -827,7 +827,7 @@ def _cmd_output(chat_id, user_id, text, user, tg, db) -> str:
 
 def _cmd_speakers(chat_id, user_id, text, user, tg, db) -> str:
     settings = db.get_user_settings(user_id) or {}
-    settings['speaker_labels'] = not settings.get('speaker_labels', True)
+    settings['speaker_labels'] = not settings.get('speaker_labels', False)
     db.update_user_settings(user_id, settings)
     status = 'включены' if settings['speaker_labels'] else 'выключены'
     tg.send_message(chat_id, f"Метки спикеров: {status}")
