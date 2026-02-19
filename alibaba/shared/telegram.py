@@ -169,8 +169,9 @@ class TelegramService:
                 last_result = self.send_message(chat_id, part, parse_mode, reply_markup)
         return last_result
 
-    def send_as_file(self, chat_id: int, text: str, caption: str = "") -> Optional[Dict[str, Any]]:
-        """Send text as .txt file with optional caption."""
+    def send_as_file(self, chat_id: int, text: str, caption: str = "",
+                     filename: str = None) -> Optional[Dict[str, Any]]:
+        """Send text as .txt file with optional caption and custom filename."""
         logging.info(f"[telegram] send_file chars={len(text)}, chat={chat_id}")
         tmp = tempfile.NamedTemporaryFile(
             mode='w', delete=False, suffix='.txt',
@@ -179,17 +180,20 @@ class TelegramService:
         tmp.write(text)
         tmp.close()
         try:
-            return self.send_document(chat_id, tmp.name, caption=caption)
+            return self.send_document(chat_id, tmp.name, caption=caption,
+                                      filename=filename)
         finally:
             os.unlink(tmp.name)
 
-    def send_document(self, chat_id: int, file_path: str, caption: str = "") -> Optional[Dict[str, Any]]:
+    def send_document(self, chat_id: int, file_path: str, caption: str = "",
+                      filename: str = None) -> Optional[Dict[str, Any]]:
         """Send a document to a Telegram chat"""
         url = f"{self.api_url}/sendDocument"
-        
+
         try:
             with open(file_path, 'rb') as f:
-                files = {'document': (os.path.basename(file_path), f, 'text/plain')}
+                display_name = filename or os.path.basename(file_path)
+                files = {'document': (display_name, f, 'text/plain')}
                 data = {'chat_id': str(chat_id)}
                 if caption:
                     data['caption'] = caption

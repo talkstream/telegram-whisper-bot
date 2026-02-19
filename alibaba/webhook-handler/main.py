@@ -119,6 +119,13 @@ PRODUCT_PACKAGES = {
         "stars_amount": 549,
         "minutes": 1000
     },
+    "editorial_3000": {
+        "title": "Пакет 'Редакция'",
+        "description": "3000 минут транскрибации для редакций",
+        "payload": "buy_editorial_3000",
+        "stars_amount": 1399,
+        "minutes": 3000
+    },
     "max_8888": {
         "title": "Пакет 'MAX'",
         "description": "8888 минут транскрибации",
@@ -390,16 +397,28 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     else:
         return 'no_audio'
 
-    # Check user balance
+    # Check user balance with package recommendation
     balance = user.get('balance_minutes', 0)
     duration_minutes = (duration + 59) // 60  # Round up
 
     if balance < duration_minutes:
-        tg.send_message(
-            chat_id,
-            "У вас недостаточно минут для транскрипции.\n"
-            "Используйте /buy_minutes для покупки."
+        deficit = duration_minutes - balance
+        # Find smallest package covering deficit
+        recommended = None
+        for pkg in sorted(PRODUCT_PACKAGES.values(), key=lambda p: p['minutes']):
+            if pkg['minutes'] >= deficit:
+                recommended = pkg
+                break
+
+        msg = (
+            f"⏱ Аудио: ~{duration_minutes} мин\n"
+            f"💰 Ваш баланс: {balance} мин\n"
+            f"📊 Не хватает: {deficit} мин\n\n"
         )
+        if recommended:
+            msg += f"Рекомендуем: <b>{recommended['title']}</b> ({recommended['minutes']} мин за {recommended['stars_amount']}⭐)\n"
+        msg += "\n/buy_minutes — все пакеты"
+        tg.send_message(chat_id, msg, parse_mode='HTML')
         return 'insufficient_balance'
 
     # Send processing notification and capture message_id for progress updates
@@ -468,16 +487,26 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             actual_duration = audio_service.get_audio_duration(local_path)
             duration = int(actual_duration)
             duration_minutes = (duration + 59) // 60
-            # Re-check balance with actual duration
+            # Re-check balance with actual duration + package recommendation
             balance = user.get('balance_minutes', 0)
             if balance < duration_minutes:
                 if status_message_id:
                     tg.delete_message(chat_id, status_message_id)
-                tg.send_message(
-                    chat_id,
-                    f"Файл {duration // 60} мин {duration % 60} сек. "
-                    f"Недостаточно минут на балансе.\n/buy_minutes"
+                deficit = duration_minutes - balance
+                recommended = None
+                for pkg in sorted(PRODUCT_PACKAGES.values(), key=lambda p: p['minutes']):
+                    if pkg['minutes'] >= deficit:
+                        recommended = pkg
+                        break
+                msg = (
+                    f"⏱ Файл: {duration // 60} мин {duration % 60} сек\n"
+                    f"💰 Ваш баланс: {balance} мин\n"
+                    f"📊 Не хватает: {deficit} мин\n\n"
                 )
+                if recommended:
+                    msg += f"Рекомендуем: <b>{recommended['title']}</b> ({recommended['minutes']} мин за {recommended['stars_amount']}⭐)\n"
+                msg += "\n/buy_minutes — все пакеты"
+                tg.send_message(chat_id, msg, parse_mode='HTML')
                 os.remove(local_path)
                 return 'insufficient_balance'
 

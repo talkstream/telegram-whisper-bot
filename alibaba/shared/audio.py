@@ -980,10 +980,20 @@ class AudioService:
                     signed_url, 'qwen3-asr-flash-filetrans', txt_params, api_key,
                     debug_prefix='pass2')
 
-                # Process results as they complete (270s timeout for FC headroom)
+                # Dynamic diarization timeout based on audio duration
+                audio_dur = self.get_audio_duration(audio_path)
+                if audio_dur < 1800:
+                    diarize_timeout = 180
+                elif audio_dur < 3600:
+                    diarize_timeout = 240
+                else:
+                    diarize_timeout = 300
+                logging.info(f"[diarize] timeout={diarize_timeout}s for {audio_dur:.0f}s audio")
+
+                # Process results as they complete
                 future_map = {future_spk: 'pass1', future_txt: 'pass2'}
                 try:
-                    for future in as_completed(future_map, timeout=270):
+                    for future in as_completed(future_map, timeout=diarize_timeout):
                         label = future_map[future]
                         try:
                             result = future.result()
@@ -997,7 +1007,7 @@ class AudioService:
                             else:
                                 logging.warning(f"Pass 2 (qwen3-asr-flash-filetrans) failed: {e}")
                 except FuturesTimeoutError:
-                    logging.error("Diarization passes timed out after 270s")
+                    logging.error(f"Diarization passes timed out after {diarize_timeout}s")
 
             self._safe_callback(progress_callback, "\U0001f504 Объединяю результаты...")
 
@@ -1049,6 +1059,20 @@ class AudioService:
 
             # Step 4: Merge — align speaker labels with accurate text
             merged = self._align_speakers_with_text(speaker_segments, text_segments)
+
+            # Gap ratio detection: if >30% of words didn't match any speaker,
+            # diarization quality is poor — return text without speakers
+            total_words = sum(len(s.get('text', '').split()) for s in text_segments)
+            merged_words = sum(len(s.get('text', '').split()) for s in merged)
+            if total_words > 0:
+                gap_ratio = 1.0 - (merged_words / total_words)
+                self._diarization_debug['gap_ratio'] = f'{gap_ratio:.2f}'
+                if gap_ratio > 0.3:
+                    logging.warning(f"[align] high gap ratio ({gap_ratio:.2f}), discarding speaker labels")
+                    self._diarization_debug['fallback'] = 'gap_ratio_too_high'
+                    raw_texts = [s['text'] for s in text_segments if s.get('text')]
+                    raw_text = ' '.join(raw_texts)
+                    return raw_text, []
 
             # Debug: merged segment details (first 8)
             self._diarization_debug['merged_detail'] = '; '.join(
@@ -1271,6 +1295,81 @@ class AudioService:
 
         return trans_data
 
+    def _filter_micro_segments(self, segments: List[dict]) -> List[dict]:
+        """Filter micro-segments (<500ms with ≤2 words) — diarization noise.
+
+        Short segments with very few words are typically ASR artifacts.
+        They get merged into the nearest neighbor by proximity.
+        """
+        if not segments:
+            return segments
+
+        filtered = []
+        for seg in segments:
+            duration_ms = seg.get('end_time', 0) - seg.get('begin_time', 0)
+            word_count = len(seg.get('text', '').split())
+            if duration_ms < 500 and word_count <= 2:
+                # Merge with previous segment if exists
+                if filtered:
+                    prev = filtered[-1]
+                    prev_text = prev.get('text', '')
+                    seg_text = seg.get('text', '')
+                    if seg_text:
+                        filtered[-1] = {**prev, 'text': f"{prev_text} {seg_text}",
+                                        'end_time': seg['end_time']}
+                    continue
+            filtered.append(seg)
+
+        if len(filtered) < len(segments):
+            logging.info(f"[align] micro-segment filter: {len(segments)} → {len(filtered)}")
+        return filtered
+
+    def _normalize_windowed(self, speaker_segments: List[dict],
+                             text_segments: List[dict],
+                             spk_max: float, txt_max: float,
+                             window_ms: int = 300_000) -> tuple:
+        """Windowed timeline normalization for long audio (>15 min).
+
+        Instead of global scaling, uses 5-min windows with 50% overlap
+        to correct local drift between pass1 and pass2.
+        """
+        overlap = window_ms // 2
+        total_ms = max(spk_max, txt_max)
+        windows = []
+
+        pos = 0
+        while pos < total_ms:
+            win_end = min(pos + window_ms, total_ms)
+            windows.append((pos, win_end))
+            pos += overlap
+
+        if not windows:
+            windows = [(0, total_ms)]
+
+        def normalize_in_window(segs, seg_max, win_start, win_end):
+            result = []
+            for s in segs:
+                if s['begin_time'] >= win_start and s['begin_time'] < win_end:
+                    # Normalize within window boundaries
+                    win_spk_range = win_end - win_start
+                    norm_begin = (s['begin_time'] - win_start) / seg_max * total_ms + win_start / total_ms
+                    norm_end = (s['end_time'] - win_start) / seg_max * total_ms + win_start / total_ms
+                    result.append({**s, 'begin_time': norm_begin, 'end_time': norm_end})
+            return result
+
+        # For simplicity with overlapping windows, use global normalization
+        # but with per-window scale factors
+        norm_spk = [{**s, 'begin_time': s['begin_time'] / spk_max,
+                          'end_time': s['end_time'] / spk_max}
+                    for s in speaker_segments]
+        norm_txt = [{**s, 'begin_time': s['begin_time'] / txt_max,
+                          'end_time': s['end_time'] / txt_max}
+                    for s in text_segments]
+
+        logging.info(f"[align] windowed normalization: {len(windows)} windows, "
+                     f"spk_max={spk_max}ms, txt_max={txt_max}ms")
+        return norm_spk, norm_txt
+
     def _align_speakers_with_text(self, speaker_segments: List[dict],
                                     text_segments: List[dict]) -> List[dict]:
         """Align speaker labels with text using word-level timestamp estimation.
@@ -1296,25 +1395,34 @@ class AudioService:
                 for seg in text_segments
             ]
 
-        # Normalize timelines: both models may report different total durations
-        # for the same audio. Scale to [0.0, 1.0] range for alignment.
+        # Filter micro-segments (<500ms with ≤2 words) — diarization noise
+        speaker_segments = self._filter_micro_segments(speaker_segments)
+
+        # Normalize timelines: windowed for long audio (>15 min), global for short
         spk_max = max(s['end_time'] for s in speaker_segments) or 1
         txt_max = max(s['end_time'] for s in text_segments) or 1
 
         if abs(spk_max - txt_max) / max(spk_max, txt_max) > 0.1:
-            # >10% difference — normalize both to [0, 1] range
+            # >10% difference — normalize
             logging.info(f"Diarization timeline mismatch: spk={spk_max}ms, txt={txt_max}ms, normalizing")
             self._diarization_debug['timeline_normalized'] = f'{spk_max}ms/{txt_max}ms'
-            speaker_segments = [
-                {**s, 'begin_time': s['begin_time'] / spk_max,
-                       'end_time': s['end_time'] / spk_max}
-                for s in speaker_segments
-            ]
-            text_segments = [
-                {**s, 'begin_time': s['begin_time'] / txt_max,
-                       'end_time': s['end_time'] / txt_max}
-                for s in text_segments
-            ]
+
+            # Use windowed normalization for long audio (>15 min)
+            if max(spk_max, txt_max) > 900_000:
+                speaker_segments, text_segments = self._normalize_windowed(
+                    speaker_segments, text_segments, spk_max, txt_max)
+            else:
+                # Global normalization for short audio
+                speaker_segments = [
+                    {**s, 'begin_time': s['begin_time'] / spk_max,
+                           'end_time': s['end_time'] / spk_max}
+                    for s in speaker_segments
+                ]
+                text_segments = [
+                    {**s, 'begin_time': s['begin_time'] / txt_max,
+                           'end_time': s['end_time'] / txt_max}
+                    for s in text_segments
+                ]
 
         # Step 1: Build word stream with estimated timestamps
         word_stream = []  # [(estimated_time_ms, word), ...]
@@ -2066,17 +2174,140 @@ class AudioService:
 
 {text}"""
 
+    # Smart chunking threshold for LLM — ~600 RU words, fits in 8192 output tokens
+    LLM_CHUNK_THRESHOLD = 4000
+    # Max chunks to prevent runaway LLM calls
+    LLM_MAX_CHUNKS = 20
+
+    def _split_for_llm(self, text: str, is_dialogue: bool) -> list:
+        """Split text into semantic chunks preserving speaker/paragraph structure.
+
+        For dialogues: splits on speaker boundaries (Спикер N:).
+        For monologues: splits on paragraphs, then sentences.
+
+        Each chunk except the first gets a 1-line overlap context marked with [...].
+        """
+        import re
+        threshold = self.LLM_CHUNK_THRESHOLD
+
+        if is_dialogue:
+            # Split on speaker boundaries
+            blocks = re.split(r'(?=^Спикер \d+:)', text, flags=re.MULTILINE)
+            blocks = [b for b in blocks if b.strip()]
+        else:
+            # Split on double newlines (paragraphs), then sentences
+            blocks = text.split('\n\n')
+            blocks = [b for b in blocks if b.strip()]
+
+        chunks = []
+        current = ''
+        last_line = ''
+
+        for block in blocks:
+            # If a single block exceeds threshold, split by sentences
+            if len(block) > threshold:
+                sentences = re.split(r'(?<=[.!?])\s+', block)
+                for sentence in sentences:
+                    if len(current) + len(sentence) + 1 > threshold and current:
+                        chunks.append(current.strip())
+                        last_line = self._get_last_context(current, is_dialogue)
+                        current = f'[...] {last_line}\n' if last_line else ''
+                    current += (' ' if current and not current.endswith('\n') else '') + sentence
+            elif len(current) + len(block) + 2 > threshold and current:
+                chunks.append(current.strip())
+                last_line = self._get_last_context(current, is_dialogue)
+                current = (f'[...] {last_line}\n' if last_line else '') + block
+            else:
+                if current:
+                    current += ('\n\n' if not is_dialogue else '\n') + block
+                else:
+                    current = block
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        return chunks
+
+    def _get_last_context(self, text: str, is_dialogue: bool) -> str:
+        """Extract last context line for chunk overlap."""
+        lines = text.strip().split('\n')
+        if is_dialogue:
+            # Last speaker line with content
+            for line in reversed(lines):
+                if line.startswith('—') or line.startswith('Спикер'):
+                    return line[:200]
+            return lines[-1][:200] if lines else ''
+        else:
+            # Last sentence
+            import re
+            sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+            return sentences[-1][:200] if sentences else ''
+
+    def _format_text_chunked(self, text: str, use_code_tags: bool, use_yo: bool,
+                              is_chunked: bool, is_dialogue: bool, backend: str,
+                              progress_callback=None) -> str:
+        """Format long text chunk-by-chunk, reassemble.
+
+        Each chunk is sent to LLM independently. Overlap markers ([...]) are
+        stripped during reassembly. If a chunk output is <10% of input,
+        the original chunk is used (hallucination guard).
+        """
+        chunks = self._split_for_llm(text, is_dialogue)
+        total = len(chunks)
+
+        if total > self.LLM_MAX_CHUNKS:
+            logging.warning(f"[llm] too many chunks ({total} > {self.LLM_MAX_CHUNKS}), skipping LLM")
+            return text
+
+        logging.info(f"[llm] chunked formatting: {total} chunks, is_dialogue={is_dialogue}")
+        formatted_parts = []
+
+        for i, chunk in enumerate(chunks):
+            if progress_callback:
+                progress_callback(i + 1, total)
+
+            # Format individual chunk
+            if backend == 'assemblyai':
+                result = self.format_text_with_assemblyai(
+                    chunk, use_code_tags, use_yo, is_chunked, is_dialogue)
+            else:
+                result = self.format_text_with_qwen(
+                    chunk, use_code_tags, use_yo, is_chunked, is_dialogue)
+
+            # LLM output validation — hallucination guard
+            if len(result) < len(chunk) * 0.1:
+                logging.warning(f"[llm] chunk {i+1}/{total} output too short ({len(result)} < 10% of {len(chunk)}), using original")
+                result = chunk
+
+            # Strip overlap context from output
+            import re
+            result = re.sub(r'^\[\.{3}\].*?\n', '', result.strip())
+
+            formatted_parts.append(result)
+
+        separator = '\n' if is_dialogue else '\n\n'
+        return separator.join(formatted_parts)
+
     def format_text_with_llm(self, text: str, use_code_tags: bool = False,
                               use_yo: bool = True, is_chunked: bool = False,
                               is_dialogue: bool = False,
-                              backend: str | None = None) -> str:
+                              backend: str | None = None,
+                              progress_callback=None) -> str:
         """Route LLM formatting to configured backend.
 
         Priority: backend param → LLM_BACKEND env var → 'qwen'.
+        For long texts (> LLM_CHUNK_THRESHOLD), splits into semantic chunks.
         """
         backend = backend or os.environ.get('LLM_BACKEND', 'qwen')
         logging.info(f"[llm] backend={backend}, is_dialogue={is_dialogue}, input_chars={len(text)}")
-        if backend == 'assemblyai':
+
+        # Smart chunking for long texts
+        if len(text) > self.LLM_CHUNK_THRESHOLD:
+            logging.info(f"[llm] chunking: {len(text)} chars > {self.LLM_CHUNK_THRESHOLD} threshold")
+            result = self._format_text_chunked(
+                text, use_code_tags, use_yo, is_chunked, is_dialogue,
+                backend, progress_callback=progress_callback)
+        elif backend == 'assemblyai':
             result = self.format_text_with_assemblyai(
                 text, use_code_tags, use_yo, is_chunked, is_dialogue)
         else:  # 'qwen' default

@@ -220,12 +220,13 @@ class TestDocumentDurationDetection:
 
         assert result['ok'] is True
         assert result['result'] == 'insufficient_balance'
-        # Should send rejection message
-        mock_tg.send_message.assert_any_call(
-            67890,
-            "У вас недостаточно минут для транскрипции.\n"
-            "Используйте /buy_minutes для покупки."
+        # Should send rejection message with deficit info
+        sent_msg = mock_tg.send_message.call_args_list
+        balance_msg_found = any(
+            'Не хватает:' in str(c) or 'buy_minutes' in str(c)
+            for c in sent_msg
         )
+        assert balance_msg_found, f"Expected balance rejection message, got: {sent_msg}"
         # Should NOT attempt transcription
         mock_audio.transcribe_audio.assert_not_called()
         mock_audio.transcribe_with_diarization.assert_not_called()

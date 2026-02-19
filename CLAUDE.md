@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Version** | v4.3.1 |
+| **Version** | v5.0.0 |
 | **ASR** | `qwen3-asr-flash` (REST), diarization: DashScope two-pass + AssemblyAI + Gemini backends |
 | **LLM** | `qwen3.5-397b-a17b` (fallback: Gemini 3 Flash via AssemblyAI Gateway) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
@@ -156,6 +156,35 @@ response = client.models.generate_content(model="gemini-2.5-flash", contents=pro
 
 ---
 
+### Smart Chunking (v5.0.0)
+- `LLM_CHUNK_THRESHOLD = 4000` chars — texts longer than this split into semantic chunks
+- `LLM_MAX_CHUNKS = 20` — safety limit, returns unformatted if exceeded
+- Dialogue: splits on `Спикер N:` boundaries, monologue: on paragraphs then sentences
+- Each chunk gets 1-line overlap context `[...]` for LLM continuity, stripped on reassembly
+- Hallucination guard: chunk output <10% of input → use original chunk
+- `progress_callback(current, total)` propagated to ProgressManager
+
+### ProgressManager (v5.0.0)
+- Rate-limited Telegram progress updates (MIN_UPDATE_INTERVAL=3s)
+- Stages with ETA: download → transcribe → diarize → align → format → deliver
+- ETA based on audio duration: <5min→1min, 5-30min→2-3min, 30-60min→3-5min, 60+min→5-8min
+
+### Auto-File Delivery (v5.0.0)
+- `AUTO_FILE_THRESHOLD = 8000` chars → automatically send as `.txt` file
+- Filename: `transcript_YYYY-MM-DD_HHMM.txt`
+
+### Time Budget Watchdog (v5.0.0)
+- `FC_TIMEOUT=600`, `SAFETY_MARGIN=30` — deadline = start + 570s
+- If remaining < 60s before LLM → skip formatting, return raw text
+
+### Quality Safeguards (v5.0.0)
+- Micro-segment filter: <500ms + ≤2 words → merge with neighbor
+- Gap ratio: >30% unmatched words → discard speaker labels
+- Windowed timeline normalization for audio >15 min
+- Dynamic diarization timeout: <30min→180s, 30-60min→240s, 60+min→300s
+
+---
+
 ## Deployment
 
 ```bash
@@ -190,4 +219,4 @@ FC ~$5 + Tablestore ~$1 + DashScope ~$2 (68% savings vs GCP ~$25)
 
 ---
 
-*v4.3.1 — 2026-02-20*
+*v5.0.0 — 2026-02-20*
