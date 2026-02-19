@@ -214,6 +214,11 @@ def process_mns_message(event: Dict[str, Any]) -> Dict[str, Any]:
 
 def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     """Process a single audio processing job."""
+    # Set trace context from webhook-handler (for correlated logs)
+    from services.utility import set_trace_context
+    trace_id = job_data.get('trace_id', '')
+    set_trace_context(trace_id=trace_id, user_id=job_data.get('user_id'))
+
     job_id = job_data.get('job_id')
     user_id = job_data.get('user_id')
     chat_id = job_data.get('chat_id')
@@ -242,6 +247,9 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     db = get_db_service()
     tg = get_telegram_service()
     audio = get_audio_service()
+
+    local_path = None
+    converted_path = None
 
     try:
         # Dedup: MNS guarantees at-least-once delivery; skip if already processed
@@ -466,14 +474,6 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
             'result': json.dumps({'text_length': len(formatted_text)})
         })
 
-        # Cleanup
-        try:
-            os.remove(local_path)
-            if converted_path != local_path:
-                os.remove(converted_path)
-        except OSError as cleanup_err:
-            logger.debug(f"Cleanup temp files failed: {cleanup_err}")
-
         logger.info(f"Job {job_id} completed successfully")
         return {'ok': True, 'result': 'completed'}
 
@@ -496,3 +496,12 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         tg.send_message(chat_id, user_msg)
 
         return {'ok': False, 'error': str(e)}
+
+    finally:
+        # Cleanup temp files on both success and error paths
+        for path in (local_path, converted_path):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass

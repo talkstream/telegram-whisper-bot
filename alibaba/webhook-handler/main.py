@@ -237,6 +237,18 @@ def handler(event, context):
 
 def process_update(update: Dict[str, Any]) -> str:
     """Process a Telegram update."""
+    import uuid
+    from services.utility import set_trace_context
+
+    # Generate trace_id for this request and set logging context
+    trace_id = str(uuid.uuid4())[:8]
+    user_id = (
+        update.get('message', {}).get('from', {}).get('id')
+        or update.get('callback_query', {}).get('from', {}).get('id')
+        or ''
+    )
+    set_trace_context(trace_id=trace_id, user_id=user_id)
+
     # Handle callback query
     if 'callback_query' in update:
         return handle_callback_query(update['callback_query'])
@@ -382,6 +394,9 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
     tg = get_telegram_service()
     db = get_db_service()
 
+    local_path = None
+    converted_path = None
+
     try:
         # Update progress: downloading
         if status_message_id:
@@ -496,22 +511,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             result_text = formatted_text
             parse_mode = ''
 
-        long_text_mode = settings.get('long_text_mode', 'split')
-
-        if status_message_id and len(result_text) <= 4000:
-            tg.edit_message_text(chat_id, status_message_id, result_text, parse_mode=parse_mode)
-        elif long_text_mode == 'file':
-            if status_message_id:
-                tg.delete_message(chat_id, status_message_id)
-            first_dot = formatted_text.find('.')
-            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
-            tg.send_as_file(chat_id, formatted_text, caption=caption)
-        else:
-            if status_message_id:
-                tg.delete_message(chat_id, status_message_id)
-            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
-
-        # Update balance
+        # Deduct balance BEFORE delivery to prevent free transcriptions on failure
         duration_minutes = (duration + 59) // 60
         balance = user.get('balance_minutes', 0)
         balance_updated = db.update_user_balance(user_id, -duration_minutes)
@@ -529,6 +529,22 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                     )
             except Exception as notify_err:
                 logger.error(f"Failed to notify owner about balance error: {notify_err}")
+
+        # Deliver result to user
+        long_text_mode = settings.get('long_text_mode', 'split')
+
+        if status_message_id and len(result_text) <= 4000:
+            tg.edit_message_text(chat_id, status_message_id, result_text, parse_mode=parse_mode)
+        elif long_text_mode == 'file':
+            if status_message_id:
+                tg.delete_message(chat_id, status_message_id)
+            first_dot = formatted_text.find('.')
+            caption = (formatted_text[:first_dot+1] if 0 < first_dot < 200 else formatted_text[:200]) + "..."
+            tg.send_as_file(chat_id, formatted_text, caption=caption)
+        else:
+            if status_message_id:
+                tg.delete_message(chat_id, status_message_id)
+            tg.send_long_message(chat_id, result_text, parse_mode=parse_mode)
 
         # Check for low balance warning (calculate from known values)
         if balance_updated:
@@ -557,14 +573,6 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             'status': 'completed'
         })
 
-        # Cleanup temp files
-        try:
-            os.remove(local_path)
-            if converted_path != local_path:
-                os.remove(converted_path)
-        except OSError as cleanup_err:
-            logger.debug(f"Cleanup temp files failed: {cleanup_err}")
-
         return 'transcribed_sync'
 
     except Exception as e:
@@ -582,6 +590,15 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         tg.send_message(chat_id, user_msg)
         return 'error'
 
+    finally:
+        # Cleanup temp files on both success and error paths
+        for path in (local_path, converted_path):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
 
 def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
                       file_id: str, file_type: str, duration: int,
@@ -596,6 +613,7 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     db = get_db_service()
     tg = get_telegram_service()
 
+    from services.utility import get_trace_id
     job_id = str(uuid.uuid4())
     job_data = {
         'job_id': job_id,
@@ -605,7 +623,8 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         'file_id': file_id,
         'file_type': file_type,
         'duration': duration,
-        'status': 'pending'
+        'status': 'pending',
+        'trace_id': get_trace_id(),
     }
     if status_message_id:
         job_data['status_message_id'] = status_message_id
@@ -663,8 +682,263 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     return process_audio_sync(message, user, file_id, file_type, duration, status_message_id)
 
 
+def _cmd_start(chat_id, user_id, text, user, tg, db) -> str:
+    balance = user.get('balance_minutes', 0)
+    trial_status = user.get('trial_status', 'none')
+
+    greeting = (
+        "🎙 <b>Расшифровка аудио в текст</b>\n\n"
+        "Интервью, совещание, лекция, подкаст — "
+        "отправьте аудио и получите готовый текст с пунктуацией и абзацами.\n\n"
+        "▸ Разбивка диалога по спикерам\n"
+        "▸ Форматирование и «ё» через AI\n"
+        "▸ До 1 часа аудио за раз\n\n"
+    )
+
+    if trial_status == 'approved' and balance > 0:
+        greeting += (
+            f"🎁 <b>{balance} бесплатных минут</b> уже на балансе.\n"
+            "Перешлите голосовое сообщение, видео или кружок — попробуйте прямо сейчас.\n\n"
+            "Обратная связь: @nafigator"
+        )
+    elif balance > 0:
+        greeting += (
+            f"💰 Баланс: <b>{balance} мин</b>\n"
+            "Перешлите голосовое сообщение, видео или кружок для расшифровки.\n\n"
+            "Обратная связь: @nafigator"
+        )
+    else:
+        greeting += (
+            "Баланс исчерпан. Пополните: /buy_minutes\n\n"
+            "Обратная связь: @nafigator"
+        )
+
+    tg.send_message(chat_id, greeting, parse_mode='HTML')
+    return 'start'
+
+
+def _cmd_help(chat_id, user_id, text, user, tg, db) -> str:
+    tg.send_message(
+        chat_id,
+        "📖 Справка по боту\n\n"
+        "Отправьте голосовое сообщение, аудио или видео для транскрипции.\n\n"
+        "Команды:\n"
+        "/balance - Проверить остаток минут\n"
+        "/buy_minutes - Купить минуты\n"
+        "/settings - Показать настройки\n"
+        "/code - Вкл/выкл моноширинный шрифт\n"
+        "/yo - Вкл/выкл букву ё\n"
+        "/output - Формат длинного текста (файл / сообщения)\n"
+        "/speakers - Вкл/выкл метки спикеров"
+    )
+    return 'help'
+
+
+def _cmd_balance(chat_id, user_id, text, user, tg, db) -> str:
+    balance = user.get('balance_minutes', 0)
+    tg.send_message(chat_id, f"💰 Ваш баланс: {balance} минут")
+    return 'balance'
+
+
+def _cmd_settings(chat_id, user_id, text, user, tg, db) -> str:
+    settings = db.get_user_settings(user_id) or {}
+    use_code = settings.get('use_code_tags', False)
+    use_yo = settings.get('use_yo', True)
+    long_text_mode = settings.get('long_text_mode', 'split')
+    speaker_labels = settings.get('speaker_labels', True)
+
+    long_text_label = '\U0001f4c4 файл .txt' if long_text_mode == 'file' else '\U0001f4ac несколько сообщений'
+    speakers_label = '\u2705 Вкл' if speaker_labels else '\u274c Выкл'
+
+    tg.send_message(
+        chat_id,
+        f"⚙️ Ваши настройки:\n\n"
+        f"Моноширинный шрифт: {'✅ Вкл' if use_code else '❌ Выкл'}\n"
+        f"Использование ё: {'✅ Вкл' if use_yo else '❌ Выкл (заменяется на е)'}\n"
+        f"Длинный текст: {long_text_label}\n"
+        f"Метки спикеров: {speakers_label}\n\n"
+        f"Команды для изменения:\n"
+        f"/code - переключить шрифт\n"
+        f"/yo - переключить букву ё\n"
+        f"/output - формат длинного текста\n"
+        f"/speakers - метки спикеров"
+    )
+    return 'settings'
+
+
+def _cmd_code(chat_id, user_id, text, user, tg, db) -> str:
+    settings = db.get_user_settings(user_id) or {}
+    settings['use_code_tags'] = not settings.get('use_code_tags', False)
+    db.update_user_settings(user_id, settings)
+    status = 'включено' if settings['use_code_tags'] else 'выключено'
+    tg.send_message(chat_id, f"Моноширинный шрифт: {status}")
+    return 'code_toggle'
+
+
+def _cmd_yo(chat_id, user_id, text, user, tg, db) -> str:
+    settings = db.get_user_settings(user_id) or {}
+    settings['use_yo'] = not settings.get('use_yo', True)
+    db.update_user_settings(user_id, settings)
+    status = 'включено' if settings['use_yo'] else 'замена на е'
+    tg.send_message(chat_id, f"Использование буквы ё: {status}")
+    return 'yo_toggle'
+
+
+def _cmd_output(chat_id, user_id, text, user, tg, db) -> str:
+    settings = db.get_user_settings(user_id) or {}
+    current = settings.get('long_text_mode', 'split')
+    new_mode = 'file' if current == 'split' else 'split'
+    settings['long_text_mode'] = new_mode
+    db.update_user_settings(user_id, settings)
+    label = '\U0001f4c4 файл .txt' if new_mode == 'file' else '\U0001f4ac несколько сообщений'
+    tg.send_message(chat_id, f"Длинный текст: {label}")
+    return 'output_toggle'
+
+
+def _cmd_speakers(chat_id, user_id, text, user, tg, db) -> str:
+    settings = db.get_user_settings(user_id) or {}
+    settings['speaker_labels'] = not settings.get('speaker_labels', True)
+    db.update_user_settings(user_id, settings)
+    status = 'включены' if settings['speaker_labels'] else 'выключены'
+    tg.send_message(chat_id, f"Метки спикеров: {status}")
+    return 'speakers_toggle'
+
+
+def _cmd_buy_minutes(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_buy_minutes(chat_id, user_id, tg)
+
+
+def _cmd_admin(chat_id, user_id, text, user, tg, db) -> str:
+    admin_help = (
+        "🔐 <b>Админ-команды</b>\n\n"
+        "<b>Пользователи:</b>\n"
+        "/user [search] — поиск пользователей\n"
+        "/credit &lt;id&gt; &lt;мин&gt; — добавить минуты\n\n"
+        "<b>Статистика:</b>\n"
+        "/stat — общая статистика\n"
+        "/cost — стоимость обработки\n"
+        "/metrics [часы] — метрики производительности\n\n"
+        "<b>Система:</b>\n"
+        "/status — статус очереди MNS\n"
+        "/flush — очистить зависшие задачи\n"
+        "/batch [user_id] — очередь пользователя\n"
+        "/mute [часы|off] — уведомления об ошибках\n"
+        "/debug — вкл/выкл дебаг диаризации\n"
+        "/llm [backend] — LLM backend (qwen/assemblyai)\n\n"
+        "<b>Отчёты:</b>\n"
+        "/export [users|logs|payments] [дни] — экспорт CSV\n"
+        "/report [daily|weekly] — отчёт"
+    )
+    tg.send_message(chat_id, admin_help, parse_mode='HTML')
+    return 'admin_help'
+
+
+def _cmd_credit(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_credit_command(text, chat_id, tg, db)
+
+
+def _cmd_user(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_user_search(text, chat_id, tg, db)
+
+
+def _cmd_stat(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_stat_command(chat_id, tg, db)
+
+
+def _cmd_cost(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_cost_command(chat_id, tg, db)
+
+
+def _cmd_status(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_status_command(chat_id, tg, db)
+
+
+def _cmd_flush(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_flush_command(chat_id, tg, db)
+
+
+def _cmd_export(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_export_command(text, chat_id, tg, db)
+
+
+def _cmd_report(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_report_command(text, chat_id, tg, db)
+
+
+def _cmd_metrics(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_metrics_command(text, chat_id, tg, db)
+
+
+def _cmd_batch(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_batch_command(text, chat_id, tg, db)
+
+
+def _cmd_mute(chat_id, user_id, text, user, tg, db) -> str:
+    return handle_mute_command(text, chat_id, tg)
+
+
+def _cmd_debug(chat_id, user_id, text, user, tg, db) -> str:
+    settings = db.get_user_settings(user_id) or {}
+    settings['debug_mode'] = not settings.get('debug_mode', False)
+    db.update_user_settings(user_id, settings)
+    status = 'включён' if settings['debug_mode'] else 'выключен'
+    tg.send_message(chat_id, f"Дебаг диаризации: {status}")
+    return 'debug_toggle'
+
+
+def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
+    parts = text.split(maxsplit=1) if text else []
+    arg = parts[1].strip().lower() if len(parts) > 1 else None
+    settings = db.get_user_settings(user_id) or {}
+    current = settings.get('llm_backend', 'qwen')
+    if arg in ('qwen', 'assemblyai'):
+        settings['llm_backend'] = arg
+        db.update_user_settings(user_id, settings)
+        tg.send_message(chat_id, f"LLM backend: {arg}")
+        return 'llm_set'
+    else:
+        tg.send_message(
+            chat_id,
+            f"LLM backend: <b>{current}</b>\n\n"
+            "/llm qwen\n/llm assemblyai",
+            parse_mode='HTML',
+        )
+        return 'llm_show'
+
+
+# Command dispatch tables
+_USER_COMMANDS = {
+    '/start': _cmd_start,
+    '/help': _cmd_help,
+    '/balance': _cmd_balance,
+    '/settings': _cmd_settings,
+    '/code': _cmd_code,
+    '/yo': _cmd_yo,
+    '/output': _cmd_output,
+    '/speakers': _cmd_speakers,
+    '/buy_minutes': _cmd_buy_minutes,
+}
+
+_ADMIN_COMMANDS = {
+    '/admin': _cmd_admin,
+    '/credit': _cmd_credit,
+    '/user': _cmd_user,
+    '/stat': _cmd_stat,
+    '/cost': _cmd_cost,
+    '/status': _cmd_status,
+    '/flush': _cmd_flush,
+    '/export': _cmd_export,
+    '/report': _cmd_report,
+    '/metrics': _cmd_metrics,
+    '/batch': _cmd_batch,
+    '/mute': _cmd_mute,
+    '/debug': _cmd_debug,
+    '/llm': _cmd_llm,
+}
+
+
 def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
-    """Handle bot commands."""
+    """Handle bot commands via dispatch table."""
     chat_id = message.get('chat', {}).get('id')
     user_id = message.get('from', {}).get('id')
     text = message.get('text', '')
@@ -673,240 +947,20 @@ def handle_command(message: Dict[str, Any], user: Dict[str, Any]) -> str:
     tg = get_telegram_service()
     db = get_db_service()
 
-    if command == '/start':
-        balance = user.get('balance_minutes', 0)
-        trial_status = user.get('trial_status', 'none')
+    # User commands (no auth required)
+    handler = _USER_COMMANDS.get(command)
+    if handler:
+        return handler(chat_id, user_id, text, user, tg, db)
 
-        greeting = (
-            "🎙 <b>Расшифровка аудио в текст</b>\n\n"
-            "Интервью, совещание, лекция, подкаст — "
-            "отправьте аудио и получите готовый текст с пунктуацией и абзацами.\n\n"
-            "▸ Разбивка диалога по спикерам\n"
-            "▸ Форматирование и «ё» через AI\n"
-            "▸ До 1 часа аудио за раз\n\n"
-        )
-
-        if trial_status == 'approved' and balance > 0:
-            greeting += (
-                f"🎁 <b>{balance} бесплатных минут</b> уже на балансе.\n"
-                "Перешлите голосовое сообщение, видео или кружок — попробуйте прямо сейчас.\n\n"
-                "Обратная связь: @nafigator"
-            )
-        elif balance > 0:
-            greeting += (
-                f"💰 Баланс: <b>{balance} мин</b>\n"
-                "Перешлите голосовое сообщение, видео или кружок для расшифровки.\n\n"
-                "Обратная связь: @nafigator"
-            )
-        else:
-            greeting += (
-                "Баланс исчерпан. Пополните: /buy_minutes\n\n"
-                "Обратная связь: @nafigator"
-            )
-
-        tg.send_message(chat_id, greeting, parse_mode='HTML')
-        return 'start'
-
-    elif command == '/help':
-        tg.send_message(
-            chat_id,
-            "📖 Справка по боту\n\n"
-            "Отправьте голосовое сообщение, аудио или видео для транскрипции.\n\n"
-            "Команды:\n"
-            "/balance - Проверить остаток минут\n"
-            "/buy_minutes - Купить минуты\n"
-            "/settings - Показать настройки\n"
-            "/code - Вкл/выкл моноширинный шрифт\n"
-            "/yo - Вкл/выкл букву ё\n"
-            "/output - Формат длинного текста (файл / сообщения)\n"
-            "/speakers - Вкл/выкл метки спикеров"
-        )
-        return 'help'
-
-    elif command == '/balance':
-        balance = user.get('balance_minutes', 0)
-        tg.send_message(chat_id, f"💰 Ваш баланс: {balance} минут")
-        return 'balance'
-
-    elif command == '/settings':
-        settings = db.get_user_settings(user_id) or {}
-        use_code = settings.get('use_code_tags', False)
-        use_yo = settings.get('use_yo', True)
-        long_text_mode = settings.get('long_text_mode', 'split')
-        speaker_labels = settings.get('speaker_labels', True)
-
-        long_text_label = '\U0001f4c4 файл .txt' if long_text_mode == 'file' else '\U0001f4ac несколько сообщений'
-        speakers_label = '\u2705 Вкл' if speaker_labels else '\u274c Выкл'
-
-        tg.send_message(
-            chat_id,
-            f"⚙️ Ваши настройки:\n\n"
-            f"Моноширинный шрифт: {'✅ Вкл' if use_code else '❌ Выкл'}\n"
-            f"Использование ё: {'✅ Вкл' if use_yo else '❌ Выкл (заменяется на е)'}\n"
-            f"Длинный текст: {long_text_label}\n"
-            f"Метки спикеров: {speakers_label}\n\n"
-            f"Команды для изменения:\n"
-            f"/code - переключить шрифт\n"
-            f"/yo - переключить букву ё\n"
-            f"/output - формат длинного текста\n"
-            f"/speakers - метки спикеров"
-        )
-        return 'settings'
-
-    elif command == '/code':
-        settings = db.get_user_settings(user_id) or {}
-        settings['use_code_tags'] = not settings.get('use_code_tags', False)
-        db.update_user_settings(user_id, settings)
-        status = 'включено' if settings['use_code_tags'] else 'выключено'
-        tg.send_message(chat_id, f"Моноширинный шрифт: {status}")
-        return 'code_toggle'
-
-    elif command == '/yo':
-        settings = db.get_user_settings(user_id) or {}
-        settings['use_yo'] = not settings.get('use_yo', True)
-        db.update_user_settings(user_id, settings)
-        status = 'включено' if settings['use_yo'] else 'замена на е'
-        tg.send_message(chat_id, f"Использование буквы ё: {status}")
-        return 'yo_toggle'
-
-    elif command == '/output':
-        settings = db.get_user_settings(user_id) or {}
-        current = settings.get('long_text_mode', 'split')
-        new_mode = 'file' if current == 'split' else 'split'
-        settings['long_text_mode'] = new_mode
-        db.update_user_settings(user_id, settings)
-        label = '\U0001f4c4 файл .txt' if new_mode == 'file' else '\U0001f4ac несколько сообщений'
-        tg.send_message(chat_id, f"Длинный текст: {label}")
-        return 'output_toggle'
-
-    elif command == '/speakers':
-        settings = db.get_user_settings(user_id) or {}
-        settings['speaker_labels'] = not settings.get('speaker_labels', True)
-        db.update_user_settings(user_id, settings)
-        status = 'включены' if settings['speaker_labels'] else 'выключены'
-        tg.send_message(chat_id, f"Метки спикеров: {status}")
-        return 'speakers_toggle'
-
-    elif command == '/buy_minutes':
-        return handle_buy_minutes(chat_id, user_id, tg)
-
-    # ==================== ADMIN COMMANDS ====================
-
-    elif command == '/admin':
+    # Admin commands (OWNER_ID required)
+    handler = _ADMIN_COMMANDS.get(command)
+    if handler:
         if user_id != OWNER_ID:
             return 'unauthorized'
-        admin_help = (
-            "🔐 <b>Админ-команды</b>\n\n"
-            "<b>Пользователи:</b>\n"
-            "/user [search] — поиск пользователей\n"
-            "/credit &lt;id&gt; &lt;мин&gt; — добавить минуты\n\n"
-            "<b>Статистика:</b>\n"
-            "/stat — общая статистика\n"
-            "/cost — стоимость обработки\n"
-            "/metrics [часы] — метрики производительности\n\n"
-            "<b>Система:</b>\n"
-            "/status — статус очереди MNS\n"
-            "/flush — очистить зависшие задачи\n"
-            "/batch [user_id] — очередь пользователя\n"
-            "/mute [часы|off] — уведомления об ошибках\n"
-            "/debug — вкл/выкл дебаг диаризации\n"
-            "/llm [backend] — LLM backend (qwen/assemblyai)\n\n"
-            "<b>Отчёты:</b>\n"
-            "/export [users|logs|payments] [дни] — экспорт CSV\n"
-            "/report [daily|weekly] — отчёт"
-        )
-        tg.send_message(chat_id, admin_help, parse_mode='HTML')
-        return 'admin_help'
+        return handler(chat_id, user_id, text, user, tg, db)
 
-    elif command == '/credit':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_credit_command(text, chat_id, tg, db)
-
-    elif command == '/user':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_user_search(text, chat_id, tg, db)
-
-    elif command == '/stat':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_stat_command(chat_id, tg, db)
-
-    elif command == '/cost':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_cost_command(chat_id, tg, db)
-
-    elif command == '/status':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_status_command(chat_id, tg, db)
-
-    elif command == '/flush':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_flush_command(chat_id, tg, db)
-
-    elif command == '/export':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_export_command(text, chat_id, tg, db)
-
-    elif command == '/report':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_report_command(text, chat_id, tg, db)
-
-    elif command == '/metrics':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_metrics_command(text, chat_id, tg, db)
-
-    elif command == '/batch':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_batch_command(text, chat_id, tg, db)
-
-    elif command == '/mute':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        return handle_mute_command(text, chat_id, tg)
-
-    elif command == '/debug':
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        settings = db.get_user_settings(user_id) or {}
-        settings['debug_mode'] = not settings.get('debug_mode', False)
-        db.update_user_settings(user_id, settings)
-        status = 'включён' if settings['debug_mode'] else 'выключен'
-        tg.send_message(chat_id, f"Дебаг диаризации: {status}")
-        return 'debug_toggle'
-
-    elif command == '/llm' or command.startswith('/llm '):
-        if user_id != OWNER_ID:
-            return 'unauthorized'
-        parts = text.split(maxsplit=1) if text else []
-        arg = parts[1].strip().lower() if len(parts) > 1 else None
-        settings = db.get_user_settings(user_id) or {}
-        current = settings.get('llm_backend', 'qwen')
-        if arg in ('qwen', 'assemblyai'):
-            settings['llm_backend'] = arg
-            db.update_user_settings(user_id, settings)
-            tg.send_message(chat_id, f"LLM backend: {arg}")
-            return 'llm_set'
-        else:
-            tg.send_message(
-                chat_id,
-                f"LLM backend: <b>{current}</b>\n\n"
-                "/llm qwen\n/llm assemblyai",
-                parse_mode='HTML',
-            )
-            return 'llm_show'
-
-    else:
-        tg.send_message(chat_id, "Неизвестная команда. Используйте /help для справки.")
-        return 'unknown_command'
+    tg.send_message(chat_id, "Неизвестная команда. Используйте /help для справки.")
+    return 'unknown_command'
 
 
 def handle_mute_command(text: str, chat_id: int, tg) -> str:

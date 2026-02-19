@@ -819,7 +819,11 @@ class AudioService:
 
             # Parse structured JSON response
             result = response.json()
-            text_content = result['candidates'][0]['content']['parts'][0]['text']
+            candidates = result.get('candidates', [])
+            if not candidates:
+                logging.warning(f"Gemini diarization: empty candidates in response")
+                return None, []
+            text_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
             parsed = json.loads(text_content)
             gemini_segments = parsed.get('segments', [])
 
@@ -2326,7 +2330,10 @@ class AudioService:
             response.raise_for_status()
 
             data = response.json()
-            formatted_text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+            candidates = data.get('candidates', [])
+            if not candidates:
+                raise ValueError("Gemini LLM returned empty candidates")
+            formatted_text = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
 
             api_duration = time.time() - api_start_time
             logging.info(f"Gemini finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")

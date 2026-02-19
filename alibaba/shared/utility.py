@@ -12,6 +12,30 @@ from datetime import datetime, timedelta, timezone
 
 MUTE_FILE = '/tmp/twbot_mute_until'
 
+# Trace context for correlation across services (FC processes one request at a time)
+_trace_context = {}
+
+
+def set_trace_context(trace_id=None, user_id=None):
+    """Set trace context for the current request. All log records will include these fields."""
+    if trace_id is not None:
+        _trace_context['trace_id'] = trace_id
+    if user_id is not None:
+        _trace_context['user_id'] = str(user_id)
+
+
+def get_trace_id():
+    """Return current trace_id (for passing to downstream services)."""
+    return _trace_context.get('trace_id', '')
+
+
+class _TraceContextFilter(logging.Filter):
+    """Injects trace_id and user_id into every log record."""
+    def filter(self, record):
+        record.trace_id = _trace_context.get('trace_id', '')
+        record.user_id = _trace_context.get('user_id', '')
+        return True
+
 
 class TelegramErrorHandler(logging.Handler):
     """Logging handler that sends ERROR+ messages to Telegram owner.
@@ -141,6 +165,7 @@ class UtilityService:
             )
 
         handler.setFormatter(formatter)
+        handler.addFilter(_TraceContextFilter())
         logger.handlers = [handler]
 
         # Set log level from environment variable (default: INFO for backward compatibility)

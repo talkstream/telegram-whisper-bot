@@ -5,7 +5,7 @@ aliyun-mns>=1.1.5
 oss2>=2.18.0
 
 # Telegram
-python-telegram-bot>=20.0
+python-telegram-bot>=20.3
 
 # Audio processing
 openai>=1.0.0
@@ -14,6 +14,6 @@ pydub>=0.25.0
 # Utilities
 pytz>=2024.1
 httpx>=0.25.0
-requests>=2.31.0
+requests>=2.32.0
 python-json-logger>=2.0.0
 websocket-client>=1.6.0

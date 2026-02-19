@@ -9,26 +9,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./audio-processor-deploy
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
+        python-version: "3.10"
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Install shared package
-        cp -r ../shared .
-        pip install ./shared
-        # Install other requirements
-        pip install -r requirements.txt
+        pip install -r alibaba/webhook-handler/requirements.txt
         pip install pytest pytest-mock
 
     - name: Install FFmpeg
@@ -38,9 +31,15 @@ jobs:
 
     - name: Run tests
       env:
-        GCP_PROJECT: test-project
-        WHISPER_MODEL_PATH: /tmp/ggml-base.bin # Dummy path for tests
+        TELEGRAM_BOT_TOKEN: test-token
+        OWNER_ID: "999"
+        TABLESTORE_ENDPOINT: https://test.ots.aliyuncs.com
+        TABLESTORE_INSTANCE: test
+        ALIBABA_ACCESS_KEY: test-ak
+        ALIBABA_SECRET_KEY: test-sk
+        DASHSCOPE_API_KEY: test-key
+        OSS_BUCKET: test-bucket
+        OSS_ENDPOINT: oss-eu-central-1.aliyuncs.com
+        MNS_ENDPOINT: https://test.mns.aliyuncs.com
       run: |
-        # Create dummy whisper model for path check tests
-        touch /tmp/ggml-base.bin
-        pytest tests/
+        pytest alibaba/tests/ -v --tb=short

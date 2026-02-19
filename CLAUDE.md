@@ -173,6 +173,7 @@ Full guide: [alibaba/DEPLOY.md](alibaba/DEPLOY.md)
 | [VERSION_HISTORY.md](docs/archive/VERSION_HISTORY.md) | Full changelog |
 | [pitch.html](pitch.html) | Investment pitch (18 slides) |
 | [market-strategy.md](docs/plans/2026-02-09-market-strategy.md) | Market capture & exit strategy |
+| [audit-roadmap.md](docs/plans/2026-02-19-audit-roadmap.md) | Expert panel audit & improvement roadmap |
 
 **Archive** (GCP era, obsolete): `docs/archive/FFMPEG_BUILD.md`, `docs/archive/TERRAFORM_GCP.md`
 
