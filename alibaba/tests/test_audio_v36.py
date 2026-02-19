@@ -146,11 +146,11 @@ class TestFormatDialogue:
             {'speaker_id': 0, 'text': 'Хорошо, спасибо.'},
         ]
         result = audio_service.format_dialogue(segments)
-        lines = result.split('\n\n')
-        assert len(lines) == 3
-        assert lines[0] == 'Спикер 1:\n\u2014 Привет!'
-        assert lines[1] == 'Спикер 2:\n\u2014 Привет, как дела?'
-        assert lines[2] == 'Спикер 1:\n\u2014 Хорошо, спасибо.'
+        assert result == (
+            'Спикер 1:\n\u2014 Привет!\n'
+            'Спикер 2:\n\u2014 Привет, как дела?\n'
+            'Спикер 1:\n\u2014 Хорошо, спасибо.'
+        )
 
     def test_merge_consecutive_same_speaker(self, audio_service):
         segments = [
@@ -159,10 +159,10 @@ class TestFormatDialogue:
             {'speaker_id': 1, 'text': 'Ответ.'},
         ]
         result = audio_service.format_dialogue(segments)
-        lines = result.split('\n\n')
-        assert len(lines) == 2
-        assert lines[0] == 'Спикер 1:\n\u2014 Первая часть.\nВторая часть.'
-        assert lines[1] == 'Спикер 2:\n\u2014 Ответ.'
+        assert result == (
+            'Спикер 1:\n\u2014 Первая часть.\nВторая часть.\n'
+            'Спикер 2:\n\u2014 Ответ.'
+        )
 
     def test_skip_empty_text(self, audio_service):
         segments = [
@@ -172,11 +172,11 @@ class TestFormatDialogue:
             {'speaker_id': 2, 'text': 'Ответ'},
         ]
         result = audio_service.format_dialogue(segments)
-        lines = result.split('\n\n')
-        assert len(lines) == 2
         # speaker_id 1 has only empty text, so unique_speakers = {0, 2}
-        assert lines[0] == 'Спикер 1:\n\u2014 Текст'
-        assert lines[1] == 'Спикер 2:\n\u2014 Ответ'
+        assert result == (
+            'Спикер 1:\n\u2014 Текст\n'
+            'Спикер 2:\n\u2014 Ответ'
+        )
 
     def test_empty_segments(self, audio_service):
         result = audio_service.format_dialogue([])
@@ -202,13 +202,13 @@ class TestFormatDialogue:
             {'speaker_id': 5, 'text': 'Я вас слушаю.'},
         ]
         result = audio_service.format_dialogue(segments)
-        lines = result.split('\n\n')
-        assert len(lines) == 4
         # speaker_map by appearance: {5: 1, 10: 2, 20: 3}
-        assert lines[0] == 'Спикер 1:\n\u2014 Алло. Здравствуйте.'
-        assert lines[1] == 'Спикер 2:\n\u2014 А вы кто?\nМеня зовут Арсений.'
-        assert lines[2] == 'Спикер 3:\n\u2014 Здравствуйте.'
-        assert lines[3] == 'Спикер 1:\n\u2014 Я вас слушаю.'
+        assert result == (
+            'Спикер 1:\n\u2014 Алло. Здравствуйте.\n'
+            'Спикер 2:\n\u2014 А вы кто?\nМеня зовут Арсений.\n'
+            'Спикер 3:\n\u2014 Здравствуйте.\n'
+            'Спикер 1:\n\u2014 Я вас слушаю.'
+        )
 
     def test_single_speaker_no_labels(self, audio_service):
         """Single speaker should NOT get labels, just em-dash."""
@@ -230,12 +230,11 @@ class TestFormatDialogue:
             {'speaker_id': 2, 'text': 'Ответ.'},
         ]
         result = audio_service.format_dialogue(segments)
-        lines = result.split('\n\n')
-        assert len(lines) == 2
-        assert 'Нормальный текст' in lines[0]
-        assert 'Ответ' in lines[1]
         # Punctuation-only segments from speaker 1 removed
-        assert '.' not in [l.strip() for l in lines]
+        assert result == (
+            'Спикер 1:\n\u2014 Нормальный текст.\n'
+            'Спикер 2:\n\u2014 Ответ.'
+        )
 
     def test_speaker_numbering_by_appearance(self, audio_service):
         """Speaker IDs should be numbered by order of first appearance, not sorted."""
@@ -245,14 +244,12 @@ class TestFormatDialogue:
             {'speaker_id': 99, 'text': 'Снова первый.'},
         ]
         result = audio_service.format_dialogue(segments)
-        lines = result.split('\n\n')
-        assert len(lines) == 3
-        # speaker 99 appears first → Спикер 1
-        assert lines[0].startswith('Спикер 1:')
-        # speaker 5 appears second → Спикер 2
-        assert lines[1].startswith('Спикер 2:')
-        # speaker 99 again → Спикер 1
-        assert lines[2].startswith('Спикер 1:')
+        # speaker 99 appears first → Спикер 1, speaker 5 → Спикер 2
+        assert result == (
+            'Спикер 1:\n\u2014 Первый говорящий.\n'
+            'Спикер 2:\n\u2014 Второй говорящий.\n'
+            'Спикер 1:\n\u2014 Снова первый.'
+        )
 
     def test_show_speakers_false(self, audio_service):
         """show_speakers=False should hide 'Спикер N:' labels but keep em-dash."""
@@ -262,14 +259,13 @@ class TestFormatDialogue:
             {'speaker_id': 0, 'text': 'Я вас слушаю.'},
         ]
         result = audio_service.format_dialogue(segments, show_speakers=False)
-        lines = result.split('\n\n')
-        assert len(lines) == 3
-        # No speaker labels
+        # No speaker labels, em-dash still present
         assert 'Спикер' not in result
-        # Em-dash still present
-        assert lines[0] == '\u2014 Алло. Здравствуйте.'
-        assert lines[1] == '\u2014 Не похищал. Это Марина.'
-        assert lines[2] == '\u2014 Я вас слушаю.'
+        assert result == (
+            '\u2014 Алло. Здравствуйте.\n'
+            '\u2014 Не похищал. Это Марина.\n'
+            '\u2014 Я вас слушаю.'
+        )
 
     def test_show_speakers_true_default(self, audio_service):
         """Default show_speakers=True preserves 'Спикер N:' labels (backward compat)."""
