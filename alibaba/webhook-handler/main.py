@@ -427,6 +427,8 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
     local_path = None
     converted_path = None
 
+    logger.info(f"[routing] sync=True, duration={duration}s, user={user_id}")
+
     try:
         # Update progress: downloading
         if status_message_id:
@@ -668,6 +670,7 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         job_data['status_message_id'] = status_message_id
 
     db.create_job(job_data)
+    logger.info(f"[routing] sync=False, duration={duration}s, user={user_id}, job={job_id}")
 
     # Primary: direct HTTP invocation of audio-processor (fire-and-forget)
     import requests as http_req

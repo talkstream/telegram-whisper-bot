@@ -956,6 +956,7 @@ class AudioService:
             if not signed_url:
                 logging.warning("Failed to upload to OSS for diarization")
                 return None, []
+            logging.info(f"[diarize] backend={backend}, oss_key={oss_key}")
 
             self._safe_callback(progress_callback, "\U0001f504 Распознаю с диаризацией...")
 
@@ -1003,6 +1004,7 @@ class AudioService:
             # Step 3: Parse results
             speaker_segments = self._parse_speaker_segments(spk_result) if spk_result else []
             text_segments = self._parse_text_segments(txt_result) if txt_result else []
+            logging.info(f"[diarize] pass1_segments={len(speaker_segments)}, pass2_segments={len(text_segments)}")
 
             self._diarization_debug['spk_segments'] = len(speaker_segments)
             self._diarization_debug['txt_segments'] = len(text_segments)
@@ -1387,6 +1389,7 @@ class AudioService:
                 'end_time': current_end
             })
 
+        logging.info(f"[align] speaker_segments={len(speaker_segments)}, text_segments={len(text_segments)}, merged={len(merged)}")
         return merged
 
     def format_dialogue(self, segments: List[dict],
@@ -1449,7 +1452,9 @@ class AudioService:
             else:
                 lines.append(f"\u2014 {joined}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        logging.info(f"[dialogue] segments={len(segments)}, speakers={len(speaker_map)}, output_chars={len(result)}")
+        return result
 
     def get_diarization_debug(self) -> Optional[str]:
         """Format _diarization_debug dict into a human-readable text block for admin.
@@ -1989,6 +1994,7 @@ class AudioService:
 
             data = json.loads(result.stdout)
             duration = float(data['format']['duration'])
+            logging.info(f"[duration] {duration:.1f}s from {audio_path}")
             return duration
         except Exception as e:
             logging.warning(f"Could not get audio duration: {e}, using default 600s")
@@ -2069,7 +2075,7 @@ class AudioService:
         Priority: backend param → LLM_BACKEND env var → 'qwen'.
         """
         backend = backend or os.environ.get('LLM_BACKEND', 'qwen')
-        logging.info(f"LLM backend: {backend}")
+        logging.info(f"[llm] backend={backend}, is_dialogue={is_dialogue}, input_chars={len(text)}")
         if backend == 'assemblyai':
             result = self.format_text_with_assemblyai(
                 text, use_code_tags, use_yo, is_chunked, is_dialogue)
@@ -2148,7 +2154,7 @@ class AudioService:
 
             if response.status_code == 200:
                 data = response.json()
-                logging.info(f"Qwen response: {data}")
+                logging.debug(f"Qwen response: {data}")
 
                 # Extract text from response (prefer choices format —
                 # it separates reasoning_content from content)
@@ -2172,7 +2178,8 @@ class AudioService:
                     formatted_text = re.sub(r'<think>.*?</think>', '', formatted_text, flags=re.DOTALL).strip()
 
                 api_duration = time.time() - api_start_time
-                logging.info(f"Qwen LLM finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
+                usage = data.get('usage', {})
+                logging.info(f"[llm-qwen] output_chars={len(formatted_text)}, tokens_in={usage.get('input_tokens')}, tokens_out={usage.get('output_tokens')}, duration={api_duration:.2f}s")
 
                 # Remove code tags if present but not wanted
                 if not use_code_tags and formatted_text.startswith('<code>'):
@@ -2190,7 +2197,6 @@ class AudioService:
                 if self.metrics_service:
                     self.metrics_service.log_api_call('qwen-llm', api_duration, True)
 
-                logging.info("Successfully formatted text with Qwen LLM")
                 return formatted_text
             else:
                 if _is_fallback:
@@ -2267,15 +2273,23 @@ class AudioService:
 
             if response.status_code == 200:
                 data = response.json()
-                logging.info(f"AssemblyAI LLM response keys: {list(data.keys())}")
+                logging.debug(f"AssemblyAI LLM response keys: {list(data.keys())}")
 
                 formatted_text = ""
+                finish_reason = ''
                 if 'choices' in data and data['choices']:
                     formatted_text = data['choices'][0].get('message', {}).get('content', '')
+                    finish_reason = data['choices'][0].get('finish_reason', '')
 
                 formatted_text = formatted_text.strip()
                 api_duration = time.time() - api_start_time
-                logging.info(f"AssemblyAI LLM finished. Duration: {api_duration:.2f}s, Output chars: {len(formatted_text)}")
+                usage = data.get('usage', {})
+                logging.info(f"[llm-assemblyai] finish_reason={finish_reason}, output_chars={len(formatted_text)}, tokens_in={usage.get('prompt_tokens')}, tokens_out={usage.get('completion_tokens')}, duration={api_duration:.2f}s")
+
+                # Check for truncation (Gemini 3 Flash known issue)
+                if finish_reason == 'length':
+                    logging.warning(f"AssemblyAI LLM truncated (finish_reason=length), input={len(text)}ch, output={len(formatted_text)}ch. Returning original.")
+                    return text
 
                 # Remove code tags if present but not wanted
                 if not use_code_tags and formatted_text.startswith('<code>'):
@@ -2293,7 +2307,6 @@ class AudioService:
                 if self.metrics_service:
                     self.metrics_service.log_api_call('assemblyai-llm', api_duration, True)
 
-                logging.info("Successfully formatted text with AssemblyAI LLM")
                 return formatted_text
             else:
                 if _is_fallback:

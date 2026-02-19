@@ -219,6 +219,7 @@ def process_mns_message(event: Dict[str, Any]) -> Dict[str, Any]:
 
 def _download_and_convert(tg, audio, file_id, chat_id, progress_id):
     """Download file from Telegram and convert for ASR. Returns (local_path, converted_path)."""
+    logger.info(f"[download] start file_id={file_id}")
     if progress_id:
         tg.edit_message_text(chat_id, progress_id, "📥 Загружаю файл...")
     tg.send_chat_action(chat_id, 'typing')
@@ -239,6 +240,11 @@ def _download_and_convert(tg, audio, file_id, chat_id, progress_id):
     if not converted_path:
         raise Exception("Failed to convert audio to MP3")
 
+    try:
+        fsize = os.path.getsize(converted_path)
+    except OSError:
+        fsize = 0
+    logger.info(f"[download] done path={converted_path}, size={fsize}b")
     return local_path, converted_path
 
 
@@ -254,7 +260,9 @@ def _transcribe_simple(audio, tg, converted_path, chat_id, progress_id):
 
 def _transcribe(audio, tg, converted_path, actual_duration, chat_id, progress_id, speaker_labels):
     """Run ASR with optional diarization. Returns (text, is_dialogue)."""
-    if actual_duration >= DIARIZATION_THRESHOLD:
+    use_diarization = actual_duration >= DIARIZATION_THRESHOLD
+    logger.info(f"[transcribe] mode={'diarization' if use_diarization else 'simple'}, duration={actual_duration:.1f}s")
+    if use_diarization:
         raw_text, segments = audio.transcribe_with_diarization(
             converted_path,
             progress_callback=lambda stage: (
@@ -285,6 +293,8 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
                           tg, chat_id, progress_id):
     """Format transcribed text with LLM if needed. Returns formatted_text."""
     use_yo = settings.get('use_yo', True)
+    backend = settings.get('llm_backend', 'assemblyai' if is_dialogue else None) or os.environ.get('LLM_BACKEND', 'qwen')
+    logger.info(f"[format] is_dialogue={is_dialogue}, backend={backend}, input_chars={len(text)}")
 
     if is_dialogue:
         if len(text) > 100:
@@ -302,6 +312,7 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
             formatted = text
         if not use_yo:
             formatted = formatted.replace('ё', 'е').replace('Ё', 'Е')
+        logger.info(f"[format] done output_chars={len(formatted)}")
         return formatted
 
     if len(text) > 100:
@@ -312,22 +323,33 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
         audio_duration = audio.get_audio_duration(converted_path)
         is_chunked = audio_duration > audio.ASR_MAX_CHUNK_DURATION
 
-        return audio.format_text_with_llm(
+        formatted = audio.format_text_with_llm(
             text,
             use_code_tags=settings.get('use_code_tags', False),
             use_yo=use_yo,
             is_chunked=is_chunked,
             is_dialogue=False,
             backend=settings.get('llm_backend'))
+        logger.info(f"[format] done output_chars={len(formatted)}")
+        return formatted
 
     formatted = text
     if not use_yo:
         formatted = formatted.replace('ё', 'е').replace('Ё', 'Е')
+    logger.info(f"[format] done output_chars={len(formatted)}")
     return formatted
 
 
 def _deliver_result(tg, chat_id, progress_id, formatted_text, settings):
     """Deliver transcription result to user via appropriate method."""
+    long_text_mode = settings.get('long_text_mode', 'split')
+    if progress_id and len(formatted_text) <= 4000:
+        delivery_mode = 'edit'
+    elif long_text_mode == 'file':
+        delivery_mode = 'file'
+    else:
+        delivery_mode = 'split'
+    logger.info(f"[deliver] mode={delivery_mode}, chars={len(formatted_text)}, chat={chat_id}")
     use_code = settings.get('use_code_tags', False)
     if use_code:
         result_text = f"<code>{formatted_text}</code>"

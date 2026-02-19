@@ -167,6 +167,25 @@ class TestFormatTextWithAssemblyAI:
 
     @patch('requests.post')
     @patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'fake-key'})
+    def test_truncation_returns_original(self, mock_post):
+        """finish_reason='length' should return original text (truncation safety)."""
+        service = AudioService()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'choices': [{
+                'message': {'content': 'Truncated output...'},
+                'finish_reason': 'length'
+            }],
+            'usage': {'prompt_tokens': 1000, 'completion_tokens': 4096}
+        }
+        mock_post.return_value = mock_resp
+
+        result = service.format_text_with_assemblyai(LONG_TEXT)
+        assert result == LONG_TEXT  # Returns original, not truncated
+
+    @patch('requests.post')
+    @patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'fake-key'})
     def test_metrics_logging(self, mock_post):
         """Metrics should be logged with 'assemblyai-llm' key."""
         service = AudioService()

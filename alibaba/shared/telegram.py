@@ -139,6 +139,7 @@ class TelegramService:
             return self.send_message(chat_id, text, parse_mode, reply_markup)
 
         # Split at paragraph boundaries, then sentence boundaries
+        logging.info(f"[telegram] send_long chars={len(text)}, chat={chat_id}")
         parts = []
         remaining = text
         while remaining:
@@ -161,6 +162,7 @@ class TelegramService:
             parts.append(remaining[:split_pos].rstrip())
             remaining = remaining[split_pos:].lstrip()
 
+        logging.info(f"[telegram] split into {len(parts)} parts")
         last_result = None
         for part in parts:
             if part:
@@ -169,6 +171,7 @@ class TelegramService:
 
     def send_as_file(self, chat_id: int, text: str, caption: str = "") -> Optional[Dict[str, Any]]:
         """Send text as .txt file with optional caption."""
+        logging.info(f"[telegram] send_file chars={len(text)}, chat={chat_id}")
         tmp = tempfile.NamedTemporaryFile(
             mode='w', delete=False, suffix='.txt',
             encoding='utf-8', prefix='transcript_'
