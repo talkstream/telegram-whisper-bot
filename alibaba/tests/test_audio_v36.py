@@ -1395,6 +1395,67 @@ class TestDiarizeAssemblyAI:
         submit_call = mock_post.call_args_list[1]
         assert submit_call.kwargs['json']['speech_models'] == ['universal-2']
 
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.monotonic')
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_polling_timeout_returns_empty(self, mock_post, mock_get, mock_sleep,
+                                           mock_monotonic, audio_service):
+        """Polling timeout: always 'processing' → returns (None, []) after deadline."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_timeout'}),
+        ]
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {
+            'status': 'processing',
+        })
+        # Simulate wall-clock: first call sets deadline (0+240=240), then 250 > 240 → exit
+        mock_monotonic.side_effect = [0, 250]
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+        assert raw is None
+        assert segs == []
+        assert audio_service._diarization_debug['error'] == 'polling_timeout'
+
+    @patch('builtins.open', MagicMock(return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b'fake-audio'))),
+        __exit__=MagicMock(return_value=False)
+    )))
+    @patch('time.monotonic')
+    @patch('time.sleep')
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_polling_completes_on_time(self, mock_post, mock_get, mock_sleep,
+                                       mock_monotonic, audio_service):
+        """Polling completes after 3 polls (processing, processing, completed)."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'upload_url': 'https://cdn.assemblyai.com/upload/123'}),
+            MagicMock(status_code=200, json=lambda: {'id': 'tx_ok'}),
+        ]
+        mock_get.side_effect = [
+            MagicMock(status_code=200, json=lambda: {'status': 'processing'}),
+            MagicMock(status_code=200, json=lambda: {'status': 'processing'}),
+            MagicMock(status_code=200, json=lambda: {
+                'status': 'completed',
+                'text': 'Тест диаризации.',
+                'utterances': [
+                    {'speaker': 'A', 'text': 'Тест диаризации.', 'start': 0, 'end': 3000},
+                ]
+            }),
+        ]
+        # deadline call (0+240=240), then loop checks: 5, 10, 15 — all < 240
+        mock_monotonic.side_effect = [0, 5, 10, 15]
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            raw, segs = audio_service._diarize_assemblyai('/tmp/test.mp3')
+        assert raw == 'Тест диаризации.'
+        assert len(segs) == 1
+        assert segs[0]['speaker_id'] == 0
+        assert mock_get.call_count == 3
+
 
 # ============== Gemini Backend ==============
 

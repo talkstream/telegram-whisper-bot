@@ -666,7 +666,7 @@ class AudioService:
 
     def _diarize_assemblyai(self, audio_path: str, language: str = 'ru',
                             progress_callback=None) -> Tuple[Optional[str], List[dict]]:
-        """Diarization via AssemblyAI Universal-3-Pro.
+        """Diarization via AssemblyAI Universal-2.
 
         Workflow: upload file → submit transcription → poll until complete → parse utterances.
         Returns (raw_text, segments) or (None, []) on failure.
@@ -718,14 +718,14 @@ class AudioService:
             self._diarization_debug['transcript_id'] = transcript_id
 
             # Step 3: Poll until completed (exponential backoff: 1s → 2s → 4s → ... → 15s cap)
+            # Wall-clock deadline: 240s leaves 60s headroom for upload/submit/delivery within FC 300s limit
             poll_url = f'https://api.assemblyai.com/v2/transcript/{transcript_id}'
             poll_delay = 1
             max_poll_delay = 15
-            elapsed = 0
-            max_wait = 300  # 5 minutes total
-            while elapsed < max_wait:
+            max_wait = 240
+            deadline = time.monotonic() + max_wait
+            while time.monotonic() < deadline:
                 time.sleep(poll_delay)
-                elapsed += poll_delay
                 poll_resp = req.get(poll_url, headers=headers, timeout=15)
                 data = poll_resp.json()
                 status = data.get('status')
@@ -737,7 +737,7 @@ class AudioService:
                     return None, []
                 poll_delay = min(poll_delay * 2, max_poll_delay)
             else:
-                logging.warning("AssemblyAI polling timeout")
+                logging.warning(f"AssemblyAI polling timeout after {max_wait}s")
                 self._diarization_debug['error'] = 'polling_timeout'
                 return None, []
 
