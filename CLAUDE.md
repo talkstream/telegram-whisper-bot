@@ -151,8 +151,13 @@ alibaba/
 - **Fallback**: Qwen (`qwen3.5-397b-a17b`) — ONLY on API errors (4xx/5xx, connection failures)
 - **Timeout**: 300s — NO fallback on timeout (Gemini gets as much time as needed within FC budget)
 - **Backend selection**: `settings.get('llm_backend', 'assemblyai')` — default `assemblyai` everywhere
+- **Default in `format_text_with_llm()`**: `backend or os.environ.get('LLM_BACKEND', 'assemblyai')` — MUST be `assemblyai`
 - **Per-user override**: `/llm qwen` or `/llm assemblyai` — stored in user settings
+- **Speaker labels**: `speaker_labels` param flows through entire LLM pipeline → `_build_format_prompt`
+  - `speaker_labels=True`: prompt says "СОХРАНЯЙ метки Спикер N:"
+  - `speaker_labels=False`: prompt says "НЕ добавляй метки спикеров"
 - **CRITICAL**: Never reduce AssemblyAI timeout below 300s — Gemini responses take 30-50s typically
+- **CRITICAL**: Never tell LLM to remove speaker labels when `speaker_labels=True` — Rule 11 is adaptive
 
 ---
 

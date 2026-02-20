@@ -571,7 +571,8 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
                 formatted_text = audio_service.format_text_with_llm(
                     text, use_code_tags=use_code_tags, use_yo=use_yo,
                     is_chunked=is_chunked, is_dialogue=True,
-                    backend=settings.get('llm_backend', 'assemblyai'))  # Gemini 3 Flash default for dialogues
+                    backend=settings.get('llm_backend', 'assemblyai'),
+                    speaker_labels=settings.get('speaker_labels', False))
             else:
                 formatted_text = text
             if not use_yo:
@@ -583,7 +584,8 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             formatted_text = audio_service.format_text_with_llm(
                 text, use_code_tags=use_code_tags, use_yo=use_yo,
                 is_chunked=is_chunked, is_dialogue=is_dialogue,
-                backend=settings.get('llm_backend', 'assemblyai'))
+                backend=settings.get('llm_backend', 'assemblyai'),
+                speaker_labels=settings.get('speaker_labels', False))
         else:
             formatted_text = text
             if not use_yo:

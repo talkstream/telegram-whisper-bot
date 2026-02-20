@@ -449,8 +449,9 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
                           tg, chat_id, progress_id, progress=None):
     """Format transcribed text with LLM if needed. Returns formatted_text."""
     use_yo = settings.get('use_yo', True)
+    speaker_labels = settings.get('speaker_labels', False)
     backend = settings.get('llm_backend', 'assemblyai')
-    logger.info(f"[format] is_dialogue={is_dialogue}, backend={backend}, input_chars={len(text)}")
+    logger.info(f"[format] is_dialogue={is_dialogue}, speaker_labels={speaker_labels}, backend={backend}, input_chars={len(text)}")
 
     def llm_progress_callback(current, total):
         """Progress callback for chunked LLM formatting."""
@@ -474,7 +475,8 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
                 is_chunked=False,
                 is_dialogue=True,
                 backend=settings.get('llm_backend', 'assemblyai'),
-                progress_callback=llm_progress_callback)
+                progress_callback=llm_progress_callback,
+                speaker_labels=speaker_labels)
         else:
             formatted = text
         if not use_yo:
@@ -499,7 +501,8 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
             is_chunked=is_chunked,
             is_dialogue=False,
             backend=settings.get('llm_backend', 'assemblyai'),
-            progress_callback=llm_progress_callback)
+            progress_callback=llm_progress_callback,
+            speaker_labels=speaker_labels)
         logger.info(f"[format] done output_chars={len(formatted)}")
         return formatted
 

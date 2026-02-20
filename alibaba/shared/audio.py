@@ -2133,7 +2133,8 @@ class AudioService:
             return 600.0  # Default 10 minutes
             
     def _build_format_prompt(self, text: str, use_code_tags: bool, use_yo: bool,
-                              is_chunked: bool, is_dialogue: bool) -> str:
+                              is_chunked: bool, is_dialogue: bool,
+                              speaker_labels: bool = False) -> str:
         """Single source of truth for LLM formatting prompt."""
         code_tag_instruction = (
             "Оберни ВЕСЬ текст в теги <code></code>."
@@ -2156,7 +2157,20 @@ class AudioService:
                 "переходы — исправь эти артефакты склейки, обеспечив плавный непрерывный текст.\n"
             )
 
-        if is_dialogue:
+        if is_dialogue and speaker_labels:
+            extra_instructions += (
+                "11. ФОРМАТ ДИАЛОГА С МЕТКАМИ СПИКЕРОВ: текст уже отформатирован как диалог "
+                "с метками «Спикер N:» и тире (\u2014). "
+                "ОБЯЗАТЕЛЬНО СОХРАНЯЙ все метки «Спикер N:» — они должны остаться в тексте как есть. "
+                "Некоторые реплики могут быть распределены с ошибками, поэтому осмысли весь диалог "
+                "и внеси коррективы там, где ты точно уверен, что исправление требуется. "
+                "Например, это касается спорных моментов с разрывом фраз одного и того же спикера. "
+                "НЕ меняй порядок реплик. НЕ добавляй пустые строки между репликами — "
+                "каждая реплика начинается с новой строки сразу после предыдущей, без отступов. "
+                "Правило 4 (абзацы) к диалогу НЕ применяется. "
+                "Также исправь пунктуацию и артефакты ASR внутри каждого блока.\n"
+            )
+        elif is_dialogue:
             extra_instructions += (
                 "11. ФОРМАТ ДИАЛОГА: текст уже отформатирован как диалог с тире (\u2014). "
                 "Некоторые реплики могут быть распределены с ошибками, поэтому осмысли весь диалог "
@@ -2269,7 +2283,8 @@ class AudioService:
 
     def _format_text_chunked(self, text: str, use_code_tags: bool, use_yo: bool,
                               is_chunked: bool, is_dialogue: bool, backend: str,
-                              progress_callback=None) -> str:
+                              progress_callback=None,
+                              speaker_labels: bool = False) -> str:
         """Format long text chunk-by-chunk, reassemble.
 
         Each chunk is sent to LLM independently. Overlap markers ([...]) are
@@ -2294,10 +2309,12 @@ class AudioService:
             # Format individual chunk
             if backend == 'assemblyai':
                 result = self.format_text_with_assemblyai(
-                    chunk, use_code_tags, use_yo, is_chunked, is_dialogue)
+                    chunk, use_code_tags, use_yo, is_chunked, is_dialogue,
+                    speaker_labels=speaker_labels)
             else:
                 result = self.format_text_with_qwen(
-                    chunk, use_code_tags, use_yo, is_chunked, is_dialogue)
+                    chunk, use_code_tags, use_yo, is_chunked, is_dialogue,
+                    speaker_labels=speaker_labels)
 
             # LLM output validation — hallucination guard
             if len(result) < len(chunk) * 0.4:
@@ -2322,27 +2339,31 @@ class AudioService:
                               use_yo: bool = True, is_chunked: bool = False,
                               is_dialogue: bool = False,
                               backend: str | None = None,
-                              progress_callback=None) -> str:
+                              progress_callback=None,
+                              speaker_labels: bool = False) -> str:
         """Route LLM formatting to configured backend.
 
-        Priority: backend param → LLM_BACKEND env var → 'qwen'.
+        Priority: backend param → LLM_BACKEND env var → 'assemblyai'.
         For long texts (> LLM_CHUNK_THRESHOLD), splits into semantic chunks.
         """
-        backend = backend or os.environ.get('LLM_BACKEND', 'qwen')
-        logging.info(f"[llm] backend={backend}, is_dialogue={is_dialogue}, input_chars={len(text)}")
+        backend = backend or os.environ.get('LLM_BACKEND', 'assemblyai')
+        logging.info(f"[llm] backend={backend}, is_dialogue={is_dialogue}, speaker_labels={speaker_labels}, input_chars={len(text)}")
 
         # Smart chunking for long texts
         if len(text) > self.LLM_CHUNK_THRESHOLD:
             logging.info(f"[llm] chunking: {len(text)} chars > {self.LLM_CHUNK_THRESHOLD} threshold")
             result = self._format_text_chunked(
                 text, use_code_tags, use_yo, is_chunked, is_dialogue,
-                backend, progress_callback=progress_callback)
+                backend, progress_callback=progress_callback,
+                speaker_labels=speaker_labels)
         elif backend == 'assemblyai':
             result = self.format_text_with_assemblyai(
-                text, use_code_tags, use_yo, is_chunked, is_dialogue)
-        else:  # 'qwen' default
+                text, use_code_tags, use_yo, is_chunked, is_dialogue,
+                speaker_labels=speaker_labels)
+        else:  # 'qwen' fallback
             result = self.format_text_with_qwen(
-                text, use_code_tags, use_yo, is_chunked, is_dialogue)
+                text, use_code_tags, use_yo, is_chunked, is_dialogue,
+                speaker_labels=speaker_labels)
 
         # Fix spaced ellipsis from ASR artifacts (". . ." → "...")
         import re
@@ -2352,7 +2373,8 @@ class AudioService:
     def format_text_with_qwen(self, text: str, use_code_tags: bool = False,
                                use_yo: bool = True, is_chunked: bool = False,
                                is_dialogue: bool = False,
-                               _is_fallback: bool = False) -> str:
+                               _is_fallback: bool = False,
+                               speaker_labels: bool = False) -> str:
         """
         Format transcribed text using Qwen LLM (Alibaba) via REST API.
         Falls back to AssemblyAI LLM Gateway if Qwen fails.
@@ -2364,6 +2386,7 @@ class AudioService:
             is_chunked: Whether text was assembled from multiple ASR chunks
             is_dialogue: Whether text is a multi-speaker dialogue
             _is_fallback: Whether this is already a fallback call (prevents loops)
+            speaker_labels: Whether text contains speaker labels to preserve
 
         Returns:
             Formatted text
@@ -2376,7 +2399,8 @@ class AudioService:
             logging.info(f"Text too short for LLM formatting ({word_count} words < 10), returning original")
             return text
 
-        prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+        prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue,
+                                               speaker_labels=speaker_labels)
 
         api_start_time = time.time()
 
@@ -2387,7 +2411,7 @@ class AudioService:
                     logging.warning("DASHSCOPE_API_KEY not set, returning original text")
                     return text
                 logging.warning("DASHSCOPE_API_KEY not set, falling back to AssemblyAI")
-                return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+                return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
             logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
 
@@ -2456,7 +2480,7 @@ class AudioService:
                         logging.warning("Qwen returned very short text, returning original")
                         return text
                     logging.warning("Qwen returned very short text, trying AssemblyAI fallback")
-                    return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+                    return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
                 # Log API call metrics
                 if self.metrics_service:
@@ -2468,14 +2492,14 @@ class AudioService:
                     logging.warning(f"Qwen API error: {response.status_code} - {response.text}, returning original text")
                     return text
                 logging.warning(f"Qwen API error: {response.status_code} - {response.text}, trying AssemblyAI fallback")
-                return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+                return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
         except requests.RequestException as e:
             if _is_fallback:
                 logging.warning(f"Qwen API request failed: {e}, returning original text")
                 return text
             logging.warning(f"Qwen API request failed: {e}, falling back to AssemblyAI")
-            return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+            return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
         except Exception as e:
             api_duration = time.time() - api_start_time
@@ -2486,12 +2510,13 @@ class AudioService:
                 logging.warning(f"Qwen LLM failed: {e}, returning original text")
                 return text
             logging.warning(f"Qwen LLM failed: {e}, falling back to AssemblyAI")
-            return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+            return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
     def format_text_with_assemblyai(self, text: str, use_code_tags: bool = False,
                                       use_yo: bool = True, is_chunked: bool = False,
                                       is_dialogue: bool = False,
-                                      _is_fallback: bool = False) -> str:
+                                      _is_fallback: bool = False,
+                                      speaker_labels: bool = False) -> str:
         """
         Format transcribed text using AssemblyAI LLM Gateway (Gemini 3 Flash).
         Falls back to Qwen if this fails (unless already a fallback call).
@@ -2513,9 +2538,10 @@ class AudioService:
                     logging.warning("ASSEMBLYAI_API_KEY not set, returning original text")
                     return text
                 logging.warning("ASSEMBLYAI_API_KEY not set, falling back to Qwen")
-                return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+                return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
-            prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue)
+            prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue,
+                                                   speaker_labels=speaker_labels)
 
             logging.info(f"Starting AssemblyAI LLM request (Gemini 3 Flash). Input chars: {len(text)}")
 
@@ -2570,7 +2596,7 @@ class AudioService:
                         logging.warning("AssemblyAI LLM returned very short text, returning original")
                         return text
                     logging.warning("AssemblyAI LLM returned very short text, trying Qwen fallback")
-                    return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+                    return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
                 # Log API call metrics
                 if self.metrics_service:
@@ -2582,7 +2608,7 @@ class AudioService:
                     logging.warning(f"AssemblyAI LLM API error: {response.status_code} - {response.text}, returning original text")
                     return text
                 logging.warning(f"AssemblyAI LLM API error: {response.status_code} - {response.text}, trying Qwen fallback")
-                return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+                return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
         except requests.exceptions.Timeout as e:
             # Timeout is NOT a reason to fallback — Gemini needs time, return original
@@ -2597,7 +2623,7 @@ class AudioService:
                 logging.warning(f"AssemblyAI LLM request failed: {e}, returning original text")
                 return text
             logging.warning(f"AssemblyAI LLM request failed: {e}, falling back to Qwen")
-            return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+            return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
         except Exception as e:
             api_duration = time.time() - api_start_time
@@ -2608,7 +2634,7 @@ class AudioService:
                 logging.warning(f"AssemblyAI LLM failed: {e}, returning original text")
                 return text
             logging.warning(f"AssemblyAI LLM failed: {e}, falling back to Qwen")
-            return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+            return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
     def is_video_file(self, file_path: str) -> bool:
         """

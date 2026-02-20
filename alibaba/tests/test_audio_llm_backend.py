@@ -210,14 +210,14 @@ class TestFormatTextWithLLMRouter:
     """Test LLM backend routing."""
 
     @patch.dict(os.environ, {}, clear=False)
-    def test_default_routes_to_qwen(self, audio_service):
-        """No LLM_BACKEND env var → Qwen."""
+    def test_default_routes_to_assemblyai(self, audio_service):
+        """No LLM_BACKEND env var → AssemblyAI (Gemini 3 Flash)."""
         os.environ.pop('LLM_BACKEND', None)
 
-        with patch.object(audio_service, 'format_text_with_qwen', return_value='qwen') as mock_q:
+        with patch.object(audio_service, 'format_text_with_assemblyai', return_value='aai') as mock_a:
             result = audio_service.format_text_with_llm(LONG_TEXT)
-            mock_q.assert_called_once()
-            assert result == 'qwen'
+            mock_a.assert_called_once()
+            assert result == 'aai'
 
     @patch.dict(os.environ, {'LLM_BACKEND': 'assemblyai'})
     def test_assemblyai_backend(self, audio_service):
@@ -237,15 +237,15 @@ class TestFormatTextWithLLMRouter:
 
     @patch.dict(os.environ, {}, clear=False)
     def test_all_params_forwarded(self, audio_service):
-        """All parameters should be forwarded to backend."""
+        """All parameters should be forwarded to backend (default: assemblyai)."""
         os.environ.pop('LLM_BACKEND', None)
 
-        with patch.object(audio_service, 'format_text_with_qwen', return_value='ok') as mock_q:
+        with patch.object(audio_service, 'format_text_with_assemblyai', return_value='ok') as mock_a:
             audio_service.format_text_with_llm(
                 LONG_TEXT, use_code_tags=True, use_yo=False,
-                is_chunked=True, is_dialogue=True)
-            mock_q.assert_called_once_with(
-                LONG_TEXT, True, False, True, True)
+                is_chunked=True, is_dialogue=True, speaker_labels=True)
+            mock_a.assert_called_once_with(
+                LONG_TEXT, True, False, True, True, speaker_labels=True)
 
     @patch.dict(os.environ, {'LLM_BACKEND': 'qwen'})
     def test_backend_param_overrides_env(self, audio_service):
