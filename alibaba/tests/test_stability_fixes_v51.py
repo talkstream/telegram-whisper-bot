@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Unit tests for v5.1.0 stability fixes:
-- JSON parsing guards in DashScope polling
+- JSON parsing guards (DashScope polling, ASR, Gemini diarization, LLM)
 - content-length parsing guard
 - OSS cleanup on job creation failure
 - Balance reservation (atomic deduction at queue time)
 - LLM fallback timeout (20s)
 - MIME validation on cloud drive import
 - Signed URL expiry (30 min)
-- DashScope session pooling
+- DashScope session pooling (ASR + LLM methods)
 
 Run with: python -m pytest alibaba/tests/test_stability_fixes_v51.py -v
 """
@@ -165,6 +165,83 @@ class TestJsonParsingGuard:
             debug_prefix='pass1'
         )
         assert result is None
+
+
+class TestJsonGuardsGemini:
+    """Gemini diarization JSON guard."""
+
+    def test_gemini_diarization_malformed_json(self, audio_service):
+        """Gemini diarization: malformed JSON → returns (None, [])."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.side_effect = ValueError("Invalid JSON")
+
+        with patch('requests.post', return_value=mock_resp), \
+             patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            result = audio_service._diarize_gemini('/tmp/test.mp3')
+            assert result == (None, [])
+
+
+class TestJsonGuardsAsr:
+    """Qwen ASR JSON guards."""
+
+    @patch('requests.post')
+    def test_qwen_asr_200_malformed_json(self, mock_post, audio_service, tmp_path):
+        """Qwen ASR: 200 but malformed JSON → RuntimeError."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b'\xff\xfb\x90\x00' * 100)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.side_effect = ValueError("No JSON")
+        mock_post.return_value = mock_resp
+
+        with pytest.raises(RuntimeError, match="malformed JSON"):
+            audio_service._transcribe_single_qwen_asr(str(audio_file))
+
+    @patch('requests.post')
+    def test_qwen_asr_error_malformed_json(self, mock_post, audio_service, tmp_path):
+        """Qwen ASR: non-200 with malformed error body → still raises RuntimeError."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b'\xff\xfb\x90\x00' * 100)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+        mock_resp.json.side_effect = ValueError("No JSON")
+        mock_post.return_value = mock_resp
+
+        with pytest.raises(RuntimeError, match="API error"):
+            audio_service._transcribe_single_qwen_asr(str(audio_file))
+
+
+class TestJsonGuardsLlm:
+    """LLM JSON guards (Qwen + AssemblyAI)."""
+
+    @patch('requests.post')
+    def test_qwen_llm_malformed_json_returns_original(self, mock_post, audio_service):
+        """Qwen LLM: malformed JSON → return original text."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.side_effect = ValueError("No JSON")
+        mock_post.return_value = mock_resp
+
+        original = "Тестовый текст для форматирования который достаточно длинный чтобы пройти проверку минимума слов"
+        result = audio_service.format_text_with_qwen(original)
+        assert result == original
+
+    @patch('requests.post')
+    def test_assemblyai_llm_malformed_json_returns_original(self, mock_post, audio_service):
+        """AssemblyAI LLM: malformed JSON → return original text."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.side_effect = ValueError("No JSON")
+        mock_post.return_value = mock_resp
+
+        original = "Тестовый текст для форматирования который достаточно длинный чтобы пройти проверку минимума слов"
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            result = audio_service.format_text_with_assemblyai(original)
+        assert result == original
 
 
 # === Tier 1.2: Content-Length Parsing Guard Tests ===
@@ -433,35 +510,25 @@ class TestBalanceReservation:
 class TestLlmFallbackTimeout:
     """AssemblyAI LLM timeout should be 20s (not 60s)."""
 
-    def test_assemblyai_timeout_is_20s(self):
+    @patch('requests.post')
+    def test_assemblyai_timeout_is_20s(self, mock_post, audio_service):
         """Verify timeout=20 in format_text_with_assemblyai request."""
-        from audio import AudioService
-        svc = AudioService(whisper_backend='qwen-asr', alibaba_api_key='test-key')
-
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
             'choices': [{'message': {'content': 'formatted text'}, 'finish_reason': 'stop'}],
             'usage': {}
         }
-
-        # format_text_with_assemblyai does `import requests` then `requests.post()`
-        import audio as audio_mod
-        original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
+        mock_post.return_value = mock_resp
 
         with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
-            mock_requests = MagicMock()
-            mock_requests.post.return_value = mock_resp
-            mock_requests.RequestException = Exception
+            audio_service.format_text_with_assemblyai(
+                "This is a long enough text for formatting with enough words to pass minimum check threshold here",
+                _is_fallback=True
+            )
 
-            with patch.dict('sys.modules', {'requests': mock_requests}):
-                # Need to call fresh since requests is cached
-                result = svc.format_text_with_assemblyai(
-                    "This is a long enough text for formatting with enough words to pass minimum check threshold here",
-                    _is_fallback=True
-                )
-                _, kwargs = mock_requests.post.call_args
-                assert kwargs['timeout'] == 20
+        _, kwargs = mock_post.call_args
+        assert kwargs.get('timeout') == 20
 
 
 # === Tier 2.3: MIME Validation Tests ===
@@ -684,3 +751,20 @@ class TestSessionPooling:
         # Verify session.get was used for poll + transcription
         assert mock_session.get.call_count == 2
         assert result is not None
+
+    @patch('requests.post')
+    def test_qwen_asr_uses_requests_post(self, mock_post, audio_service, tmp_path):
+        """Qwen ASR should use requests.post (not session) for single calls."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b'\xff\xfb\x90\x00' * 100)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'output': {'choices': [{'message': {'content': [{'text': 'Распознанный текст'}]}}]}
+        }
+        mock_post.return_value = mock_resp
+
+        result = audio_service._transcribe_single_qwen_asr(str(audio_file))
+        mock_post.assert_called_once()
+        assert result == 'Распознанный текст'

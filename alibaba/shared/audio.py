@@ -853,7 +853,11 @@ class AudioService:
                 return None, []
 
             # Parse structured JSON response
-            result = response.json()
+            try:
+                result = response.json()
+            except (ValueError, KeyError):
+                logging.warning("Gemini diarization: malformed JSON response")
+                return None, []
             candidates = result.get('candidates', [])
             if not candidates:
                 logging.warning(f"Gemini diarization: empty candidates in response")
@@ -1836,7 +1840,11 @@ class AudioService:
             logging.info(f"API response received in {duration:.2f}s, status: {response.status_code}")
 
             if response.status_code == 200:
-                data = response.json()
+                try:
+                    data = response.json()
+                except (ValueError, KeyError):
+                    logging.warning("Qwen3-ASR: malformed JSON response")
+                    raise RuntimeError("Qwen3-ASR: malformed JSON response")
                 logging.info(f"Response: {str(data)[:500]}...")
 
                 # Extract transcription from response
@@ -1877,7 +1885,10 @@ class AudioService:
 
             else:
                 # API error
-                error_data = response.json() if response.text else {}
+                try:
+                    error_data = response.json() if response.text else {}
+                except (ValueError, KeyError):
+                    error_data = {'raw': response.text[:200]}
                 error_code = error_data.get('code', response.status_code)
                 error_msg = error_data.get('message', response.text[:200])
                 logging.error(f"Qwen3-ASR API error: {error_code} - {error_msg}")
@@ -2403,7 +2414,11 @@ class AudioService:
             response = requests.post(url, headers=headers, json=payload, timeout=60)
 
             if response.status_code == 200:
-                data = response.json()
+                try:
+                    data = response.json()
+                except (ValueError, KeyError):
+                    logging.warning("Qwen LLM: malformed JSON response, returning original text")
+                    return text
                 logging.debug(f"Qwen response: {data}")
 
                 # Extract text from response (prefer choices format —
@@ -2522,7 +2537,11 @@ class AudioService:
             response = requests.post(url, headers=headers, json=payload, timeout=20)
 
             if response.status_code == 200:
-                data = response.json()
+                try:
+                    data = response.json()
+                except (ValueError, KeyError):
+                    logging.warning("AssemblyAI LLM: malformed JSON response, returning original text")
+                    return text
                 logging.debug(f"AssemblyAI LLM response keys: {list(data.keys())}")
 
                 formatted_text = ""
