@@ -236,15 +236,16 @@ class TestServeUploadPage:
         assert 'text/html' in result['headers']['Content-Type']
         assert '<!DOCTYPE html>' in result['body']
 
-    def test_shows_telegram_instruction(self):
+    def test_shows_branded_splash(self):
         import main
         result = main._serve_upload_page()
-        assert '/upload' in result['body']
+        assert 'editorialsrobot' in result['body']
+        assert 'tg.close()' in result['body']
 
     def test_cache_headers(self):
         import main
         result = main._serve_upload_page()
-        assert result['headers']['Cache-Control'] == 'no-store'
+        assert 'no-store' in result['headers']['Cache-Control']
 
 
 # === Mini App: _validate_init_data ===

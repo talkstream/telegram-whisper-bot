@@ -2374,25 +2374,154 @@ function showError(msg) { statusEl.textContent = msg; statusEl.classList.add('er
 </html>"""
 
 
-def _serve_upload_page():
-    """Fallback page for direct browser access to /upload.
+SPLASH_PAGE_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="color-scheme" content="light dark">
+<title>Говори-говори</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+var tg = null;
+try { tg = window.Telegram.WebApp; tg.ready(); tg.expand(); } catch(e) {}
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;
+  background:var(--tg-theme-bg-color,#fff);
+  color:var(--tg-theme-text-color,#000);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  -webkit-font-smoothing:antialiased;
+}
 
-    The actual Mini App is hosted on OSS (no Content-Disposition: attachment)
-    and accessed via web_app button from /upload command.
+/* Animated waveform */
+.wave-wrap{width:120px;height:80px;display:flex;align-items:center;justify-content:center;gap:5px;
+  opacity:0;transform:scale(0.7);animation:wave-in 0.8s cubic-bezier(0.16,1,0.3,1) 0.2s forwards}
+.wave-bar{width:4px;border-radius:3px;
+  background:var(--tg-theme-button-color,#3390ec);
+  animation:wave-pulse 1.2s ease-in-out infinite;will-change:transform}
+.wave-bar:nth-child(1){height:20px;animation-delay:0s}
+.wave-bar:nth-child(2){height:35px;animation-delay:0.15s}
+.wave-bar:nth-child(3){height:50px;animation-delay:0.3s}
+.wave-bar:nth-child(4){height:40px;animation-delay:0.45s}
+.wave-bar:nth-child(5){height:55px;animation-delay:0.1s}
+.wave-bar:nth-child(6){height:30px;animation-delay:0.35s}
+.wave-bar:nth-child(7){height:45px;animation-delay:0.2s}
+.wave-bar:nth-child(8){height:25px;animation-delay:0.5s}
+.wave-bar:nth-child(9){height:15px;animation-delay:0.4s}
+
+@keyframes wave-pulse{
+  0%,100%{transform:scaleY(0.4);opacity:0.5}
+  50%{transform:scaleY(1);opacity:1}
+}
+@keyframes wave-in{
+  to{opacity:1;transform:scale(1)}
+}
+
+/* Brand */
+.brand{text-align:center;opacity:0;transform:translateY(20px);
+  animation:fade-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.6s forwards}
+.brand h1{font-size:28px;font-weight:700;letter-spacing:-0.5px;
+  margin:24px 0 8px}
+.brand .tagline{font-size:15px;color:var(--tg-theme-hint-color,#999);
+  line-height:1.4;max-width:260px;margin:0 auto}
+
+/* Features */
+.features{display:flex;gap:24px;margin-top:36px;opacity:0;transform:translateY(16px);
+  animation:fade-up 0.6s cubic-bezier(0.16,1,0.3,1) 1s forwards}
+.feat{text-align:center;flex:1}
+.feat-icon{font-size:24px;margin-bottom:6px}
+.feat-label{font-size:12px;color:var(--tg-theme-hint-color,#999);line-height:1.3}
+
+/* Subtle gradient accent */
+.glow{position:fixed;width:300px;height:300px;border-radius:50%;
+  background:var(--tg-theme-button-color,#3390ec);opacity:0.06;
+  filter:blur(80px);pointer-events:none;z-index:-1;
+  animation:glow-drift 8s ease-in-out infinite alternate}
+.glow-1{top:-100px;left:-80px}
+.glow-2{bottom:-100px;right:-80px;animation-delay:4s}
+
+@keyframes glow-drift{
+  0%{transform:translate(0,0)}
+  100%{transform:translate(30px,20px)}
+}
+
+@keyframes fade-up{
+  to{opacity:1;transform:translateY(0)}
+}
+
+/* Footer */
+.foot{position:fixed;bottom:24px;left:0;right:0;text-align:center;
+  font-size:12px;color:var(--tg-theme-hint-color,#999);opacity:0;
+  animation:fade-up 0.5s ease 1.4s forwards}
+.foot a{color:var(--tg-theme-link-color,#3390ec);text-decoration:none}
+</style>
+</head>
+<body>
+
+<div class="glow glow-1"></div>
+<div class="glow glow-2"></div>
+
+<div class="wave-wrap">
+  <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+  <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+  <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+</div>
+
+<div class="brand">
+  <h1>Говори-говори</h1>
+  <p class="tagline">Расшифровка аудио в текст для медиа, редакций и бизнеса</p>
+</div>
+
+<div class="features">
+  <div class="feat">
+    <div class="feat-icon">🎙</div>
+    <div class="feat-label">Интервью<br>и совещания</div>
+  </div>
+  <div class="feat">
+    <div class="feat-icon">👥</div>
+    <div class="feat-label">Спикеры<br>и диалоги</div>
+  </div>
+  <div class="feat">
+    <div class="feat-icon">✨</div>
+    <div class="feat-label">AI-обработка<br>текста</div>
+  </div>
+</div>
+
+<div class="foot">@editorialsrobot</div>
+
+<script>
+if (tg && tg.MainButton) {
+  tg.MainButton.setText('Перейти в бот');
+  tg.MainButton.color = tg.themeParams.button_color || '#3390ec';
+  tg.MainButton.textColor = tg.themeParams.button_text_color || '#fff';
+  tg.MainButton.show();
+  tg.MainButton.onClick(function() { tg.close(); });
+}
+// Auto-close after 5s if user doesn't interact
+if (tg) { setTimeout(function() { tg.close(); }, 5000); }
+</script>
+</body>
+</html>"""
+
+
+def _serve_upload_page():
+    """Splash screen for Mini App opened via 'Open App' button.
+
+    Upload functionality is on GitHub Pages (accessed via /upload command).
+    This page serves as a branded landing with auto-redirect to bot chat.
     """
     return {
         'statusCode': 200,
         'headers': {
             'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-store',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Pragma': 'no-cache',
         },
-        'body': '<!DOCTYPE html><html><head><meta charset="utf-8">'
-                '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-                '<title>Upload Audio</title></head>'
-                '<body style="font-family:sans-serif;text-align:center;padding:40px">'
-                '<h2>\U0001f4ce Upload Audio</h2>'
-                '<p>Используйте команду /upload в Telegram боте.</p>'
-                '</body></html>'
+        'body': SPLASH_PAGE_HTML
     }
 
 
