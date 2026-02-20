@@ -449,7 +449,7 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
                           tg, chat_id, progress_id, progress=None):
     """Format transcribed text with LLM if needed. Returns formatted_text."""
     use_yo = settings.get('use_yo', True)
-    backend = settings.get('llm_backend', 'assemblyai' if is_dialogue else None) or os.environ.get('LLM_BACKEND', 'qwen')
+    backend = settings.get('llm_backend', 'assemblyai')
     logger.info(f"[format] is_dialogue={is_dialogue}, backend={backend}, input_chars={len(text)}")
 
     def llm_progress_callback(current, total):
@@ -498,7 +498,7 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
             use_yo=use_yo,
             is_chunked=is_chunked,
             is_dialogue=False,
-            backend=settings.get('llm_backend'),
+            backend=settings.get('llm_backend', 'assemblyai'),
             progress_callback=llm_progress_callback)
         logger.info(f"[format] done output_chars={len(formatted)}")
         return formatted

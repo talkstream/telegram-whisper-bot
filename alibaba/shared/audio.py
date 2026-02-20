@@ -2534,7 +2534,7 @@ class AudioService:
                 'max_tokens': 8192
             }
 
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
 
             if response.status_code == 200:
                 try:

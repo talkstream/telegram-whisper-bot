@@ -562,7 +562,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
         audio_duration = audio_service.get_audio_duration(converted_path)
         is_chunked = audio_duration > audio_service.ASR_MAX_CHUNK_DURATION
 
-        # Format text with Qwen LLM (with Gemini fallback)
+        # Format text with Gemini 3 Flash LLM (with Qwen fallback)
         if is_dialogue:
             if len(text) > 100:
                 if status_message_id:
@@ -583,7 +583,7 @@ def process_audio_sync(message: Dict[str, Any], user: Dict[str, Any],
             formatted_text = audio_service.format_text_with_llm(
                 text, use_code_tags=use_code_tags, use_yo=use_yo,
                 is_chunked=is_chunked, is_dialogue=is_dialogue,
-                backend=settings.get('llm_backend'))
+                backend=settings.get('llm_backend', 'assemblyai'))
         else:
             formatted_text = text
             if not use_yo:

@@ -5,7 +5,7 @@ Unit tests for v5.1.0 stability fixes:
 - content-length parsing guard
 - OSS cleanup on job creation failure
 - Balance reservation (atomic deduction at queue time)
-- LLM fallback timeout (20s)
+- LLM fallback timeout (60s)
 - MIME validation on cloud drive import
 - Signed URL expiry (30 min)
 - DashScope session pooling (ASR + LLM methods)
@@ -508,11 +508,11 @@ class TestBalanceReservation:
 # === Tier 2.2: LLM Fallback Timeout Tests ===
 
 class TestLlmFallbackTimeout:
-    """AssemblyAI LLM timeout should be 20s (not 60s)."""
+    """AssemblyAI LLM timeout should be 60s for Gemini 3 Flash."""
 
     @patch('requests.post')
-    def test_assemblyai_timeout_is_20s(self, mock_post, audio_service):
-        """Verify timeout=20 in format_text_with_assemblyai request."""
+    def test_assemblyai_timeout_is_60s(self, mock_post, audio_service):
+        """Verify timeout=60 in format_text_with_assemblyai request."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -528,7 +528,7 @@ class TestLlmFallbackTimeout:
             )
 
         _, kwargs = mock_post.call_args
-        assert kwargs.get('timeout') == 20
+        assert kwargs.get('timeout') == 60
 
 
 # === Tier 2.3: MIME Validation Tests ===
