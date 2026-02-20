@@ -289,8 +289,8 @@ class TestContentLengthGuard:
 class TestOssCleanup:
     """OSS objects should be cleaned up when job creation fails."""
 
-    def test_oss_cleanup_on_mns_failure(self):
-        """MNS publish failure → OSS object deleted."""
+    def test_oss_cleanup_on_queue_failure(self):
+        """No async processor available → OSS object deleted."""
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'webhook-handler'))
 
         mock_db = MagicMock()
@@ -301,32 +301,23 @@ class TestOssCleanup:
         mock_tg.send_message.return_value = {'ok': True, 'result': {'message_id': 42}}
 
         mock_bucket = MagicMock()
-        mock_publisher = MagicMock()
-        mock_publisher.publish.return_value = False  # MNS publish fails
 
         mock_oss2 = MagicMock()
         mock_oss2.Auth.return_value = MagicMock()
         mock_oss2.StsAuth.return_value = MagicMock()
         mock_oss2.Bucket.return_value = mock_bucket
 
-        mock_mns_service = MagicMock()
-        mock_mns_publisher_cls = MagicMock(return_value=mock_publisher)
-
         with patch('main.get_db_service', return_value=mock_db), \
              patch('main.get_telegram_service', return_value=mock_tg), \
              patch('main._validate_init_data', return_value=12345), \
-             patch('main.MNS_ENDPOINT', 'https://mns.test.com'), \
-             patch('main.ALIBABA_ACCESS_KEY', 'test-ak'), \
-             patch('main.ALIBABA_SECRET_KEY', 'test-sk'), \
+             patch('main.MNS_ENDPOINT', ''), \
+             patch('main.ALIBABA_ACCESS_KEY', ''), \
+             patch('main.ALIBABA_SECRET_KEY', ''), \
              patch('main.ALIBABA_SECURITY_TOKEN', None), \
-             patch.dict('sys.modules', {
-                 'oss2': mock_oss2,
-                 'services.mns_service': MagicMock(
-                     MNSService=mock_mns_service,
-                     MNSPublisher=mock_mns_publisher_cls
-                 ),
-             }):
+             patch.dict(os.environ, {'AUDIO_PROCESSOR_URL': ''}, clear=False), \
+             patch.dict('sys.modules', {'oss2': mock_oss2}):
 
+            os.environ.pop('AUDIO_PROCESSOR_URL', None)
             from main import _handle_process_upload
             result = _handle_process_upload(
                 {'init_data': 'valid', 'oss_key': 'uploads/12345/abc.mp3',

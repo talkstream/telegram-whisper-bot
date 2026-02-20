@@ -227,7 +227,7 @@ class TestHandleUrlImport:
 # === Mini App: _serve_upload_page ===
 
 class TestServeUploadPage:
-    """Test Mini App HTML serving."""
+    """Test Mini App fallback page for direct browser access."""
 
     def test_returns_html(self):
         import main
@@ -236,16 +236,15 @@ class TestServeUploadPage:
         assert 'text/html' in result['headers']['Content-Type']
         assert '<!DOCTYPE html>' in result['body']
 
-    def test_contains_telegram_webapp_js(self):
+    def test_shows_telegram_instruction(self):
         import main
         result = main._serve_upload_page()
-        assert 'telegram-web-app.js' in result['body']
+        assert '/upload' in result['body']
 
-    def test_contains_drop_zone(self):
+    def test_cache_headers(self):
         import main
         result = main._serve_upload_page()
-        assert 'dropZone' in result['body']
-        assert '500 МБ' in result['body']
+        assert result['headers']['Cache-Control'] == 'no-store'
 
 
 # === Mini App: _validate_init_data ===
@@ -415,23 +414,22 @@ class TestHandleProcessUpload:
         assert job['file_id'] == 'uploads/123/abc.mp3'
         assert job['duration'] == 0
 
-    def test_mns_publish_failure_returns_500(self):
+    def test_no_async_processor_returns_500(self):
+        """Neither AUDIO_PROCESSOR_URL nor MNS configured → 500."""
         import main
         body = {'init_data': 'valid', 'oss_key': 'uploads/123/abc.mp3', 'filename': 'test.mp3'}
         tg = MagicMock()
         tg.send_message.return_value = {'ok': True, 'result': {'message_id': 42}}
         db = MagicMock()
-        mock_publisher = MagicMock()
-        mock_publisher.publish.return_value = False
-        mock_pub_cls = MagicMock(return_value=mock_publisher)
         with patch.object(main, '_validate_init_data', return_value=123), \
              patch.object(main, 'get_telegram_service', return_value=tg), \
              patch.object(main, 'get_db_service', return_value=db), \
-             patch.object(main, 'MNS_ENDPOINT', 'https://mns.test'), \
-             patch.object(main, 'ALIBABA_ACCESS_KEY', 'test-ak'), \
-             patch.object(main, 'ALIBABA_SECRET_KEY', 'test-sk'), \
-             patch.dict('sys.modules', {'services.mns_service': MagicMock(
-                 MNSService=MagicMock(), MNSPublisher=mock_pub_cls)}):
+             patch.object(main, 'MNS_ENDPOINT', ''), \
+             patch.object(main, 'ALIBABA_ACCESS_KEY', ''), \
+             patch.dict(os.environ, {}, clear=False), \
+             patch.dict(os.environ, {'AUDIO_PROCESSOR_URL': ''}, clear=False):
+            # Remove AUDIO_PROCESSOR_URL if present
+            os.environ.pop('AUDIO_PROCESSOR_URL', None)
             result = main._handle_process_upload(body, {})
         assert result['statusCode'] == 500
         db.update_job.assert_called_once()
@@ -456,15 +454,17 @@ class TestHandleProcessUpload:
 class TestUploadCommand:
     """Test /upload command handler."""
 
-    def test_sends_mini_app_button(self):
+    def test_sends_mini_app_button_with_github_pages_url(self):
         import main
         tg = MagicMock()
         user = {'balance_minutes': 100, 'settings': '{}'}
         result = main._cmd_upload(12345, 67890, '/upload', user, tg, MagicMock())
         tg.send_message.assert_called_once()
         call_args = tg.send_message.call_args
-        msg_text = str(call_args)
-        assert '500 МБ' in msg_text
+        reply_markup = call_args[1]['reply_markup']
+        web_app_url = reply_markup['inline_keyboard'][0][0]['web_app']['url']
+        assert 'github.io' in web_app_url
+        assert 'upload.html' in web_app_url
 
 
 # === Handler HTTP routing ===
@@ -689,3 +689,4 @@ class TestTier3Constants:
         import main
         assert len(main.UPLOAD_PAGE_HTML) > 100
         assert '<!DOCTYPE html>' in main.UPLOAD_PAGE_HTML
+        assert '__API_BASE__' in main.UPLOAD_PAGE_HTML

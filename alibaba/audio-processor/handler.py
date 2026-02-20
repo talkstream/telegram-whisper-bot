@@ -377,15 +377,20 @@ def _download_and_convert(tg, audio, file_id, chat_id, progress_id, progress=Non
         if not local_path:
             raise Exception("Failed to download file from Telegram")
 
-    if progress:
-        progress.stage('transcribe')
-    elif progress_id:
-        tg.edit_message_text(chat_id, progress_id, "🎙 Распознаю речь...")
+    # FFmpeg conversion can take minutes for large files (500MB)
+    if progress_id:
+        tg.edit_message_text(chat_id, progress_id, "⚙️ Конвертирую аудио...")
     tg.send_chat_action(chat_id, 'typing')
 
     converted_path = audio.prepare_audio_for_asr(local_path)
     if not converted_path:
         raise Exception("Failed to convert audio to MP3")
+
+    if progress:
+        progress.stage('transcribe')
+    elif progress_id:
+        tg.edit_message_text(chat_id, progress_id, "🎙 Распознаю речь...")
+    tg.send_chat_action(chat_id, 'typing')
 
     try:
         fsize = os.path.getsize(converted_path)
@@ -511,6 +516,28 @@ def _format_transcription(audio, text, is_dialogue, settings, converted_path,
         formatted = formatted.replace('ё', 'е').replace('Ё', 'Е')
     logger.info(f"[format] done output_chars={len(formatted)}")
     return formatted
+
+
+def _send_ai_action_buttons(tg, chat_id, job_id):
+    """Send AI action buttons after successful large file transcription."""
+    try:
+        keyboard = json.dumps({
+            'inline_keyboard': [
+                [{'text': '📰 Написать новость', 'callback_data': f'ai_news_{job_id}'},
+                 {'text': '📋 Саммари', 'callback_data': f'ai_sum_{job_id}'}],
+                [{'text': '✅ Выделить задачи', 'callback_data': f'ai_task_{job_id}'},
+                 {'text': '🎬 Создать сценарий', 'callback_data': f'ai_scr_{job_id}'}]
+            ]
+        })
+        tg.send_message(
+            chat_id,
+            '🤖 <b>AI-обработка</b> (бета)\n'
+            'Выберите действие с транскриптом:',
+            parse_mode='HTML',
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.warning(f"[ai-actions] failed to send buttons: {e}")
 
 
 def _deliver_result(tg, chat_id, progress_id, formatted_text, settings,
@@ -730,8 +757,13 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         })
         db.update_job(job_id, {
             'status': 'completed',
-            'result': json.dumps({'text_length': len(formatted_text)})
+            'result': json.dumps({'text_length': len(formatted_text)}),
+            'transcript': formatted_text,
         })
+
+        # AI action buttons for large file uploads (oss_upload via /upload)
+        if file_type == 'oss_upload' and len(formatted_text) > 500:
+            _send_ai_action_buttons(tg, chat_id, job_id)
 
         logger.info(f"Job {job_id} completed successfully")
         return {'ok': True, 'result': 'completed'}

@@ -8,6 +8,7 @@ v2.0.0: Added faster-whisper GPU support as alternative backend
 import os
 import json
 import logging
+import re
 import tempfile
 import subprocess
 import time
@@ -24,7 +25,7 @@ class AudioService:
     AUDIO_SAMPLE_RATE = '16000'  # 16kHz for ASR compatibility
     AUDIO_CHANNELS = '1'  # Mono for memory efficiency
     FFMPEG_THREADS = '4'  # Optimized for speed (was 1)
-    FFMPEG_TIMEOUT = 60  # seconds
+    FFMPEG_TIMEOUT = 300  # seconds (large files via Mini App up to 500MB)
 
     # File size limits
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -2281,17 +2282,21 @@ class AudioService:
             sentences = re.split(r'(?<=[.!?])\s+', text.strip())
             return sentences[-1][:200] if sentences else ''
 
+    # Parallel LLM workers for chunk processing
+    LLM_PARALLEL_WORKERS = 4
+
     def _format_text_chunked(self, text: str, use_code_tags: bool, use_yo: bool,
                               is_chunked: bool, is_dialogue: bool, backend: str,
                               progress_callback=None,
                               speaker_labels: bool = False) -> str:
-        """Format long text chunk-by-chunk, reassemble.
+        """Format long text chunk-by-chunk in parallel, reassemble.
 
-        Each chunk is sent to LLM independently. Overlap markers ([...]) are
-        stripped during reassembly. If a chunk output is <10% of input,
-        the original chunk is used (hallucination guard).
+        Chunks are sent to LLM concurrently (up to LLM_PARALLEL_WORKERS).
+        Overlap markers ([...]) are stripped during reassembly.
+        If a chunk output is <40% of input, the original chunk is used (hallucination guard).
         """
         import re
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         chunks = self._split_for_llm(text, is_dialogue)
         total = len(chunks)
 
@@ -2299,14 +2304,11 @@ class AudioService:
             logging.warning(f"[llm] too many chunks ({total} > {self.LLM_MAX_CHUNKS}), skipping LLM")
             return text
 
-        logging.info(f"[llm] chunked formatting: {total} chunks, is_dialogue={is_dialogue}")
-        formatted_parts = []
+        workers = min(self.LLM_PARALLEL_WORKERS, total)
+        logging.info(f"[llm] chunked formatting: {total} chunks, {workers} workers, is_dialogue={is_dialogue}")
 
-        for i, chunk in enumerate(chunks):
-            if progress_callback:
-                progress_callback(i + 1, total)
-
-            # Format individual chunk
+        def _process_chunk(idx, chunk):
+            """Process a single chunk through LLM with validation."""
             if backend == 'assemblyai':
                 result = self.format_text_with_assemblyai(
                     chunk, use_code_tags, use_yo, is_chunked, is_dialogue,
@@ -2318,22 +2320,34 @@ class AudioService:
 
             # LLM output validation — hallucination guard
             if len(result) < len(chunk) * 0.4:
-                logging.warning(f"[llm] chunk {i+1}/{total} output too short ({len(result)} < 40% of {len(chunk)}), using original")
+                logging.warning(f"[llm] chunk {idx+1}/{total} output too short ({len(result)} < 40% of {len(chunk)}), using original")
                 result = chunk
 
-            # Mid-sentence truncation detection (Gemini 3 Flash cuts at ~3-4K output tokens)
+            # Mid-sentence truncation detection
             if result and result != chunk and not re.search(r'[.!?…»"\n]\s*$', result):
-                logging.warning(f"[llm] chunk {i+1}/{total} truncated mid-sentence "
+                logging.warning(f"[llm] chunk {idx+1}/{total} truncated mid-sentence "
                                 f"(ends with '{result[-20:]}'), using original")
                 result = chunk
 
             # Strip overlap context from output
             result = re.sub(r'^\[\.{3}\].*?(?:\n|$)', '', result.strip())
+            return idx, result
 
-            formatted_parts.append(result)
+        # Process chunks in parallel, preserving order
+        results = [None] * total
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_process_chunk, i, chunk): i
+                       for i, chunk in enumerate(chunks)}
+            for future in as_completed(futures):
+                idx, result = future.result()
+                results[idx] = result
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total)
 
         separator = '\n' if is_dialogue else '\n\n'
-        return separator.join(formatted_parts)
+        return separator.join(results)
 
     def format_text_with_llm(self, text: str, use_code_tags: bool = False,
                               use_yo: bool = True, is_chunked: bool = False,
@@ -2413,7 +2427,9 @@ class AudioService:
                 logging.warning("DASHSCOPE_API_KEY not set, falling back to AssemblyAI")
                 return self.format_text_with_assemblyai(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True, speaker_labels=speaker_labels)
 
-            logging.info(f"Starting Qwen LLM request via REST. Input chars: {len(text)}")
+            # Model configurable via env var for easy rollback
+            model = os.environ.get('LLM_QWEN_MODEL', 'qwen-turbo-latest')
+            logging.info(f"Starting Qwen LLM request ({model}) via REST. Input chars: {len(text)}")
 
             # DashScope Qwen API via REST
             url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
@@ -2424,7 +2440,7 @@ class AudioService:
             }
 
             payload = {
-                "model": "qwen3.5-397b-a17b",  # largest Qwen3.5 MoE — best instruction following
+                "model": model,
                 "input": {
                     "messages": [
                         {"role": "user", "content": prompt}
@@ -2543,7 +2559,9 @@ class AudioService:
             prompt = self._build_format_prompt(text, use_code_tags, use_yo, is_chunked, is_dialogue,
                                                    speaker_labels=speaker_labels)
 
-            logging.info(f"Starting AssemblyAI LLM request (Gemini 3 Flash). Input chars: {len(text)}")
+            # Model configurable via env var for easy rollback
+            model = os.environ.get('LLM_ASSEMBLYAI_MODEL', 'gemini-flash-latest')
+            logging.info(f"Starting AssemblyAI LLM request ({model}). Input chars: {len(text)}")
 
             url = "https://llm-gateway.assemblyai.com/v1/chat/completions"
 
@@ -2553,8 +2571,9 @@ class AudioService:
             }
 
             payload = {
-                'model': 'gemini-3-flash-preview',
+                'model': model,
                 'messages': [
+                    {'role': 'system', 'content': 'You are a text formatting assistant. Output ONLY the formatted text. No reasoning, no explanations, no comments.'},
                     {'role': 'user', 'content': prompt}
                 ],
                 'max_tokens': 8192
@@ -2585,6 +2604,30 @@ class AudioService:
                 if finish_reason == 'length':
                     logging.warning(f"AssemblyAI LLM truncated (finish_reason=length), input={len(text)}ch, output={len(formatted_text)}ch. Returning original.")
                     return text
+
+                # Strip <think> blocks leaked by thinking models (defense in depth)
+                if '<think>' in formatted_text:
+                    logging.warning("[llm-assemblyai] Response contains <think> tags, stripping")
+                    formatted_text = re.sub(r'<think>.*?</think>', '', formatted_text, flags=re.DOTALL).strip()
+
+                # Detect unstructured thinking leak (English reasoning in Russian text)
+                thinking_markers = [
+                    "Wait,", "I'll ", "Let me", "Actually,", "Per Rule",
+                    "If I'm", "So I'll", "Final check", "I could ", "I'll keep"
+                ]
+                if any(marker in formatted_text for marker in thinking_markers):
+                    logging.warning("[llm-assemblyai] Thinking leak detected, cleaning English reasoning from output")
+                    lines = formatted_text.split('\n')
+                    clean_lines = [l for l in lines if not l.strip() or re.search(r'[а-яА-ЯёЁ]', l)]
+                    cleaned = '\n'.join(clean_lines).strip()
+                    # Remove trailing partial English reasoning
+                    cleaned = re.sub(r'\n\s*[A-Z][a-z].*$', '', cleaned, flags=re.DOTALL).strip()
+                    if cleaned and len(cleaned) > len(text) * 0.3:
+                        formatted_text = cleaned
+                        logging.info(f"[llm-assemblyai] Cleaned: {len(formatted_text)} chars remaining")
+                    else:
+                        logging.warning(f"[llm-assemblyai] Cleaning removed too much ({len(cleaned)} chars vs {len(text)} input), returning original")
+                        return text
 
                 # Remove code tags if present but not wanted
                 if not use_code_tags and formatted_text.startswith('<code>'):

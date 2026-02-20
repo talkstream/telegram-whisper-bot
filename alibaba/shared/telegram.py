@@ -116,6 +116,25 @@ class TelegramService:
             logger.error(f"Error editing message: {e}")
             return None
             
+    def edit_message_reply_markup(self, chat_id: int, message_id: int,
+                                    reply_markup: str = '') -> Optional[Dict[str, Any]]:
+        """Edit only the reply markup (inline keyboard) of an existing message."""
+        url = f"{self.api_url}/editMessageReplyMarkup"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+
+        try:
+            response = self._post_with_retry(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error editing reply markup: {e}")
+            return None
+
     def delete_message(self, chat_id: int, message_id: int) -> bool:
         """Delete a message"""
         url = f"{self.api_url}/deleteMessage"
@@ -225,10 +244,18 @@ class TelegramService:
             else:
                 logger.error(f"Telegram API error getting file path: {data}")
                 return None
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response else 'unknown'
+            body = e.response.text[:200] if e.response else ''
+            if status == 400:
+                logger.error(f"Error getting file path (400 Bad Request, likely >20MB): file_id={file_id}, response={body}")
+            else:
+                logger.error(f"Error getting file path ({status}): file_id={file_id}, response={body}")
+            return None
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting file path: {e}")
             return None
-            
+
     def download_file(self, file_path: str, target_dir: str = '/tmp') -> Optional[str]:
         """Download file from Telegram servers"""
         url = f"{self.file_url}/{file_path}"

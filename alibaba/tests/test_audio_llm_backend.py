@@ -65,10 +65,12 @@ class TestFormatTextWithAssemblyAI:
 
         call_kwargs = mock_post.call_args
         payload = call_kwargs[1]['json']
-        assert payload['model'] == 'gemini-3-flash-preview'
+        # Default model, configurable via LLM_ASSEMBLYAI_MODEL env var
+        assert 'gemini' in payload['model'] or 'flash' in payload['model']
         assert payload['max_tokens'] == 8192
-        assert len(payload['messages']) == 1
-        assert payload['messages'][0]['role'] == 'user'
+        assert len(payload['messages']) == 2
+        assert payload['messages'][0]['role'] == 'system'
+        assert payload['messages'][1]['role'] == 'user'
 
     @patch('requests.post')
     @patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'my-secret-key'})

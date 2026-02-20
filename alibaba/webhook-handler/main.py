@@ -262,6 +262,19 @@ def handler(event, context):
                 }, ensure_ascii=False)
             }
 
+        # CORS preflight for Mini App API
+        if http_method.upper() == 'OPTIONS':
+            return {
+                'statusCode': 204,
+                'headers': {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                    'Access-Control-Max-Age': '86400',
+                },
+                'body': ''
+            }
+
         # API endpoints for Mini App
         if http_path.endswith('/api/signed-url'):
             return _handle_signed_url_request(request_body, event)
@@ -413,6 +426,17 @@ def handle_audio_message(message: Dict[str, Any], user: Dict[str, Any]) -> str:
         file_type = 'document'
     else:
         return 'no_audio'
+
+    # Telegram Bot API limit: getFile works only for files ≤20MB
+    media_obj = message.get('voice') or message.get('audio') or message.get('video') \
+        or message.get('video_note') or message.get('document')
+    file_size = media_obj.get('file_size', 0) if media_obj else 0
+    if file_size > 20 * 1024 * 1024:
+        tg.send_message(chat_id,
+            f"📁 Файл слишком большой ({file_size // (1024*1024)} МБ).\n\n"
+            "Telegram Bot API не может скачать файлы больше 20 МБ.\n"
+            "Используйте /upload для загрузки больших файлов (до 500 МБ).")
+        return 'file_too_large'
 
     # Check user balance with package recommendation
     balance = user.get('balance_minutes', 0)
@@ -1045,11 +1069,12 @@ def _cmd_llm(chat_id, user_id, text, user, tg, db) -> str:
 
 # Command dispatch tables
 def _cmd_upload(chat_id, user_id, text, user, tg, db):
-    """Send Mini App button for large file upload."""
-    webhook_url = os.environ.get(
-        'WEBHOOK_URL',
-        'https://twbot-p-webhook-hnfnlkbphn.eu-central-1.fcapp.run')
-    upload_url = f"{webhook_url.rstrip('/')}/upload"
+    """Send Mini App button for large file upload.
+
+    Page hosted on GitHub Pages to bypass Content-Disposition: attachment
+    forced by FC (*.fcapp.run) and OSS (default domain).
+    """
+    upload_url = 'https://talkstream.github.io/telegram-whisper-bot/upload.html'
     keyboard = {
         'inline_keyboard': [[{
             'text': '📎 Загрузить файл (до 500 МБ)',
@@ -1621,6 +1646,9 @@ def handle_callback_query(callback_query: Dict[str, Any]) -> str:
         # Check for buy_ callbacks (available to all users)
         if callback_data.startswith('buy_'):
             return handle_buy_callback(callback_data, user_id, chat_id)
+        # AI action callbacks (available to all users)
+        if callback_data.startswith('ai_'):
+            return _handle_ai_action(callback_data, user_id, chat_id, message_id, tg, db)
         return 'unauthorized_callback'
 
     # Revoke auto-trial
@@ -1646,6 +1674,10 @@ def handle_callback_query(callback_query: Dict[str, Any]) -> str:
     # Buy callbacks (also for owner)
     if callback_data.startswith('buy_'):
         return handle_buy_callback(callback_data, user_id, chat_id)
+
+    # AI action callbacks (also for owner)
+    if callback_data.startswith('ai_'):
+        return _handle_ai_action(callback_data, user_id, chat_id, message_id, tg, db)
 
     # Pagination for /user list
     if callback_data.startswith('users_page_'):
@@ -1734,6 +1766,213 @@ def handle_buy_callback(callback_data: str, user_id: int, chat_id: int) -> str:
     )
 
     return 'invoice_sent'
+
+
+# --- AI Action Buttons (beta) ---
+
+# Global beta limit for AI actions
+AI_BETA_LIMIT = 100
+AI_BETA_COUNTER_KEY = '__beta_ai_actions__'
+
+# Pre-filled prompts for each AI action
+AI_ACTION_PROMPTS = {
+    'news': {
+        'title': '📰 Новость',
+        'system': 'You are a professional journalist writing news articles in Russian.',
+        'prompt': (
+            'Напиши новостную статью на основе этого транскрипта. '
+            'Структура: заголовок, лид, основной текст с цитатами. '
+            'Стиль: информационное агентство (TASS/РИА). '
+            'Отвечай на вопросы: кто, что, когда, где, почему.\n\n'
+            'Транскрипт:\n{transcript}'
+        ),
+    },
+    'sum': {
+        'title': '📋 Саммари',
+        'system': 'You are an expert at creating concise, structured summaries in Russian.',
+        'prompt': (
+            'Создай структурированное саммари этого транскрипта. '
+            'Включи: ключевые темы, основные тезисы, выводы. '
+            'Формат: маркированный список с подразделами.\n\n'
+            'Транскрипт:\n{transcript}'
+        ),
+    },
+    'task': {
+        'title': '✅ Задачи',
+        'system': 'You are an expert project manager extracting actionable tasks from meetings in Russian.',
+        'prompt': (
+            'Выдели все задачи, поручения и договорённости из этого транскрипта. '
+            'Для каждой задачи укажи: ответственный (если упомянут), срок (если упомянут), приоритет. '
+            'Формат: нумерованный список.\n\n'
+            'Транскрипт:\n{transcript}'
+        ),
+    },
+    'scr': {
+        'title': '🎬 Сценарий',
+        'system': 'You are a professional screenwriter creating scripts in Russian.',
+        'prompt': (
+            'Создай сценарий на основе этого транскрипта. '
+            'Формат: профессиональный сценарный формат с ремарками, '
+            'диалогами и описаниями сцен. '
+            'Сохрани ключевые цитаты и факты.\n\n'
+            'Транскрипт:\n{transcript}'
+        ),
+    },
+}
+
+
+def _get_ai_beta_count(db) -> int:
+    """Get current global AI beta usage count from Tablestore."""
+    try:
+        row = db.get_user(0)  # Special row with user_id='0' for global counters
+        if row:
+            return row.get('ai_beta_count', 0)
+        return 0
+    except Exception:
+        return 0
+
+
+def _increment_ai_beta_count(db) -> int:
+    """Increment global AI beta usage count. Returns new count."""
+    try:
+        current = _get_ai_beta_count(db)
+        new_count = current + 1
+        # Try update first (row exists), fall back to create
+        if not db.update_user(0, {'ai_beta_count': new_count}):
+            db.create_user(0, {'ai_beta_count': new_count})
+        return new_count
+    except Exception as e:
+        logger.error(f"[ai-actions] failed to increment beta count: {e}")
+        return -1
+
+
+def _call_gemini_pro(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """Call Gemini via AssemblyAI Gateway for AI actions."""
+    import requests
+
+    api_key = os.environ.get('ASSEMBLYAI_API_KEY')
+    if not api_key:
+        logger.error("[ai-actions] ASSEMBLYAI_API_KEY not set")
+        return None
+
+    url = "https://llm-gateway.assemblyai.com/v1/chat/completions"
+    headers = {
+        'Authorization': api_key,
+        'Content-Type': 'application/json',
+    }
+    payload = {
+        'model': 'gemini-3.1-pro-preview',
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+        'max_tokens': 16384,
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=300)
+        if response.status_code == 200:
+            data = response.json()
+            content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            if content:
+                logger.info(f"[ai-actions] Gemini Pro response: {len(content)} chars")
+                return content
+            logger.warning("[ai-actions] Gemini Pro returned empty content")
+            return None
+        logger.error(f"[ai-actions] Gemini Pro HTTP {response.status_code}: {response.text[:200]}")
+        return None
+    except requests.exceptions.Timeout:
+        logger.error("[ai-actions] Gemini Pro timeout (300s)")
+        return None
+    except Exception as e:
+        logger.error(f"[ai-actions] Gemini Pro error: {e}")
+        return None
+
+
+def _handle_ai_action(callback_data: str, user_id: int, chat_id: int,
+                      message_id: int, tg, db) -> str:
+    """Handle AI action callback (news, summary, tasks, screenplay)."""
+    # Parse callback: ai_{action}_{job_id}
+    parts = callback_data.split('_', 2)
+    if len(parts) < 3:
+        logger.warning(f"[ai-actions] malformed callback: {callback_data}")
+        return 'ai_action_malformed'
+
+    action = parts[1]  # news, sum, task, scr
+    job_id = parts[2]
+
+    action_config = AI_ACTION_PROMPTS.get(action)
+    if not action_config:
+        logger.warning(f"[ai-actions] unknown action: {action}")
+        return 'ai_action_unknown'
+
+    # Check beta limit
+    current_count = _get_ai_beta_count(db)
+    if current_count >= AI_BETA_LIMIT:
+        tg.send_message(chat_id,
+            '⚠️ Лимит бета-версии исчерпан (100/100).\n'
+            'Функция будет доступна в платной версии.')
+        return 'ai_beta_limit_reached'
+
+    # Load transcript from job
+    job = db.get_job(job_id)
+    if not job:
+        tg.send_message(chat_id, '❌ Задача не найдена.')
+        return 'ai_job_not_found'
+
+    transcript = job.get('transcript', '')
+    if not transcript:
+        tg.send_message(chat_id, '❌ Транскрипт не найден.')
+        return 'ai_transcript_missing'
+
+    # Send progress message
+    progress_msg = tg.send_message(chat_id,
+        f'⏳ {action_config["title"]} — генерирую...')
+    progress_id = progress_msg.get('result', {}).get('message_id') if progress_msg else None
+    tg.send_chat_action(chat_id, 'typing')
+
+    # Remove buttons from original message to prevent double-click
+    try:
+        tg.edit_message_reply_markup(chat_id, message_id, reply_markup='')
+    except Exception:
+        pass  # Message might be too old or already edited
+
+    # Call Gemini Pro
+    user_prompt = action_config['prompt'].format(transcript=transcript)
+    result = _call_gemini_pro(action_config['system'], user_prompt)
+
+    if not result:
+        if progress_id:
+            tg.edit_message_text(chat_id, progress_id,
+                '❌ Ошибка генерации. Попробуйте позже.')
+        return 'ai_generation_failed'
+
+    # Increment beta counter
+    new_count = _increment_ai_beta_count(db)
+    remaining = max(0, AI_BETA_LIMIT - new_count) if new_count > 0 else '?'
+
+    # Delete progress message
+    if progress_id:
+        tg.delete_message(chat_id, progress_id)
+
+    # Deliver result
+    header = f'{action_config["title"]}\n\n'
+    footer = f'\n\n—\n🤖 AI-обработка (бета) • Осталось: {remaining}/{AI_BETA_LIMIT}'
+    full_text = header + result + footer
+
+    if len(full_text) > 4000:
+        # Send as file
+        from datetime import datetime
+        action_name = {'news': 'news', 'sum': 'summary', 'task': 'tasks', 'scr': 'screenplay'}
+        filename = f"{action_name.get(action, action)}_{datetime.now().strftime('%Y-%m-%d_%H%M')}.txt"
+        tg.send_as_file(chat_id, result,
+            caption=f'{action_config["title"]} (бета) • Осталось: {remaining}/{AI_BETA_LIMIT}',
+            filename=filename)
+    else:
+        tg.send_long_message(chat_id, full_text)
+
+    logger.info(f"[ai-actions] {action} completed for user {user_id}, job {job_id}, beta {new_count}/{AI_BETA_LIMIT}")
+    return f'ai_action_{action}_done'
 
 
 def handle_pre_checkout(pre_checkout_query: Dict[str, Any]) -> str:
@@ -1913,7 +2152,7 @@ def _handle_url_import(message: Dict[str, Any], user: Dict[str, Any], url: str) 
     db.create_job({
         'job_id': job_id,
         'user_id': str(user_id),
-        'chat_id': str(chat_id),
+        'chat_id': int(chat_id),
         'file_id': download_url,
         'file_type': 'url_import',
         'duration': 0,
@@ -1924,44 +2163,67 @@ def _handle_url_import(message: Dict[str, Any], user: Dict[str, Any], url: str) 
     job_data = {
         'job_id': job_id,
         'user_id': str(user_id),
-        'chat_id': str(chat_id),
+        'chat_id': int(chat_id),
         'file_id': download_url,
         'file_type': 'url_import',
         'duration': 0,
         'status_message_id': str(status_message_id) if status_message_id else '',
     }
 
-    # Try async via MNS
-    if MNS_ENDPOINT and ALIBABA_ACCESS_KEY and ALIBABA_SECRET_KEY:
-        from services.mns_service import MNSService, MNSPublisher
-        mns = MNSService(
-            endpoint=MNS_ENDPOINT,
-            access_key_id=ALIBABA_ACCESS_KEY,
-            access_key_secret=ALIBABA_SECRET_KEY,
-            queue_name=os.environ.get('AUDIO_JOBS_QUEUE',
-                                       'telegram-whisper-bot-prod-audio-jobs')
-        )
-        publisher = MNSPublisher(mns)
-        if publisher.publish(job_data):
-            logger.info(f"[cloud-import] job {job_id} queued, url={url[:60]}")
-            return 'url_import_queued'
+    # Primary: direct HTTP invocation (same as queue_audio_async)
+    import requests as http_req
+    audio_processor_url = os.environ.get('AUDIO_PROCESSOR_URL')
+    queued = False
+    if audio_processor_url:
+        try:
+            http_req.post(audio_processor_url, json=job_data, timeout=(10, 1))
+            queued = True
+        except http_req.exceptions.ReadTimeout:
+            queued = True  # Expected: fire-and-forget
+        except (http_req.exceptions.ConnectionError, http_req.exceptions.Timeout) as e:
+            logger.error(f"[cloud-import] HTTP invoke failed: {type(e).__name__}: {e}")
 
-    # Fallback: process sync (not ideal for large files, but better than nothing)
-    logger.warning("MNS not available for URL import, rejecting")
+    # Fallback: MNS queue
+    if not queued:
+        mns_ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+        mns_sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+        if MNS_ENDPOINT and mns_ak and mns_sk:
+            from services.mns_service import MNSPublisher
+            publisher = MNSPublisher(
+                endpoint=MNS_ENDPOINT,
+                access_key_id=mns_ak,
+                access_key_secret=mns_sk
+            )
+            import json as json_module
+            publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
+            queued = True
+
+    if queued:
+        logger.info(f"[cloud-import] job {job_id} queued, url={url[:60]}")
+        return 'url_import_queued'
+
+    logger.warning("Neither AUDIO_PROCESSOR_URL nor MNS available for URL import")
     tg.send_message(chat_id, "❌ Сервис временно недоступен. Попробуйте позже.")
-    db.update_job(job_id, {'status': 'failed', 'error': 'MNS unavailable'})
+    db.update_job(job_id, {'status': 'failed', 'error': 'No async processor available'})
     return 'url_import_failed'
 
 
 # === Mini App: Large File Upload ===
+# HTML hosted on OSS to bypass FC Content-Disposition: attachment
+# which blocks all JavaScript in Telegram WebView on *.fcapp.run
 
 UPLOAD_PAGE_HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
 <title>Upload Audio</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+var tg = null;
+try { tg = window.Telegram.WebApp; tg.ready(); tg.expand(); } catch(e) {}
+</script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -1970,7 +2232,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 .drop-zone { border: 2px dashed var(--tg-theme-hint-color, #aaa); border-radius: 12px;
              padding: 40px 20px; text-align: center; margin: 20px 0; cursor: pointer;
              transition: border-color 0.3s; }
-.drop-zone.active { border-color: var(--tg-theme-button-color, #3390ec); background: rgba(51,144,236,0.05); }
+.drop-zone.active { border-color: var(--tg-theme-button-color, #3390ec);
+                    background: rgba(51,144,236,0.05); }
 .drop-zone h2 { margin-bottom: 8px; font-size: 18px; }
 .drop-zone p { color: var(--tg-theme-hint-color, #999); font-size: 14px; }
 .progress-bar { width: 100%; height: 8px; background: var(--tg-theme-secondary-bg-color, #eee);
@@ -1980,120 +2243,131 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 .status { text-align: center; margin: 12px 0; font-size: 14px;
           color: var(--tg-theme-hint-color, #999); }
 .error { color: #e53935; }
-input[type=file] { display: none; }
-.limits { font-size: 12px; color: var(--tg-theme-hint-color, #999); text-align: center; margin-top: 8px; }
+.limits { font-size: 12px; color: var(--tg-theme-hint-color, #999);
+          text-align: center; margin-top: 8px; }
 </style>
 </head>
 <body>
 <div class="drop-zone" id="dropZone">
-  <h2>📎 Перетащите файл сюда</h2>
-  <p>или нажмите для выбора</p>
+  <h2>\U0001f4ce Нажмите для выбора файла</h2>
   <p class="limits">MP3, WAV, OGG, M4A, FLAC, MP4, MOV, MKV, WEBM — до 500 МБ</p>
 </div>
-<input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.ogg,.m4a,.flac,.mp4,.mov,.mkv,.webm">
+<input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.ogg,.m4a,.flac,.mp4,.mov,.mkv,.webm"
+       style="display:none">
 <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
 <div class="status" id="status"></div>
-
 <script>
-const API_BASE = window.location.origin;
-const tg = window.Telegram.WebApp;
-tg.ready();
-tg.expand();
+var ALLOWED = ['audio/mpeg','audio/wav','audio/ogg','audio/x-m4a','audio/flac','audio/aac',
+               'audio/mp4','video/mp4','video/quicktime','video/x-matroska','video/webm',
+               'audio/x-wav','audio/wave'];
+var ALLOWED_EXT = ['.mp3','.wav','.ogg','.m4a','.flac','.aac','.mp4','.mov','.mkv','.webm'];
+var MAX_SIZE = 500 * 1024 * 1024;
+var API_BASE = '__API_BASE__';
 
-const ALLOWED = ['audio/mpeg','audio/wav','audio/ogg','audio/x-m4a','audio/flac','audio/aac',
-                 'audio/mp4','video/mp4','video/quicktime','video/x-matroska','video/webm',
-                 'audio/x-wav','audio/wave'];
-const ALLOWED_EXT = ['.mp3','.wav','.ogg','.m4a','.flac','.aac','.mp4','.mov','.mkv','.webm'];
-const MAX_SIZE = 500 * 1024 * 1024;
+var dropZone = document.getElementById('dropZone');
+var fileInput = document.getElementById('fileInput');
+var progressBar = document.getElementById('progressBar');
+var progressFill = document.getElementById('progressFill');
+var statusEl = document.getElementById('status');
 
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const progressBar = document.getElementById('progressBar');
-const progressFill = document.getElementById('progressFill');
-const status = document.getElementById('status');
+dropZone.addEventListener('click', function() { fileInput.click(); });
+fileInput.addEventListener('change', function() {
+  if (fileInput.files.length) handleFile(fileInput.files[0]);
+});
 
-dropZone.addEventListener('click', () => fileInput.click());
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('active'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('active'));
-dropZone.addEventListener('drop', e => {
+dropZone.addEventListener('dragover', function(e) { e.preventDefault(); dropZone.classList.add('active'); });
+dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('active'); });
+dropZone.addEventListener('drop', function(e) {
   e.preventDefault(); dropZone.classList.remove('active');
   if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
 });
-fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+if (tg && tg.MainButton) {
+  tg.MainButton.setText('\U0001f4ce Выбрать файл');
+  tg.MainButton.show();
+  tg.MainButton.onClick(function() { fileInput.click(); });
+}
 
 function validateFile(file) {
-  const ext = '.' + file.name.split('.').pop().toLowerCase();
-  if (!ALLOWED.includes(file.type) && !ALLOWED_EXT.includes(ext)) {
+  var ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (ALLOWED.indexOf(file.type) === -1 && ALLOWED_EXT.indexOf(ext) === -1) {
     return 'Неподдерживаемый формат файла';
   }
-  if (file.size > MAX_SIZE) {
-    return 'Файл слишком большой (макс. 500 МБ)';
-  }
+  if (file.size > MAX_SIZE) return 'Файл слишком большой (макс. 500 МБ)';
   return null;
 }
 
-async function handleFile(file) {
-  const err = validateFile(file);
+function handleFile(file) {
+  var err = validateFile(file);
   if (err) { showError(err); return; }
 
-  try {
-    showStatus('Запрашиваю URL для загрузки...');
-    const ext = '.' + file.name.split('.').pop().toLowerCase();
-    const initData = tg.initData || '';
+  var initData = (tg && tg.initData) ? tg.initData : '';
+  if (!initData) {
+    showError('Откройте через Telegram \\u2192 /upload');
+    return;
+  }
 
-    const urlRes = await fetch(API_BASE + '/api/signed-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ext: ext, init_data: initData })
-    });
-    if (!urlRes.ok) { const e = await urlRes.json(); throw new Error(e.error || 'URL error'); }
-    const { put_url, oss_key } = await urlRes.json();
+  var ext = '.' + file.name.split('.').pop().toLowerCase();
+  showStatus('Запрашиваю URL для загрузки...');
 
+  fetch(API_BASE + '/api/signed-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ext: ext, init_data: initData })
+  })
+  .then(function(res) {
+    if (!res.ok) return res.json().then(function(e) { throw new Error(e.error || 'URL error'); });
+    return res.json();
+  })
+  .then(function(data) {
     showStatus('Загружаю файл...');
     progressBar.style.display = 'block';
-
-    await uploadWithProgress(put_url, file);
-
+    return uploadWithProgress(data.put_url, file).then(function() { return data; });
+  })
+  .then(function(data) {
     showStatus('Отправляю на обработку...');
-    const procRes = await fetch(API_BASE + '/api/process', {
+    return fetch(API_BASE + '/api/process', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ oss_key: oss_key, init_data: initData, filename: file.name })
+      body: JSON.stringify({ oss_key: data.oss_key, init_data: initData, filename: file.name })
     });
-    if (!procRes.ok) { const e = await procRes.json(); throw new Error(e.error || 'Process error'); }
-
-    showStatus('✅ Файл отправлен на обработку! Результат придёт в чат.');
+  })
+  .then(function(res) {
+    if (!res.ok) return res.json().then(function(e) { throw new Error(e.error || 'Process error'); });
+    showStatus('\\u2705 Файл отправлен! Результат придёт в чат.');
     progressFill.style.width = '100%';
-    setTimeout(() => tg.close(), 2000);
-
-  } catch (e) {
+    if (tg) setTimeout(function() { tg.close(); }, 2000);
+  })
+  .catch(function(e) {
     showError(e.message || 'Ошибка загрузки');
-  }
+  });
 }
 
 function uploadWithProgress(url, file) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.upload.addEventListener('progress', e => {
+  return new Promise(function(resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 600000;
+    xhr.upload.addEventListener('progress', function(e) {
       if (e.lengthComputable) {
-        const pct = Math.round(e.loaded / e.total * 100);
+        var pct = Math.round(e.loaded / e.total * 100);
         progressFill.style.width = pct + '%';
         showStatus('Загружаю... ' + pct + '%');
       }
     });
-    xhr.addEventListener('load', () => {
+    xhr.addEventListener('load', function() {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else reject(new Error('Upload failed: ' + xhr.status));
     });
-    xhr.addEventListener('error', () => reject(new Error('Network error')));
+    xhr.addEventListener('error', function() { reject(new Error('Network error')); });
+    xhr.addEventListener('timeout', function() { reject(new Error('Timeout')); });
     xhr.open('PUT', url);
-    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.send(file);
   });
 }
 
-function showStatus(msg) { status.textContent = msg; status.classList.remove('error'); }
-function showError(msg) { status.textContent = msg; status.classList.add('error');
+function showStatus(msg) { statusEl.textContent = msg; statusEl.classList.remove('error'); }
+function showError(msg) { statusEl.textContent = msg; statusEl.classList.add('error');
                           progressBar.style.display = 'none'; }
 </script>
 </body>
@@ -2101,14 +2375,24 @@ function showError(msg) { status.textContent = msg; status.classList.add('error'
 
 
 def _serve_upload_page():
-    """Serve Mini App HTML for large file upload."""
+    """Fallback page for direct browser access to /upload.
+
+    The actual Mini App is hosted on OSS (no Content-Disposition: attachment)
+    and accessed via web_app button from /upload command.
+    """
     return {
         'statusCode': 200,
         'headers': {
             'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-cache',
+            'Cache-Control': 'no-store',
         },
-        'body': UPLOAD_PAGE_HTML
+        'body': '<!DOCTYPE html><html><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+                '<title>Upload Audio</title></head>'
+                '<body style="font-family:sans-serif;text-align:center;padding:40px">'
+                '<h2>\U0001f4ce Upload Audio</h2>'
+                '<p>Используйте команду /upload в Telegram боте.</p>'
+                '</body></html>'
     }
 
 
@@ -2261,7 +2545,7 @@ def _handle_process_upload(body: Dict[str, Any], event: Dict[str, Any]) -> Dict[
             db.create_job({
                 'job_id': job_id,
                 'user_id': str(user_id),
-                'chat_id': str(user_id),
+                'chat_id': int(user_id),
                 'file_id': oss_key,  # OSS key instead of Telegram file_id
                 'file_type': 'oss_upload',
                 'duration': 0,  # Will be detected by audio-processor
@@ -2273,32 +2557,46 @@ def _handle_process_upload(body: Dict[str, Any], event: Dict[str, Any]) -> Dict[
             job_data = {
                 'job_id': job_id,
                 'user_id': str(user_id),
-                'chat_id': str(user_id),
+                'chat_id': int(user_id),
                 'file_id': oss_key,
                 'file_type': 'oss_upload',
                 'duration': 0,
                 'status_message_id': str(status_message_id) if status_message_id else '',
             }
 
-            from services.mns_service import MNSService
-            if MNS_ENDPOINT and ALIBABA_ACCESS_KEY and ALIBABA_SECRET_KEY:
-                mns = MNSService(
-                    endpoint=MNS_ENDPOINT,
-                    access_key_id=ALIBABA_ACCESS_KEY,
-                    access_key_secret=ALIBABA_SECRET_KEY,
-                    queue_name=os.environ.get('AUDIO_JOBS_QUEUE',
-                                               'telegram-whisper-bot-prod-audio-jobs')
-                )
-                from services.mns_service import MNSPublisher
-                publisher = MNSPublisher(mns)
-                published = publisher.publish(job_data)
-                if not published:
-                    db.update_job(job_id, {'status': 'failed', 'error': 'MNS publish failed'})
-                    raise Exception('MNS publish failed')
-            else:
-                logger.warning("MNS not configured, cannot process upload async")
-                db.update_job(job_id, {'status': 'failed', 'error': 'MNS not configured'})
-                raise Exception('MNS not configured')
+            # Primary: direct HTTP invocation (same as queue_audio_async)
+            import requests as http_req
+            audio_processor_url = os.environ.get('AUDIO_PROCESSOR_URL')
+            queued = False
+            if audio_processor_url:
+                try:
+                    http_req.post(audio_processor_url, json=job_data, timeout=(10, 1))
+                    queued = True
+                except http_req.exceptions.ReadTimeout:
+                    queued = True  # Expected: fire-and-forget
+                except (http_req.exceptions.ConnectionError, http_req.exceptions.Timeout) as e:
+                    logger.error(f"[upload] HTTP invoke failed: {type(e).__name__}: {e}")
+
+            # Fallback: MNS queue
+            if not queued:
+                mns_ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+                mns_sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY') or os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+                if MNS_ENDPOINT and mns_ak and mns_sk:
+                    from services.mns_service import MNSPublisher
+                    publisher = MNSPublisher(
+                        endpoint=MNS_ENDPOINT,
+                        access_key_id=mns_ak,
+                        access_key_secret=mns_sk
+                    )
+                    import json as json_module
+                    publisher.publish(AUDIO_JOBS_QUEUE, json_module.dumps(job_data).encode())
+                    queued = True
+                else:
+                    logger.warning("Neither AUDIO_PROCESSOR_URL nor MNS configured")
+
+            if not queued:
+                db.update_job(job_id, {'status': 'failed', 'error': 'No async processor available'})
+                raise Exception('No async processor available')
         except Exception:
             # Cleanup orphaned OSS object
             try:
