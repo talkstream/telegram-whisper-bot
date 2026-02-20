@@ -69,6 +69,7 @@ class AudioService:
         self.oss_config = oss_config or {}
         self._oss_bucket = None  # Lazy-loaded OSS bucket
         self._diarization_debug = {}  # Debug info for admin diagnostics
+        self._session = None  # Lazy HTTP session for connection pooling
 
         # Faster-whisper model (lazy-loaded)
         self._faster_whisper_model = None
@@ -77,6 +78,14 @@ class AudioService:
             'dvislobokov/faster-whisper-large-v3-turbo-russian'
         )
         
+    @property
+    def _http_session(self):
+        """Lazy requests.Session for DashScope connection pooling."""
+        if self._session is None:
+            import requests
+            self._session = requests.Session()
+        return self._session
+
     def validate_audio_file(self, file_size: int, duration: int) -> Tuple[bool, Optional[str]]:
         """
         Validate audio file parameters
@@ -1177,9 +1186,8 @@ class AudioService:
         Returns:
             Parsed transcription data dict, or None on failure
         """
-        import requests
-
         pfx = debug_prefix  # shorthand
+        session = self._http_session
 
         url = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription"
         headers = {
@@ -1208,20 +1216,29 @@ class AudioService:
                                    ensure_ascii=False)[:800]
             self._diarization_debug[f'{pfx}_request'] = req_repr
 
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = session.post(url, headers=headers, json=payload, timeout=30)
 
         if pfx:
             self._diarization_debug[f'{pfx}_submit_status'] = response.status_code
 
         if response.status_code != 200:
-            error_data = response.json() if response.text else {}
+            try:
+                error_data = response.json() if response.text else {}
+            except (ValueError, KeyError):
+                error_data = {'raw': response.text[:200]}
             logging.warning(f"{model} submit failed: {response.status_code} - {error_data}")
             if pfx:
                 self._diarization_debug[f'{pfx}_submit_body'] = str(error_data)[:500]
                 self._diarization_debug[f'{pfx}_result'] = 'submit_failed'
             return None
 
-        task_data = response.json()
+        try:
+            task_data = response.json()
+        except (ValueError, KeyError):
+            logging.warning(f"{model} malformed submit response")
+            if pfx:
+                self._diarization_debug[f'{pfx}_result'] = 'malformed_submit_json'
+            return None
         task_id = task_data.get('output', {}).get('task_id')
         if not task_id:
             logging.warning(f"{model} returned no task_id: {task_data}")
@@ -1240,11 +1257,15 @@ class AudioService:
 
         for attempt in range(max_attempts):
             time.sleep(poll_interval)
-            poll_response = requests.get(poll_url, headers=poll_headers, timeout=15)
+            poll_response = session.get(poll_url, headers=poll_headers, timeout=15)
             if poll_response.status_code != 200:
                 continue
 
-            poll_data = poll_response.json()
+            try:
+                poll_data = poll_response.json()
+            except (ValueError, KeyError):
+                logging.warning(f"{model} malformed poll response, retrying")
+                continue
             task_status = poll_data.get('output', {}).get('task_status', '')
 
             if task_status == 'SUCCEEDED':
@@ -1285,8 +1306,14 @@ class AudioService:
                 self._diarization_debug[f'{pfx}_result'] = 'no_transcription_url'
             return None
 
-        trans_response = requests.get(transcription_url, timeout=30)
-        trans_data = trans_response.json()
+        trans_response = session.get(transcription_url, timeout=30)
+        try:
+            trans_data = trans_response.json()
+        except (ValueError, KeyError):
+            logging.warning(f"{model} malformed transcription response")
+            if pfx:
+                self._diarization_debug[f'{pfx}_result'] = 'malformed_transcription_json'
+            return None
 
         if pfx:
             self._diarization_debug[f'{pfx}_result'] = 'ok'
@@ -1330,35 +1357,12 @@ class AudioService:
                              window_ms: int = 300_000) -> tuple:
         """Windowed timeline normalization for long audio (>15 min).
 
-        Instead of global scaling, uses 5-min windows with 50% overlap
-        to correct local drift between pass1 and pass2.
+        Uses global normalization with logging of window count for diagnostics.
         """
         overlap = window_ms // 2
         total_ms = max(spk_max, txt_max)
-        windows = []
+        n_windows = max(1, (total_ms - overlap) // overlap + 1)
 
-        pos = 0
-        while pos < total_ms:
-            win_end = min(pos + window_ms, total_ms)
-            windows.append((pos, win_end))
-            pos += overlap
-
-        if not windows:
-            windows = [(0, total_ms)]
-
-        def normalize_in_window(segs, seg_max, win_start, win_end):
-            result = []
-            for s in segs:
-                if s['begin_time'] >= win_start and s['begin_time'] < win_end:
-                    # Normalize within window boundaries
-                    win_spk_range = win_end - win_start
-                    norm_begin = (s['begin_time'] - win_start) / seg_max * total_ms + win_start / total_ms
-                    norm_end = (s['end_time'] - win_start) / seg_max * total_ms + win_start / total_ms
-                    result.append({**s, 'begin_time': norm_begin, 'end_time': norm_end})
-            return result
-
-        # For simplicity with overlapping windows, use global normalization
-        # but with per-window scale factors
         norm_spk = [{**s, 'begin_time': s['begin_time'] / spk_max,
                           'end_time': s['end_time'] / spk_max}
                     for s in speaker_segments]
@@ -1366,7 +1370,7 @@ class AudioService:
                           'end_time': s['end_time'] / txt_max}
                     for s in text_segments]
 
-        logging.info(f"[align] windowed normalization: {len(windows)} windows, "
+        logging.info(f"[align] windowed normalization: {n_windows} windows, "
                      f"spk_max={spk_max}ms, txt_max={txt_max}ms")
         return norm_spk, norm_txt
 
@@ -1455,22 +1459,31 @@ class AudioService:
                    speaker_segments[spk_idx]['end_time'] <= word_time):
                 spk_idx += 1
 
-            # Find best speaker: check nearby segments for overlap
-            best_speaker = speaker_segments[0]['speaker_id']
-            best_dist = float('inf')
+            # Find best speaker: direct overlap wins, gap = speaker inertia
+            best_speaker = None
             for i in range(max(0, spk_idx - 1),
                            min(spk_idx + 2, len(speaker_segments))):
                 sseg = speaker_segments[i]
                 if sseg['begin_time'] <= word_time < sseg['end_time']:
                     best_speaker = sseg['speaker_id']
-                    best_dist = 0
                     break
-                # In gap: use nearest segment boundary
-                dist = min(abs(word_time - sseg['begin_time']),
-                           abs(word_time - sseg['end_time']))
-                if dist < best_dist:
-                    best_dist = dist
-                    best_speaker = sseg['speaker_id']
+
+            # Gap: keep current speaker (inertia prevents mid-sentence splits)
+            if best_speaker is None:
+                if current_speaker is not None:
+                    best_speaker = current_speaker
+                else:
+                    # First word, no context — nearest segment
+                    best_dist = float('inf')
+                    best_speaker = speaker_segments[0]['speaker_id']
+                    for i in range(max(0, spk_idx - 1),
+                                   min(spk_idx + 2, len(speaker_segments))):
+                        sseg = speaker_segments[i]
+                        dist = min(abs(word_time - sseg['begin_time']),
+                                   abs(word_time - sseg['end_time']))
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_speaker = sseg['speaker_id']
 
             # Accumulate or flush
             if best_speaker != current_speaker:
@@ -2252,6 +2265,7 @@ class AudioService:
         stripped during reassembly. If a chunk output is <10% of input,
         the original chunk is used (hallucination guard).
         """
+        import re
         chunks = self._split_for_llm(text, is_dialogue)
         total = len(chunks)
 
@@ -2275,13 +2289,18 @@ class AudioService:
                     chunk, use_code_tags, use_yo, is_chunked, is_dialogue)
 
             # LLM output validation — hallucination guard
-            if len(result) < len(chunk) * 0.1:
-                logging.warning(f"[llm] chunk {i+1}/{total} output too short ({len(result)} < 10% of {len(chunk)}), using original")
+            if len(result) < len(chunk) * 0.4:
+                logging.warning(f"[llm] chunk {i+1}/{total} output too short ({len(result)} < 40% of {len(chunk)}), using original")
+                result = chunk
+
+            # Mid-sentence truncation detection (Gemini 3 Flash cuts at ~3-4K output tokens)
+            if result and result != chunk and not re.search(r'[.!?…»"\n]\s*$', result):
+                logging.warning(f"[llm] chunk {i+1}/{total} truncated mid-sentence "
+                                f"(ends with '{result[-20:]}'), using original")
                 result = chunk
 
             # Strip overlap context from output
-            import re
-            result = re.sub(r'^\[\.{3}\].*?\n', '', result.strip())
+            result = re.sub(r'^\[\.{3}\].*?(?:\n|$)', '', result.strip())
 
             formatted_parts.append(result)
 
@@ -2500,7 +2519,7 @@ class AudioService:
                 'max_tokens': 8192
             }
 
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
 
             if response.status_code == 200:
                 data = response.json()

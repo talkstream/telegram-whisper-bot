@@ -699,6 +699,20 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
     db = get_db_service()
     tg = get_telegram_service()
 
+    # Atomic balance reservation — prevents race condition on parallel uploads
+    duration_minutes = (duration + 59) // 60
+    if duration_minutes > 0:
+        if not db.reserve_balance(user_id, duration_minutes):
+            balance = user.get('balance_minutes', 0)
+            tg.send_message(chat_id,
+                f"⏱ Аудио: ~{duration_minutes} мин\n"
+                f"💰 Ваш баланс: {balance} мин\n\n"
+                f"/buy_minutes — купить минуты",
+                parse_mode='HTML')
+            if status_message_id:
+                tg.delete_message(chat_id, status_message_id)
+            return 'insufficient_balance'
+
     from services.utility import get_trace_id
     job_id = str(uuid.uuid4())
     job_data = {
@@ -709,6 +723,7 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         'file_id': file_id,
         'file_type': file_type,
         'duration': duration,
+        'reserved_minutes': duration_minutes,  # For refund on failure
         'status': 'pending',
         'trace_id': get_trace_id(),
     }
@@ -716,7 +731,7 @@ def queue_audio_async(message: Dict[str, Any], user: Dict[str, Any],
         job_data['status_message_id'] = status_message_id
 
     db.create_job(job_data)
-    logger.info(f"[routing] sync=False, duration={duration}s, user={user_id}, job={job_id}")
+    logger.info(f"[routing] sync=False, duration={duration}s, reserved={duration_minutes}min, user={user_id}, job={job_id}")
 
     # Primary: direct HTTP invocation of audio-processor (fire-and-forget)
     import requests as http_req
@@ -2184,8 +2199,8 @@ def _handle_signed_url_request(body: Dict[str, Any], event: Dict[str, Any]) -> D
             auth = oss2.Auth(ak, sk)
         bucket = oss2.Bucket(auth, oss_endpoint, oss_bucket_name)
 
-        # 15-minute expiry for PUT URL (minimize exposure window)
-        put_url = bucket.sign_url('PUT', oss_key, 900,
+        # 30-minute expiry for PUT URL (500MB @ 500KB/s = 17 min)
+        put_url = bucket.sign_url('PUT', oss_key, 1800,
                                    headers={'Content-Type': 'application/octet-stream'})
 
         logger.info(f"[upload] signed URL generated for user {user_id}, key={oss_key}")
@@ -2239,50 +2254,71 @@ def _handle_process_upload(body: Dict[str, Any], event: Dict[str, Any]) -> Dict[
         )
         status_message_id = status_msg['result']['message_id'] if status_msg and status_msg.get('ok') else None
 
-        # Create job record
-        db.create_job({
-            'job_id': job_id,
-            'user_id': str(user_id),
-            'chat_id': str(user_id),
-            'file_id': oss_key,  # OSS key instead of Telegram file_id
-            'file_type': 'oss_upload',
-            'duration': 0,  # Will be detected by audio-processor
-            'status': 'pending',
-            'status_message_id': str(status_message_id) if status_message_id else '',
-        })
+        # Create job record and queue — cleanup OSS on failure
+        try:
+            db.create_job({
+                'job_id': job_id,
+                'user_id': str(user_id),
+                'chat_id': str(user_id),
+                'file_id': oss_key,  # OSS key instead of Telegram file_id
+                'file_type': 'oss_upload',
+                'duration': 0,  # Will be detected by audio-processor
+                'status': 'pending',
+                'status_message_id': str(status_message_id) if status_message_id else '',
+            })
 
-        # Queue for async processing via MNS
-        job_data = {
-            'job_id': job_id,
-            'user_id': str(user_id),
-            'chat_id': str(user_id),
-            'file_id': oss_key,
-            'file_type': 'oss_upload',
-            'duration': 0,
-            'status_message_id': str(status_message_id) if status_message_id else '',
-        }
+            # Queue for async processing via MNS
+            job_data = {
+                'job_id': job_id,
+                'user_id': str(user_id),
+                'chat_id': str(user_id),
+                'file_id': oss_key,
+                'file_type': 'oss_upload',
+                'duration': 0,
+                'status_message_id': str(status_message_id) if status_message_id else '',
+            }
 
-        from services.mns_service import MNSService
-        if MNS_ENDPOINT and ALIBABA_ACCESS_KEY and ALIBABA_SECRET_KEY:
-            mns = MNSService(
-                endpoint=MNS_ENDPOINT,
-                access_key_id=ALIBABA_ACCESS_KEY,
-                access_key_secret=ALIBABA_SECRET_KEY,
-                queue_name=os.environ.get('AUDIO_JOBS_QUEUE',
-                                           'telegram-whisper-bot-prod-audio-jobs')
-            )
-            from services.mns_service import MNSPublisher
-            publisher = MNSPublisher(mns)
-            published = publisher.publish(job_data)
-            if not published:
-                db.update_job(job_id, {'status': 'failed', 'error': 'MNS publish failed'})
-                return {'statusCode': 500, 'headers': cors_headers,
-                        'body': json.dumps({'error': 'Queue error'})}
-        else:
-            logger.warning("MNS not configured, cannot process upload async")
-            db.update_job(job_id, {'status': 'failed', 'error': 'MNS not configured'})
+            from services.mns_service import MNSService
+            if MNS_ENDPOINT and ALIBABA_ACCESS_KEY and ALIBABA_SECRET_KEY:
+                mns = MNSService(
+                    endpoint=MNS_ENDPOINT,
+                    access_key_id=ALIBABA_ACCESS_KEY,
+                    access_key_secret=ALIBABA_SECRET_KEY,
+                    queue_name=os.environ.get('AUDIO_JOBS_QUEUE',
+                                               'telegram-whisper-bot-prod-audio-jobs')
+                )
+                from services.mns_service import MNSPublisher
+                publisher = MNSPublisher(mns)
+                published = publisher.publish(job_data)
+                if not published:
+                    db.update_job(job_id, {'status': 'failed', 'error': 'MNS publish failed'})
+                    raise Exception('MNS publish failed')
+            else:
+                logger.warning("MNS not configured, cannot process upload async")
+                db.update_job(job_id, {'status': 'failed', 'error': 'MNS not configured'})
+                raise Exception('MNS not configured')
+        except Exception:
+            # Cleanup orphaned OSS object
+            try:
+                import oss2
+                ak = ALIBABA_ACCESS_KEY or os.environ.get('ALIBABA_ACCESS_KEY')
+                sk = ALIBABA_SECRET_KEY or os.environ.get('ALIBABA_SECRET_KEY')
+                st = ALIBABA_SECURITY_TOKEN or os.environ.get('ALIBABA_CLOUD_SECURITY_TOKEN')
+                oss_endpoint = os.environ.get('OSS_ENDPOINT', 'oss-eu-central-1.aliyuncs.com')
+                oss_bucket_name = os.environ.get('OSS_BUCKET', 'twbot-prod-audio')
+                if not oss_endpoint.startswith('http'):
+                    oss_endpoint = f'https://{oss_endpoint}'
+                if st:
+                    auth = oss2.StsAuth(ak, sk, st)
+                else:
+                    auth = oss2.Auth(ak, sk)
+                oss_bucket = oss2.Bucket(auth, oss_endpoint, oss_bucket_name)
+                oss_bucket.delete_object(oss_key)
+                logger.info(f"[upload] cleaned up orphaned OSS object {oss_key}")
+            except Exception as cleanup_err:
+                logger.warning(f"[upload] failed to cleanup OSS object {oss_key}: {cleanup_err}")
             return {'statusCode': 500, 'headers': cors_headers,
-                    'body': json.dumps({'error': 'Async processing unavailable'})}
+                    'body': json.dumps({'error': 'Queue error'})}
 
         logger.info(f"[upload] job {job_id} created for user {user_id}, oss_key={oss_key}")
         return {

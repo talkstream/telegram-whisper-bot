@@ -425,10 +425,10 @@ class TestUploadToOssWithUrl:
 class TestDiarizationModel:
     """Verify two-pass diarization uses correct models."""
 
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_submit_async_fun_asr_mtl_uses_file_urls(self, mock_post, mock_get, audio_service):
+    def test_submit_async_fun_asr_mtl_uses_file_urls(self, audio_service):
         """Verify fun-asr-mtl payload uses file_urls (plural, list)."""
+        mock_session = MagicMock()
+
         submit_response = MagicMock()
         submit_response.status_code = 200
         submit_response.json.return_value = {
@@ -451,23 +451,24 @@ class TestDiarizationModel:
             ]}]
         }
 
-        mock_post.return_value = submit_response
-        mock_get.side_effect = [poll_response, trans_response]
+        mock_session.post.return_value = submit_response
+        mock_session.get.side_effect = [poll_response, trans_response]
+        audio_service._session = mock_session
 
         audio_service._submit_async_transcription(
             'https://oss.example.com/file.mp3', 'fun-asr-mtl',
             {'diarization_enabled': True}, 'test-key', poll_interval=1, max_wait=5)
 
-        post_call = mock_post.call_args
+        post_call = mock_session.post.call_args
         payload = post_call[1]['json']
         assert payload['model'] == 'fun-asr-mtl'
         assert 'file_urls' in payload['input']
         assert isinstance(payload['input']['file_urls'], list)
 
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_submit_async_qwen_filetrans_uses_file_url(self, mock_post, mock_get, audio_service):
+    def test_submit_async_qwen_filetrans_uses_file_url(self, audio_service):
         """Verify qwen3-asr-flash-filetrans payload uses file_url (singular, string)."""
+        mock_session = MagicMock()
+
         submit_response = MagicMock()
         submit_response.status_code = 200
         submit_response.json.return_value = {
@@ -490,23 +491,24 @@ class TestDiarizationModel:
             ]}]
         }
 
-        mock_post.return_value = submit_response
-        mock_get.side_effect = [poll_response, trans_response]
+        mock_session.post.return_value = submit_response
+        mock_session.get.side_effect = [poll_response, trans_response]
+        audio_service._session = mock_session
 
         audio_service._submit_async_transcription(
             'https://oss.example.com/file.mp3', 'qwen3-asr-flash-filetrans',
             {'language': 'ru'}, 'test-key', poll_interval=1, max_wait=5)
 
-        post_call = mock_post.call_args
+        post_call = mock_session.post.call_args
         payload = post_call[1]['json']
         assert payload['model'] == 'qwen3-asr-flash-filetrans'
         assert 'file_url' in payload['input']
         assert isinstance(payload['input']['file_url'], str)
 
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_submit_async_handles_singular_result(self, mock_post, mock_get, audio_service):
+    def test_submit_async_handles_singular_result(self, audio_service):
         """Verify output.result (singular dict) is parsed correctly for qwen3-asr-flash-filetrans."""
+        mock_session = MagicMock()
+
         submit_response = MagicMock()
         submit_response.status_code = 200
         submit_response.json.return_value = {
@@ -529,8 +531,9 @@ class TestDiarizationModel:
             ]}]
         }
 
-        mock_post.return_value = submit_response
-        mock_get.side_effect = [poll_response, trans_response]
+        mock_session.post.return_value = submit_response
+        mock_session.get.side_effect = [poll_response, trans_response]
+        audio_service._session = mock_session
 
         result = audio_service._submit_async_transcription(
             'https://oss.example.com/file.mp3', 'qwen3-asr-flash-filetrans',
@@ -539,10 +542,10 @@ class TestDiarizationModel:
         assert result is not None
         assert result['transcripts'][0]['sentences'][0]['text'] == 'результат singular'
 
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_submit_async_handles_plural_results(self, mock_post, mock_get, audio_service):
+    def test_submit_async_handles_plural_results(self, audio_service):
         """Verify output.results (plural list) is parsed correctly for fun-asr-mtl."""
+        mock_session = MagicMock()
+
         submit_response = MagicMock()
         submit_response.status_code = 200
         submit_response.json.return_value = {
@@ -565,8 +568,9 @@ class TestDiarizationModel:
             ]}]
         }
 
-        mock_post.return_value = submit_response
-        mock_get.side_effect = [poll_response, trans_response]
+        mock_session.post.return_value = submit_response
+        mock_session.get.side_effect = [poll_response, trans_response]
+        audio_service._session = mock_session
 
         result = audio_service._submit_async_transcription(
             'https://oss.example.com/file.mp3', 'fun-asr-mtl',
@@ -1038,20 +1042,21 @@ class TestDiarizationDebug:
             }]
         }
 
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_diarization_debug_populated(self, mock_post, mock_get, audio_service):
+    def test_diarization_debug_populated(self, audio_service):
         """Both passes succeed — debug dict has pass1/pass2 entries."""
         # Mock OSS upload
         mock_bucket = MagicMock()
         mock_bucket.sign_url.return_value = 'https://bucket.oss.com/key?sig=abc'
         audio_service._oss_bucket = mock_bucket
 
+        # Mock HTTP session for DashScope calls
+        mock_session = MagicMock()
+
         # Submit responses (both succeed)
         submit_resp = MagicMock()
         submit_resp.status_code = 200
         submit_resp.json.return_value = {'output': {'task_id': 'task-123'}}
-        mock_post.return_value = submit_resp
+        mock_session.post.return_value = submit_resp
 
         # Route GET requests by URL
         trans_data = self._make_transcription_result()
@@ -1070,7 +1075,8 @@ class TestDiarizationDebug:
                 resp.json.return_value = trans_data
             return resp
 
-        mock_get.side_effect = get_router
+        mock_session.get.side_effect = get_router
+        audio_service._session = mock_session
 
         with patch('time.sleep'):
             raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')
@@ -1086,18 +1092,17 @@ class TestDiarizationDebug:
         assert 'spk_segments' in dbg
         assert 'txt_segments' in dbg
 
-    @patch('requests.get')
-    @patch('requests.post')
-    def test_diarization_debug_records_fallback(self, mock_post, mock_get, audio_service):
+    def test_diarization_debug_records_fallback(self, audio_service):
         """Pass 2 task fails — fallback recorded in debug."""
         mock_bucket = MagicMock()
         mock_bucket.sign_url.return_value = 'https://bucket.oss.com/key?sig=abc'
         audio_service._oss_bucket = mock_bucket
 
+        # Mock HTTP session
+        mock_session = MagicMock()
+
         # Submit: assign different task IDs per model
-        call_count = [0]
         def post_router(*args, **kwargs):
-            call_count[0] += 1
             resp = MagicMock()
             resp.status_code = 200
             payload = kwargs.get('json', {})
@@ -1107,7 +1112,7 @@ class TestDiarizationDebug:
             else:
                 resp.json.return_value = {'output': {'task_id': 'task-txt'}}
             return resp
-        mock_post.side_effect = post_router
+        mock_session.post.side_effect = post_router
 
         trans_data = self._make_transcription_result("Привет")
 
@@ -1130,7 +1135,8 @@ class TestDiarizationDebug:
                 resp.json.return_value = trans_data
             return resp
 
-        mock_get.side_effect = get_router
+        mock_session.get.side_effect = get_router
+        audio_service._session = mock_session
 
         with patch('time.sleep'):
             raw_text, segments = audio_service.transcribe_with_diarization('/tmp/test.mp3')

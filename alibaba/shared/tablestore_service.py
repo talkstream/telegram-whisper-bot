@@ -228,6 +228,73 @@ class TablestoreService:
 
         return False
 
+    def reserve_balance(self, user_id: int, minutes: int, max_retries: int = 3) -> bool:
+        """Atomically check sufficiency and deduct balance at queue time.
+
+        Unlike update_user_balance() which clamps to 0, this method FAILS
+        if the user has fewer minutes than requested — preventing race conditions
+        when multiple files are submitted simultaneously.
+
+        Returns True if reserved successfully, False if insufficient or error.
+        """
+        from tablestore import Row, Condition, RowExistenceExpectation, ComparatorType, SingleColumnCondition
+
+        for attempt in range(max_retries):
+            try:
+                user = self.get_user(user_id)
+                if not user:
+                    logger.error(f"User {user_id} not found for balance reservation")
+                    return False
+
+                raw_balance = user.get('balance_minutes', 0)
+                if isinstance(raw_balance, str):
+                    current_balance = float(raw_balance)
+                elif isinstance(raw_balance, (int, float)):
+                    current_balance = float(raw_balance)
+                else:
+                    current_balance = 0.0
+                    raw_balance = 0
+
+                if current_balance < minutes:
+                    return False  # Insufficient balance
+
+                new_balance = int(current_balance - minutes)
+
+                primary_key = [('user_id', str(user_id))]
+                update_columns = {
+                    'put': [
+                        ('balance_minutes', new_balance),
+                        ('last_activity', datetime.now(pytz.utc).isoformat())
+                    ]
+                }
+                row = Row(primary_key, update_columns)
+                condition = Condition(
+                    RowExistenceExpectation.EXPECT_EXIST,
+                    SingleColumnCondition(
+                        'balance_minutes', raw_balance,
+                        ComparatorType.EQUAL, pass_if_missing=True
+                    )
+                )
+
+                self.client.update_row('users', row, condition)
+                logger.info(f"Reserved {minutes} min from user {user_id}: {current_balance} -> {new_balance}")
+                return True
+
+            except Exception as e:
+                error_str = str(e)
+                if 'OTSConditionCheckFail' in error_str or 'Condition check failed' in error_str:
+                    logger.warning(f"Balance reservation conflict for user {user_id}, attempt {attempt + 1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(0.1 * (attempt + 1))
+                        continue
+                    return False
+                else:
+                    logger.error(f"Error reserving balance for user {user_id}: {e}", exc_info=True)
+                    return False
+
+        return False
+
     def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user settings."""
         user = self.get_user(user_id)

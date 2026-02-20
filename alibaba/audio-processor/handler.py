@@ -317,9 +317,19 @@ def _download_from_url(url, max_size=100 * 1024 * 1024):
     response.raise_for_status()
 
     # Check content-length
-    content_length = int(response.headers.get('content-length', 0))
+    try:
+        content_length = int(response.headers.get('content-length', 0))
+    except (ValueError, TypeError):
+        content_length = 0  # Unknown size, rely on streaming limit
     if content_length > max_size:
         raise Exception(f"File too large: {content_length / 1024 / 1024:.1f} MB (max 100 MB)")
+
+    # Validate content type — reject non-audio/video responses (e.g. HTML error pages)
+    content_type = response.headers.get('content-type', '')
+    if content_type and not any(content_type.startswith(p) for p in
+                                ('audio/', 'video/', 'application/octet-stream',
+                                 'application/ogg', 'binary/')):
+        raise Exception(f"Неподдерживаемый формат: {content_type}. Ожидается аудио/видео файл.")
 
     # Detect extension from URL or content-type
     from urllib.parse import urlparse
@@ -670,22 +680,27 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
                                                    converted_path, tg, chat_id, progress_id,
                                                    progress=progress)
 
-        # Step 4: Deduct balance BEFORE delivery
+        # Step 4: Balance already reserved at queue time (webhook).
+        # For duration=0 documents, deduct now (actual duration detected above).
+        reserved_minutes = job_data.get('reserved_minutes', 0)
         duration_minutes = (duration + 59) // 60
+        extra_minutes = max(0, duration_minutes - reserved_minutes)
+        if extra_minutes > 0:
+            balance_updated = db.update_user_balance(user_id_int, -extra_minutes)
+            if not balance_updated:
+                logger.error(f"CRITICAL: Failed to deduct extra {extra_minutes} min from user {user_id}!")
+                try:
+                    if owner_id:
+                        tg.send_message(
+                            owner_id,
+                            f"⚠️ Ошибка списания баланса!\nUser: {user_id}\n"
+                            f"Минут: {extra_minutes}\nJob: {job_id}\n"
+                            f"Требуется ручная корректировка."
+                        )
+                except Exception as notify_err:
+                    logger.error(f"Failed to notify owner about balance error: {notify_err}")
         balance = user.get('balance_minutes', 0) if user else 0
-        balance_updated = db.update_user_balance(user_id_int, -duration_minutes)
-        if not balance_updated:
-            logger.error(f"CRITICAL: Failed to deduct {duration_minutes} min from user {user_id} balance!")
-            try:
-                if owner_id:
-                    tg.send_message(
-                        owner_id,
-                        f"⚠️ Ошибка списания баланса!\nUser: {user_id}\n"
-                        f"Минут: {duration_minutes}\nJob: {job_id}\n"
-                        f"Требуется ручная корректировка."
-                    )
-            except Exception as notify_err:
-                logger.error(f"Failed to notify owner about balance error: {notify_err}")
+        balance_updated = True  # For low balance warning
 
         # Step 5: Deliver result
         _deliver_result(tg, chat_id, progress_id, formatted_text, settings,
@@ -693,7 +708,9 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Low balance warning (after delivery so user sees result first)
         if balance_updated:
-            new_balance = max(0, int(balance) - duration_minutes)
+            # Read actual balance from DB (was reserved at queue time)
+            fresh_user = db.get_user(user_id_int)
+            new_balance = fresh_user.get('balance_minutes', 0) if fresh_user else 0
             if 0 < new_balance < 5:
                 tg.send_message(chat_id,
                     f"⚠️ <b>Низкий баланс!</b>\nОсталось: {new_balance} мин.\nПополнить: /buy_minutes",
@@ -719,6 +736,15 @@ def process_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
         db.update_job(job_id, {'status': 'failed', 'error': str(e)[:200]})
+
+        # Refund reserved balance on processing failure
+        reserved_minutes = job_data.get('reserved_minutes', 0)
+        if reserved_minutes > 0:
+            try:
+                db.update_user_balance(user_id_int, +reserved_minutes)
+                logger.info(f"Refunded {reserved_minutes} min to user {user_id} after job failure")
+            except Exception as refund_err:
+                logger.error(f"CRITICAL: Failed to refund {reserved_minutes} min to user {user_id}: {refund_err}")
 
         error_str = str(e).lower()
         if 'invalidparameter' in error_str or 'duration' in error_str:

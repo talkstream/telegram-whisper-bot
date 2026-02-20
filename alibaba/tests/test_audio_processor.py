@@ -651,10 +651,11 @@ class TestLowBalanceWarnings:
     def test_exhausted_balance_warning(self, mock_db, mock_tg, mock_audio):
         """User with 0 min remaining gets 'balance exhausted' warning."""
         import handler
-        mock_db.get_user.return_value = {
-            'balance_minutes': 1,
-            'settings': '{}',
-        }
+        # get_user called twice: settings read (balance=1), then fresh balance (balance=0)
+        mock_db.get_user.side_effect = [
+            {'balance_minutes': 1, 'settings': '{}'},  # settings read
+            {'balance_minutes': 0, 'settings': '{}'},  # fresh balance after deduction
+        ]
 
         with patch.object(handler, 'get_db_service', return_value=mock_db), \
              patch.object(handler, 'get_telegram_service', return_value=mock_tg), \
