@@ -2379,7 +2379,6 @@ SPLASH_PAGE_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="color-scheme" content="light dark">
 <title>Говори-говори</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script>
@@ -2389,75 +2388,90 @@ try { tg = window.Telegram.WebApp; tg.ready(); tg.expand(); } catch(e) {}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
+
+/* Theme: detect via class set by JS */
 body{
   font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;
-  background:var(--tg-theme-bg-color,#fff);
-  color:var(--tg-theme-text-color,#000);
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   -webkit-font-smoothing:antialiased;
+  transition:background 0.3s;
 }
+body.dark{background:#1c1c1e;color:#f5f5f7}
+body.light{background:#f5f5f7;color:#1c1c1e}
+
+/* Accent color — set via JS from themeParams */
+:root{--accent:#3390ec;--hint:#8e8e93;--glow-opacity:0.12}
+body.light{--glow-opacity:0.08}
 
 /* Animated waveform */
-.wave-wrap{width:120px;height:80px;display:flex;align-items:center;justify-content:center;gap:5px;
-  opacity:0;transform:scale(0.7);animation:wave-in 0.8s cubic-bezier(0.16,1,0.3,1) 0.2s forwards}
-.wave-bar{width:4px;border-radius:3px;
-  background:var(--tg-theme-button-color,#3390ec);
+.wave-wrap{width:140px;height:80px;display:flex;align-items:center;justify-content:center;gap:5px;
+  opacity:0;transform:scale(0.6);animation:wave-in 0.9s cubic-bezier(0.16,1,0.3,1) 0.15s forwards}
+.wave-bar{width:4.5px;border-radius:3px;background:var(--accent);
   animation:wave-pulse 1.2s ease-in-out infinite;will-change:transform}
-.wave-bar:nth-child(1){height:20px;animation-delay:0s}
-.wave-bar:nth-child(2){height:35px;animation-delay:0.15s}
-.wave-bar:nth-child(3){height:50px;animation-delay:0.3s}
-.wave-bar:nth-child(4){height:40px;animation-delay:0.45s}
-.wave-bar:nth-child(5){height:55px;animation-delay:0.1s}
-.wave-bar:nth-child(6){height:30px;animation-delay:0.35s}
-.wave-bar:nth-child(7){height:45px;animation-delay:0.2s}
-.wave-bar:nth-child(8){height:25px;animation-delay:0.5s}
-.wave-bar:nth-child(9){height:15px;animation-delay:0.4s}
+.wave-bar:nth-child(1){height:18px;animation-delay:0s}
+.wave-bar:nth-child(2){height:32px;animation-delay:0.12s}
+.wave-bar:nth-child(3){height:48px;animation-delay:0.24s}
+.wave-bar:nth-child(4){height:38px;animation-delay:0.36s}
+.wave-bar:nth-child(5){height:56px;animation-delay:0.08s}
+.wave-bar:nth-child(6){height:42px;animation-delay:0.32s}
+.wave-bar:nth-child(7){height:50px;animation-delay:0.16s}
+.wave-bar:nth-child(8){height:28px;animation-delay:0.44s}
+.wave-bar:nth-child(9){height:16px;animation-delay:0.38s}
 
 @keyframes wave-pulse{
-  0%,100%{transform:scaleY(0.4);opacity:0.5}
+  0%,100%{transform:scaleY(0.35);opacity:0.45}
   50%{transform:scaleY(1);opacity:1}
 }
-@keyframes wave-in{
-  to{opacity:1;transform:scale(1)}
-}
+@keyframes wave-in{to{opacity:1;transform:scale(1)}}
 
 /* Brand */
-.brand{text-align:center;opacity:0;transform:translateY(20px);
-  animation:fade-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.6s forwards}
-.brand h1{font-size:28px;font-weight:700;letter-spacing:-0.5px;
-  margin:24px 0 8px}
-.brand .tagline{font-size:15px;color:var(--tg-theme-hint-color,#999);
-  line-height:1.4;max-width:260px;margin:0 auto}
+.brand{text-align:center;opacity:0;transform:translateY(24px);
+  animation:fade-up 0.8s cubic-bezier(0.16,1,0.3,1) 0.5s forwards}
+.brand h1{font-size:32px;font-weight:700;letter-spacing:-0.5px;margin:28px 0 10px}
+.brand .tagline{font-size:15px;color:var(--hint);line-height:1.5;max-width:260px;margin:0 auto}
 
 /* Features */
-.features{display:flex;gap:24px;margin-top:36px;opacity:0;transform:translateY(16px);
-  animation:fade-up 0.6s cubic-bezier(0.16,1,0.3,1) 1s forwards}
+.features{display:flex;gap:28px;margin-top:40px;opacity:0;transform:translateY(20px);
+  animation:fade-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.9s forwards}
 .feat{text-align:center;flex:1}
-.feat-icon{font-size:24px;margin-bottom:6px}
-.feat-label{font-size:12px;color:var(--tg-theme-hint-color,#999);line-height:1.3}
+.feat-icon{font-size:28px;margin-bottom:8px}
+.feat-label{font-size:12px;color:var(--hint);line-height:1.4}
 
-/* Subtle gradient accent */
-.glow{position:fixed;width:300px;height:300px;border-radius:50%;
-  background:var(--tg-theme-button-color,#3390ec);opacity:0.06;
-  filter:blur(80px);pointer-events:none;z-index:-1;
-  animation:glow-drift 8s ease-in-out infinite alternate}
-.glow-1{top:-100px;left:-80px}
-.glow-2{bottom:-100px;right:-80px;animation-delay:4s}
+/* Glow accents */
+.glow{position:fixed;border-radius:50%;pointer-events:none;z-index:-1;
+  filter:blur(90px);opacity:var(--glow-opacity);will-change:transform;
+  animation:glow-drift 6s ease-in-out infinite alternate}
+.glow-1{width:280px;height:280px;background:var(--accent);top:-60px;left:-60px}
+.glow-2{width:220px;height:220px;background:#a855f7;bottom:-40px;right:-40px;animation-delay:3s;
+  animation-name:glow-drift-2}
 
 @keyframes glow-drift{
-  0%{transform:translate(0,0)}
-  100%{transform:translate(30px,20px)}
+  0%{transform:translate(0,0) scale(1)}
+  100%{transform:translate(40px,30px) scale(1.1)}
+}
+@keyframes glow-drift-2{
+  0%{transform:translate(0,0) scale(1)}
+  100%{transform:translate(-30px,-25px) scale(1.15)}
 }
 
-@keyframes fade-up{
-  to{opacity:1;transform:translateY(0)}
+@keyframes fade-up{to{opacity:1;transform:translateY(0)}}
+
+/* CTA button (fallback for missing MainButton) */
+.cta{
+  margin-top:44px;opacity:0;transform:translateY(16px);
+  animation:fade-up 0.6s cubic-bezier(0.16,1,0.3,1) 1.3s forwards;
 }
+.cta button{
+  background:var(--accent);color:#fff;border:none;border-radius:12px;
+  padding:14px 40px;font-size:16px;font-weight:600;cursor:pointer;
+  transition:transform 0.15s,opacity 0.15s;-webkit-tap-highlight-color:transparent;
+}
+.cta button:active{transform:scale(0.96);opacity:0.85}
 
 /* Footer */
-.foot{position:fixed;bottom:24px;left:0;right:0;text-align:center;
-  font-size:12px;color:var(--tg-theme-hint-color,#999);opacity:0;
-  animation:fade-up 0.5s ease 1.4s forwards}
-.foot a{color:var(--tg-theme-link-color,#3390ec);text-decoration:none}
+.foot{position:fixed;bottom:20px;left:0;right:0;text-align:center;
+  font-size:12px;color:var(--hint);opacity:0;
+  animation:fade-up 0.5s ease 1.6s forwards}
 </style>
 </head>
 <body>
@@ -2477,32 +2491,47 @@ body{
 </div>
 
 <div class="features">
-  <div class="feat">
-    <div class="feat-icon">🎙</div>
-    <div class="feat-label">Интервью<br>и совещания</div>
-  </div>
-  <div class="feat">
-    <div class="feat-icon">👥</div>
-    <div class="feat-label">Спикеры<br>и диалоги</div>
-  </div>
-  <div class="feat">
-    <div class="feat-icon">✨</div>
-    <div class="feat-label">AI-обработка<br>текста</div>
-  </div>
+  <div class="feat"><div class="feat-icon">🎙</div><div class="feat-label">Интервью<br>и совещания</div></div>
+  <div class="feat"><div class="feat-icon">👥</div><div class="feat-label">Спикеры<br>и диалоги</div></div>
+  <div class="feat"><div class="feat-icon">✨</div><div class="feat-label">AI-обработка<br>текста</div></div>
 </div>
+
+<div class="cta"><button id="ctaBtn">Перейти в бот</button></div>
 
 <div class="foot">@editorialsrobot</div>
 
 <script>
-if (tg && tg.MainButton) {
-  tg.MainButton.setText('Перейти в бот');
-  tg.MainButton.color = tg.themeParams.button_color || '#3390ec';
-  tg.MainButton.textColor = tg.themeParams.button_text_color || '#fff';
-  tg.MainButton.show();
-  tg.MainButton.onClick(function() { tg.close(); });
-}
-// Auto-close after 5s if user doesn't interact
-if (tg) { setTimeout(function() { tg.close(); }, 5000); }
+(function() {
+  // Apply theme from Telegram SDK or system preference
+  var isDark = false;
+  if (tg && tg.colorScheme) {
+    isDark = tg.colorScheme === 'dark';
+  } else if (window.matchMedia) {
+    isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  document.body.classList.add(isDark ? 'dark' : 'light');
+
+  // Apply accent color from Telegram theme
+  var accent = (tg && tg.themeParams && tg.themeParams.button_color) || '#3390ec';
+  var hint = (tg && tg.themeParams && tg.themeParams.hint_color) || (isDark ? '#8e8e93' : '#6e6e73');
+  document.documentElement.style.setProperty('--accent', accent);
+  document.documentElement.style.setProperty('--hint', hint);
+
+  // CTA button
+  var ctaBtn = document.getElementById('ctaBtn');
+  ctaBtn.addEventListener('click', function() {
+    if (tg) tg.close();
+  });
+
+  // Also try Telegram MainButton
+  if (tg && tg.MainButton) {
+    try {
+      tg.MainButton.setText('Перейти в бот');
+      tg.MainButton.show();
+      tg.MainButton.onClick(function() { tg.close(); });
+    } catch(e) {}
+  }
+})();
 </script>
 </body>
 </html>"""
