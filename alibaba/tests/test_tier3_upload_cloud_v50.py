@@ -240,7 +240,7 @@ class TestServeUploadPage:
         import main
         result = main._serve_upload_page()
         assert 'editorialsrobot' in result['body']
-        assert 'tg.close()' in result['body']
+        assert 'openTelegramLink' in result['body']
 
     def test_cache_headers(self):
         import main

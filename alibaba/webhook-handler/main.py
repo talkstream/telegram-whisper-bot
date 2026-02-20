@@ -2380,29 +2380,26 @@ SPLASH_PAGE_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Говори-говори</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script>
-var tg = null;
-try { tg = window.Telegram.WebApp; tg.ready(); tg.expand(); } catch(e) {}
-</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden}
-
-/* Theme: detect via class set by JS, applied to html+body */
-html,body{
+html,body{height:100%;overflow:hidden;
   font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;
-  -webkit-font-smoothing:antialiased;
-}
-body{
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-}
-html.dark,html.dark body{background:#1c1c1e;color:#f5f5f7}
-html.light,html.light body{background:#f5f5f7;color:#1c1c1e}
+  -webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center}
 
-/* Accent color — set via JS from themeParams */
-:root{--accent:#3390ec;--hint:#8e8e93;--glow-opacity:0.12}
-html.light{--glow-opacity:0.08}
+/* Instant OS-level theme (works before any JS) */
+@media(prefers-color-scheme:dark){
+  html,body{background:#1c1c1e;color:#f5f5f7}
+}
+@media(prefers-color-scheme:light){
+  html,body{background:#f5f5f7;color:#1c1c1e}
+}
+/* JS override classes (applied in <head> script) */
+html.dark,html.dark body{background:#1c1c1e !important;color:#f5f5f7 !important}
+html.light,html.light body{background:#f5f5f7 !important;color:#1c1c1e !important}
+
+:root{--accent:#3390ec;--hint:#8e8e93;--glow-opacity:0.3}
+html.light{--glow-opacity:0.1}
 
 /* Animated waveform */
 .wave-wrap{width:140px;height:80px;display:flex;align-items:center;justify-content:center;gap:5px;
@@ -2425,20 +2422,18 @@ html.light{--glow-opacity:0.08}
 }
 @keyframes wave-in{to{opacity:1;transform:scale(1)}}
 
-/* Brand */
 .brand{text-align:center;opacity:0;transform:translateY(24px);
   animation:fade-up 0.8s cubic-bezier(0.16,1,0.3,1) 0.5s forwards}
 .brand h1{font-size:32px;font-weight:700;letter-spacing:-0.5px;margin:28px 0 10px}
 .brand .tagline{font-size:15px;color:var(--hint);line-height:1.5;max-width:260px;margin:0 auto}
 
-/* Features */
-.features{display:flex;gap:28px;margin-top:40px;opacity:0;transform:translateY(20px);
+.features{display:flex;gap:16px;margin-top:40px;opacity:0;transform:translateY(20px);
   animation:fade-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.9s forwards}
 .feat{text-align:center;flex:1}
 .feat-icon{font-size:28px;margin-bottom:8px}
 .feat-label{font-size:12px;color:var(--hint);line-height:1.4}
+.nowrap{white-space:nowrap}
 
-/* Glow accents */
 .glow{position:fixed;border-radius:50%;pointer-events:none;z-index:-1;
   filter:blur(90px);opacity:var(--glow-opacity);will-change:transform;
   animation:glow-drift 6s ease-in-out infinite alternate}
@@ -2454,26 +2449,49 @@ html.light{--glow-opacity:0.08}
   0%{transform:translate(0,0) scale(1)}
   100%{transform:translate(-30px,-25px) scale(1.15)}
 }
-
 @keyframes fade-up{to{opacity:1;transform:translateY(0)}}
 
-/* CTA button (fallback for missing MainButton) */
-.cta{
-  margin-top:44px;opacity:0;transform:translateY(16px);
-  animation:fade-up 0.6s cubic-bezier(0.16,1,0.3,1) 1.3s forwards;
-}
-.cta button{
-  background:var(--accent);color:#fff;border:none;border-radius:12px;
-  padding:14px 40px;font-size:16px;font-weight:600;cursor:pointer;
-  transition:transform 0.15s,opacity 0.15s;-webkit-tap-highlight-color:transparent;
-}
-.cta button:active{transform:scale(0.96);opacity:0.85}
+.cta{margin-top:44px;opacity:0;transform:translateY(16px);
+  animation:fade-up 0.6s cubic-bezier(0.16,1,0.3,1) 1.3s forwards}
+.cta a{display:inline-block;background:var(--accent);color:#fff;border:none;border-radius:12px;
+  padding:14px 40px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;
+  transition:transform 0.15s,opacity 0.15s;-webkit-tap-highlight-color:transparent}
+.cta a:active{transform:scale(0.96);opacity:0.85}
 
-/* Footer */
 .foot{position:fixed;bottom:20px;left:0;right:0;text-align:center;
   font-size:12px;color:var(--hint);opacity:0;
   animation:fade-up 0.5s ease 1.6s forwards}
 </style>
+<script>
+// OS theme applied IMMEDIATELY — no SDK dependency, no blocking
+var tg = null;
+(function() {
+  var isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme:dark)').matches;
+  var root = document.documentElement;
+  root.classList.add(isDark ? 'dark' : 'light');
+  root.style.background = isDark ? '#1c1c1e' : '#f5f5f7';
+  root.style.color = isDark ? '#f5f5f7' : '#1c1c1e';
+})();
+// Called when SDK loads (async — never blocks page render)
+function onTgReady() {
+  try {
+    tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+    var isDark = tg.colorScheme === 'dark';
+    var root = document.documentElement;
+    root.classList.remove('dark','light');
+    root.classList.add(isDark ? 'dark' : 'light');
+    root.style.background = isDark ? '#1c1c1e' : '#f5f5f7';
+    root.style.color = isDark ? '#f5f5f7' : '#1c1c1e';
+    if (tg.themeParams) {
+      if (tg.themeParams.button_color) root.style.setProperty('--accent', tg.themeParams.button_color);
+      if (tg.themeParams.hint_color) root.style.setProperty('--hint', tg.themeParams.hint_color);
+    }
+  } catch(e) {}
+}
+</script>
+<script src="https://telegram.org/js/telegram-web-app.js" async onload="onTgReady()"></script>
 </head>
 <body>
 
@@ -2492,57 +2510,31 @@ html.light{--glow-opacity:0.08}
 </div>
 
 <div class="features">
-  <div class="feat"><div class="feat-icon">🎙</div><div class="feat-label">Интервью<br>и совещания</div></div>
-  <div class="feat"><div class="feat-icon">👥</div><div class="feat-label">Спикеры<br>и диалоги</div></div>
-  <div class="feat"><div class="feat-icon">✨</div><div class="feat-label">AI-обработка<br>текста</div></div>
+  <div class="feat"><div class="feat-icon">🎙</div><div class="feat-label"><span class="nowrap">Интервью и</span><br>совещания</div></div>
+  <div class="feat"><div class="feat-icon">👥</div><div class="feat-label"><span class="nowrap">Спикеры и</span><br>диалоги</div></div>
+  <div class="feat"><div class="feat-icon">✨</div><div class="feat-label"><span class="nowrap">AI-обработка</span><br>текста</div></div>
 </div>
 
-<div class="cta"><button id="ctaBtn">Перейти в бот</button></div>
+<div class="cta"><a href="https://t.me/editorialsrobot" onclick="return navToBot(event)">Перейти в бота</a></div>
 
-<div class="foot">@editorialsrobot</div>
+<div class="foot"><a href="https://t.me/editorialsrobot" style="color:var(--hint);text-decoration:none" onclick="return navToBot(event)">@editorialsrobot</a></div>
 
 <script>
-(function() {
-  // Apply theme to <html> to cover entire viewport
-  var isDark = false;
-  if (tg && tg.colorScheme) {
-    isDark = tg.colorScheme === 'dark';
-  } else if (window.matchMedia) {
-    isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  }
-  var root = document.documentElement;
-  root.classList.add(isDark ? 'dark' : 'light');
-
-  // Apply accent color from Telegram theme
-  var accent = (tg && tg.themeParams && tg.themeParams.button_color) || '#3390ec';
-  var hint = (tg && tg.themeParams && tg.themeParams.hint_color) || (isDark ? '#8e8e93' : '#6e6e73');
-  root.style.setProperty('--accent', accent);
-  root.style.setProperty('--hint', hint);
-
-  // Close webapp and go to bot chat
-  function goToBot() {
-    if (tg) {
-      try { tg.openTelegramLink('https://t.me/editorialsrobot'); } catch(e) {}
-      setTimeout(function() {
-        try { tg.close(); } catch(e) {}
-      }, 300);
-    } else {
-      window.location.href = 'https://t.me/editorialsrobot';
+// openTelegramLink navigates AND closes Mini App per Telegram docs.
+// preventDefault stops href from racing/killing the close.
+// Fallback: let href navigate naturally if SDK unavailable.
+function navToBot(e) {
+  if (tg) {
+    try {
+      if (e) e.preventDefault();
+      tg.openTelegramLink('https://t.me/editorialsrobot');
+      return false;
+    } catch(ex) {
+      return true;
     }
   }
-
-  // CTA button
-  document.getElementById('ctaBtn').addEventListener('click', goToBot);
-
-  // Also try Telegram MainButton
-  if (tg && tg.MainButton) {
-    try {
-      tg.MainButton.setText('Перейти в бот');
-      tg.MainButton.show();
-      tg.MainButton.onClick(goToBot);
-    } catch(e) {}
-  }
-})();
+  return true;
+}
 </script>
 </body>
 </html>"""
