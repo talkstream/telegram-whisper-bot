@@ -2534,7 +2534,7 @@ class AudioService:
                 'max_tokens': 8192
             }
 
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response = requests.post(url, headers=headers, json=payload, timeout=300)
 
             if response.status_code == 200:
                 try:
@@ -2583,6 +2583,14 @@ class AudioService:
                     return text
                 logging.warning(f"AssemblyAI LLM API error: {response.status_code} - {response.text}, trying Qwen fallback")
                 return self.format_text_with_qwen(text, use_code_tags, use_yo, is_chunked, is_dialogue, _is_fallback=True)
+
+        except requests.exceptions.Timeout as e:
+            # Timeout is NOT a reason to fallback — Gemini needs time, return original
+            api_duration = time.time() - api_start_time
+            if self.metrics_service:
+                self.metrics_service.log_api_call('assemblyai-llm', api_duration, False, f'timeout: {e}')
+            logging.warning(f"[llm-assemblyai] Gemini timeout after {api_duration:.1f}s, returning original text")
+            return text
 
         except requests.RequestException as e:
             if _is_fallback:

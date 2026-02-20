@@ -6,7 +6,7 @@
 |----------|-------|
 | **Version** | v5.0.0 |
 | **ASR** | `qwen3-asr-flash` (REST), diarization: DashScope two-pass + AssemblyAI + Gemini backends |
-| **LLM** | `qwen3.5-397b-a17b` (fallback: Gemini 3 Flash via AssemblyAI Gateway) |
+| **LLM** | `gemini-3-flash-preview` via AssemblyAI Gateway (fallback: `qwen3.5-397b-a17b` on API errors only) |
 | **Infra** | Alibaba FC 3.0 + Tablestore + MNS + OSS |
 | **Region** | eu-central-1 (Frankfurt) |
 
@@ -146,13 +146,13 @@ alibaba/
 - `/mute <hours>` → `/tmp/twbot_mute_until` (resets on cold start)
 - `pythonjsonlogger` not on FC runtime → graceful fallback to stdlib
 
-### Gemini Fallback
-```python
-import google.genai as genai
-client = genai.Client(vertexai=True, project=PROJECT_ID, location='europe-west1')
-response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-```
-**NEVER** use deprecated `vertexai` imports.
+### LLM Formatting (v5.0.1)
+- **Primary**: Gemini 3 Flash (`gemini-3-flash-preview`) via AssemblyAI Gateway — ALL text (dialogue + monologue)
+- **Fallback**: Qwen (`qwen3.5-397b-a17b`) — ONLY on API errors (4xx/5xx, connection failures)
+- **Timeout**: 300s — NO fallback on timeout (Gemini gets as much time as needed within FC budget)
+- **Backend selection**: `settings.get('llm_backend', 'assemblyai')` — default `assemblyai` everywhere
+- **Per-user override**: `/llm qwen` or `/llm assemblyai` — stored in user settings
+- **CRITICAL**: Never reduce AssemblyAI timeout below 300s — Gemini responses take 30-50s typically
 
 ---
 

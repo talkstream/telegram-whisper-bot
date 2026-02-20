@@ -5,7 +5,7 @@ Unit tests for v5.1.0 stability fixes:
 - content-length parsing guard
 - OSS cleanup on job creation failure
 - Balance reservation (atomic deduction at queue time)
-- LLM fallback timeout (60s)
+- LLM timeout (300s, no fallback on timeout)
 - MIME validation on cloud drive import
 - Signed URL expiry (30 min)
 - DashScope session pooling (ASR + LLM methods)
@@ -17,6 +17,8 @@ import os
 import sys
 import time
 from unittest.mock import MagicMock, patch, PropertyMock, call
+
+import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'audio-processor'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shared'))
@@ -508,11 +510,11 @@ class TestBalanceReservation:
 # === Tier 2.2: LLM Fallback Timeout Tests ===
 
 class TestLlmFallbackTimeout:
-    """AssemblyAI LLM timeout should be 60s for Gemini 3 Flash."""
+    """AssemblyAI LLM timeout should be 300s for Gemini 3 Flash (no timeout-based fallback)."""
 
     @patch('requests.post')
-    def test_assemblyai_timeout_is_60s(self, mock_post, audio_service):
-        """Verify timeout=60 in format_text_with_assemblyai request."""
+    def test_assemblyai_timeout_is_300s(self, mock_post, audio_service):
+        """Verify timeout=300 in format_text_with_assemblyai request."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -528,7 +530,19 @@ class TestLlmFallbackTimeout:
             )
 
         _, kwargs = mock_post.call_args
-        assert kwargs.get('timeout') == 60
+        assert kwargs.get('timeout') == 300
+
+    @patch('requests.post')
+    def test_timeout_returns_original_not_fallback(self, mock_post, audio_service):
+        """Timeout should return original text, NOT trigger Qwen fallback."""
+        mock_post.side_effect = requests.exceptions.Timeout("Connection timed out")
+
+        with patch.dict(os.environ, {'ASSEMBLYAI_API_KEY': 'test-key'}):
+            result = audio_service.format_text_with_assemblyai(
+                "Original text that should be returned on timeout with enough words here",
+            )
+
+        assert result == "Original text that should be returned on timeout with enough words here"
 
 
 # === Tier 2.3: MIME Validation Tests ===
