@@ -2389,19 +2389,20 @@ try { tg = window.Telegram.WebApp; tg.ready(); tg.expand(); } catch(e) {}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 
-/* Theme: detect via class set by JS */
-body{
+/* Theme: detect via class set by JS, applied to html+body */
+html,body{
   font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
   -webkit-font-smoothing:antialiased;
-  transition:background 0.3s;
 }
-body.dark{background:#1c1c1e;color:#f5f5f7}
-body.light{background:#f5f5f7;color:#1c1c1e}
+body{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+html.dark,html.dark body{background:#1c1c1e;color:#f5f5f7}
+html.light,html.light body{background:#f5f5f7;color:#1c1c1e}
 
 /* Accent color — set via JS from themeParams */
 :root{--accent:#3390ec;--hint:#8e8e93;--glow-opacity:0.12}
-body.light{--glow-opacity:0.08}
+html.light{--glow-opacity:0.08}
 
 /* Animated waveform */
 .wave-wrap{width:140px;height:80px;display:flex;align-items:center;justify-content:center;gap:5px;
@@ -2502,33 +2503,43 @@ body.light{--glow-opacity:0.08}
 
 <script>
 (function() {
-  // Apply theme from Telegram SDK or system preference
+  // Apply theme to <html> to cover entire viewport
   var isDark = false;
   if (tg && tg.colorScheme) {
     isDark = tg.colorScheme === 'dark';
   } else if (window.matchMedia) {
     isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   }
-  document.body.classList.add(isDark ? 'dark' : 'light');
+  var root = document.documentElement;
+  root.classList.add(isDark ? 'dark' : 'light');
 
   // Apply accent color from Telegram theme
   var accent = (tg && tg.themeParams && tg.themeParams.button_color) || '#3390ec';
   var hint = (tg && tg.themeParams && tg.themeParams.hint_color) || (isDark ? '#8e8e93' : '#6e6e73');
-  document.documentElement.style.setProperty('--accent', accent);
-  document.documentElement.style.setProperty('--hint', hint);
+  root.style.setProperty('--accent', accent);
+  root.style.setProperty('--hint', hint);
+
+  // Close webapp and go to bot chat
+  function goToBot() {
+    if (tg) {
+      try { tg.openTelegramLink('https://t.me/editorialsrobot'); } catch(e) {}
+      setTimeout(function() {
+        try { tg.close(); } catch(e) {}
+      }, 300);
+    } else {
+      window.location.href = 'https://t.me/editorialsrobot';
+    }
+  }
 
   // CTA button
-  var ctaBtn = document.getElementById('ctaBtn');
-  ctaBtn.addEventListener('click', function() {
-    if (tg) tg.close();
-  });
+  document.getElementById('ctaBtn').addEventListener('click', goToBot);
 
   // Also try Telegram MainButton
   if (tg && tg.MainButton) {
     try {
       tg.MainButton.setText('Перейти в бот');
       tg.MainButton.show();
-      tg.MainButton.onClick(function() { tg.close(); });
+      tg.MainButton.onClick(goToBot);
     } catch(e) {}
   }
 })();
