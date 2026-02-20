@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Upload Audio</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+var tg = null;
+try { tg = window.Telegram.WebApp; tg.ready(); tg.expand(); } catch(e) {}
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--tg-theme-bg-color, #fff);
+       color: var(--tg-theme-text-color, #000); padding: 16px; }
+.drop-zone { border: 2px dashed var(--tg-theme-hint-color, #aaa); border-radius: 12px;
+             padding: 40px 20px; text-align: center; margin: 20px 0; cursor: pointer;
+             transition: border-color 0.3s; }
+.drop-zone.active { border-color: var(--tg-theme-button-color, #3390ec);
+                    background: rgba(51,144,236,0.05); }
+.drop-zone h2 { margin-bottom: 8px; font-size: 18px; }
+.drop-zone p { color: var(--tg-theme-hint-color, #999); font-size: 14px; }
+.progress-bar { width: 100%; height: 8px; background: var(--tg-theme-secondary-bg-color, #eee);
+                border-radius: 4px; margin: 16px 0; overflow: hidden; display: none; }
+.progress-bar .fill { height: 100%; background: var(--tg-theme-button-color, #3390ec);
+                      border-radius: 4px; transition: width 0.3s; width: 0%; }
+.status { text-align: center; margin: 12px 0; font-size: 14px;
+          color: var(--tg-theme-hint-color, #999); }
+.error { color: #e53935; }
+.limits { font-size: 12px; color: var(--tg-theme-hint-color, #999);
+          text-align: center; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="drop-zone" id="dropZone">
+  <h2>&#128206; Нажмите для выбора файла</h2>
+  <p class="limits">MP3, WAV, OGG, M4A, FLAC, MP4, MOV, MKV, WEBM — до 500 МБ</p>
+</div>
+<input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.ogg,.m4a,.flac,.mp4,.mov,.mkv,.webm"
+       style="display:none">
+<div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+<div class="status" id="status"></div>
+<script>
+var ALLOWED = ['audio/mpeg','audio/wav','audio/ogg','audio/x-m4a','audio/flac','audio/aac',
+               'audio/mp4','video/mp4','video/quicktime','video/x-matroska','video/webm',
+               'audio/x-wav','audio/wave'];
+var ALLOWED_EXT = ['.mp3','.wav','.ogg','.m4a','.flac','.aac','.mp4','.mov','.mkv','.webm'];
+var MAX_SIZE = 500 * 1024 * 1024;
+var API_BASE = 'https://twbot-p-webhook-hnfnlkbphn.eu-central-1.fcapp.run';
+
+var dropZone = document.getElementById('dropZone');
+var fileInput = document.getElementById('fileInput');
+var progressBar = document.getElementById('progressBar');
+var progressFill = document.getElementById('progressFill');
+var statusEl = document.getElementById('status');
+
+dropZone.addEventListener('click', function() { fileInput.click(); });
+fileInput.addEventListener('change', function() {
+  if (fileInput.files.length) handleFile(fileInput.files[0]);
+});
+
+dropZone.addEventListener('dragover', function(e) { e.preventDefault(); dropZone.classList.add('active'); });
+dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('active'); });
+dropZone.addEventListener('drop', function(e) {
+  e.preventDefault(); dropZone.classList.remove('active');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+
+if (tg && tg.MainButton) {
+  tg.MainButton.setText('\u{1F4CE} Выбрать файл');
+  tg.MainButton.show();
+  tg.MainButton.onClick(function() { fileInput.click(); });
+}
+
+function validateFile(file) {
+  var ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (ALLOWED.indexOf(file.type) === -1 && ALLOWED_EXT.indexOf(ext) === -1) {
+    return 'Неподдерживаемый формат файла';
+  }
+  if (file.size > MAX_SIZE) return 'Файл слишком большой (макс. 500 МБ)';
+  return null;
+}
+
+function handleFile(file) {
+  var err = validateFile(file);
+  if (err) { showError(err); return; }
+
+  var initData = (tg && tg.initData) ? tg.initData : '';
+  if (!initData) {
+    showError('Откройте через Telegram \u2192 /upload');
+    return;
+  }
+
+  var ext = '.' + file.name.split('.').pop().toLowerCase();
+  showStatus('Запрашиваю URL для загрузки...');
+
+  fetch(API_BASE + '/api/signed-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ext: ext, init_data: initData })
+  })
+  .then(function(res) {
+    if (!res.ok) return res.json().then(function(e) { throw new Error(e.error || 'URL error'); });
+    return res.json();
+  })
+  .then(function(data) {
+    showStatus('Загружаю файл...');
+    progressBar.style.display = 'block';
+    return uploadWithProgress(data.put_url, file).then(function() { return data; });
+  })
+  .then(function(data) {
+    showStatus('Отправляю на обработку...');
+    return fetch(API_BASE + '/api/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oss_key: data.oss_key, init_data: initData, filename: file.name })
+    });
+  })
+  .then(function(res) {
+    if (!res.ok) return res.json().then(function(e) { throw new Error(e.error || 'Process error'); });
+    showStatus('\u2705 Файл отправлен! Результат придёт в чат.');
+    progressFill.style.width = '100%';
+    if (tg) setTimeout(function() { tg.close(); }, 2000);
+  })
+  .catch(function(e) {
+    showError(e.message || 'Ошибка загрузки');
+  });
+}
+
+function uploadWithProgress(url, file) {
+  return new Promise(function(resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 600000;
+    xhr.upload.addEventListener('progress', function(e) {
+      if (e.lengthComputable) {
+        var pct = Math.round(e.loaded / e.total * 100);
+        progressFill.style.width = pct + '%';
+        showStatus('Загружаю... ' + pct + '%');
+      }
+    });
+    xhr.addEventListener('load', function() {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error('Upload failed: ' + xhr.status));
+    });
+    xhr.addEventListener('error', function() { reject(new Error('Network error')); });
+    xhr.addEventListener('timeout', function() { reject(new Error('Timeout')); });
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.send(file);
+  });
+}
+
+function showStatus(msg) { statusEl.textContent = msg; statusEl.classList.remove('error'); }
+function showError(msg) { statusEl.textContent = msg; statusEl.classList.add('error');
+                          progressBar.style.display = 'none'; }
+</script>
+</body>
+</html>
