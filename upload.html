@@ -147,7 +147,7 @@ function uploadWithProgress(url, file) {
     xhr.addEventListener('error', function() { reject(new Error('Network error')); });
     xhr.addEventListener('timeout', function() { reject(new Error('Timeout')); });
     xhr.open('PUT', url);
-    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.send(file);
   });
 }
