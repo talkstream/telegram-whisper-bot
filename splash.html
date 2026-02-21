@@ -153,16 +153,18 @@ function onTgReady() {
 <div class="foot"><a href="https://t.me/editorialsrobot" style="color:var(--hint);text-decoration:none" onclick="return navToBot(event)">@editorialsrobot</a></div>
 
 <script>
-// openTelegramLink navigates AND closes Mini App per Telegram docs.
-// preventDefault stops href from racing/killing the close.
-// Fallback: let href navigate naturally if SDK unavailable.
+// openTelegramLink navigates AND closes Mini App (works for "Open App" context).
+// In "Menu Button" context user is already in bot chat — openTelegramLink is a no-op,
+// so tg.close() fires after 300ms as fallback.
 function navToBot(e) {
   if (tg) {
     try {
       if (e) e.preventDefault();
       tg.openTelegramLink('https://t.me/editorialsrobot');
+      setTimeout(function() { try { tg.close(); } catch(e2) {} }, 300);
       return false;
     } catch(ex) {
+      try { tg.close(); } catch(e2) {}
       return true;
     }
   }
